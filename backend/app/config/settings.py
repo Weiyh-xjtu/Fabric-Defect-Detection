@@ -4,7 +4,12 @@
 加载优先级：环境变量（系统级别） > .env 文件 > 代码中的默认值
 """
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -13,7 +18,7 @@ class Settings(BaseSettings):
     # ── 应用基础配置 ───────────────────────────────
     APP_NAME: str = "RSOD Agent Platform"
     APP_VERSION: str = "0.1.0"
-    DEBUG: bool = True
+    APP_DEBUG: bool = True
 
     # ── 日志配置 ──────────────────────────────────────
     LOG_LEVEL: str = "INFO"           # 日志级别
@@ -65,7 +70,7 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
 
     class Config:
-        env_file = ".env"
+        env_file = BACKEND_DIR / ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
 

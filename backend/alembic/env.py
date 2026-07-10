@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # 导入 SQLAlchemy 的 Base 类，用于获取模型元数据
+from app.config.settings import settings
 from app.database.session import Base
 
 # 关键：导入所有模型模块，触发模型类的定义和注册
@@ -38,6 +39,8 @@ from app.entity import db_models
 
 # 获取 Alembic 配置对象（从 alembic.ini 读取配置）
 config = context.config
+# 与应用共用数据库配置，避免 alembic.ini 中的固定地址覆盖 .env。
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 # 配置 Python 日志系统（读取 alembic.ini 中的 [loggers] 等配置）
 if config.config_file_name is not None:
