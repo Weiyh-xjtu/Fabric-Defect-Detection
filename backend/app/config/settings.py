@@ -14,7 +14,12 @@ class Settings(BaseSettings):
     APP_NAME: str = "RSOD Agent Platform"
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = True
-    LOG_LEVEL: str = "INFO"
+
+    # ── 日志配置 ──────────────────────────────────────
+    LOG_LEVEL: str = "INFO"           # 日志级别
+    LOG_DIR: str = "logs"             # 日志目录（相对于 backend/）
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 单文件最大 10MB
+    LOG_BACKUP_COUNT: int = 5         # 保留 5 份历史日志
 
     # ── 数据库配置 ───────────────────────────────
     DB_HOST: str = "localhost"

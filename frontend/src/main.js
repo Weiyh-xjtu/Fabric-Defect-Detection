@@ -18,9 +18,13 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import App from './App.vue'
 import router from './router'
 import pinia from './stores'
+import { setupErrorReporting } from '@/utils/errorReporter'
 
 // ── 创建并配置应用 ────────────────────────────────────
 const app = createApp(App)
+
+// 注册全局错误监控（在其他插件之前注册）
+setupErrorReporting(app)
 
 // 注册插件
 app.use(pinia)                          // 状态管理

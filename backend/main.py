@@ -4,7 +4,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.settings import settings
+from app.core.exceptions import register_exception_handlers
+from app.middleware.request_logger import RequestLogMiddleware
 from app.api.auth import router as auth_router
+from app.api.health import router as health_router
 
 
 def init_minio():
@@ -39,8 +42,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── CORS 中间件配置 ──────────────────────────────────
-# 允许前端跨域请求后端 API
+# ── 注册全局异常处理器 ─────────────────────────────────
+register_exception_handlers(app)
+
+# ── 注册中间件（注意顺序）──────────────────────────────
+# 中间件执行顺序：后添加的先执行（洋葱模型）
+# 1. CORS 中间件（最先执行，处理跨域）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -49,8 +56,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 2. 请求日志中间件（在 CORS 之后执行）
+app.add_middleware(RequestLogMiddleware)
+
 # ── 注册路由 ─────────────────────────────────────────
 app.include_router(auth_router)
+app.include_router(health_router)
 
 
 @app.get("/")
@@ -61,26 +72,6 @@ def root():
         "docs": "/docs",
         "redoc": "/redoc",
     }
-
-
-@app.get("/api/health")
-def health_check():
-    return {"status": "healthy", "app_name": "RSOD Agent Platform", "version": "0.1.0"}
-
-
-@app.get("/api/health/database")
-def database_health():
-    return {"status": "healthy", "database": "postgresql", "message": "数据库连接正常"}
-
-
-@app.get("/api/health/redis")
-def redis_health():
-    return {"status": "healthy", "redis": "connected", "message": "Redis 连接正常"}
-
-
-@app.get("/api/health/minio")
-def minio_health():
-    return {"status": "healthy", "minio": "connected", "message": "MinIO 连接正常"}
 
 
 if __name__ == "__main__":

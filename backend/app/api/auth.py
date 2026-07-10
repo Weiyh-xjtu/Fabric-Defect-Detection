@@ -18,7 +18,8 @@ router = APIRouter(prefix="/api/auth", tags=["认证"])
 
 # Bearer Token 方案，用于从请求 Header 中提取 Token
 # Swagger UI 的 Authorize 弹窗可直接粘贴 Token（不需要加 Bearer 前缀）
-bearer_scheme = HTTPBearer()
+# auto_error=False：缺少 Token 时不抛默认的 403，由我们统一返回 401
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
@@ -35,6 +36,8 @@ async def get_current_user(
         detail="无效的认证凭据",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if credentials is None:
+        raise credentials_exception
     try:
         token = credentials.credentials
         payload = decode_access_token(token)

@@ -1,9 +1,22 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue({
+      template: {
+        transformAssetUrls: {
+          // 以 / 开头的资源指向 public 目录，保持原始 URL，
+          // 不编译成模块导入（否则 Vitest 中会解析失败）
+          includeAbsolute: false,
+        },
+      },
+    }),
+  ],
 
   // ── 路径别名 ─────────────────────────────────────
   resolve: {
@@ -32,6 +45,21 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+    },
+  },
+
+  // ── Vitest 测试配置 ───────────────────────────────
+  test: {
+    // 使用 happy-dom 模拟浏览器环境
+    environment: 'happy-dom',
+    // 全局 setup 文件
+    setupFiles: ['./tests/setup.js'],
+    // 测试文件匹配模式
+    include: ['tests/**/*.{test,spec}.{js,ts}'],
+    // 覆盖率（可选）
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
     },
   },
 })
