@@ -384,7 +384,7 @@ class TrainingService:
                 for row in reader:
                     # results.csv 的列名可能带空格
                     row = {k.strip(): v.strip() for k, v in row.items()}
-                    epoch = int(row.get("epoch", 0)) + 1  # CSV 中 epoch 从 0 开始
+                    epoch = int(row.get("epoch", 0))  # Ultralytics CSV 中 epoch 从 1 开始
 
                     # 跳过已存在的 epoch（回调已写入）
                     if epoch in existing_epochs:
@@ -605,7 +605,7 @@ class TrainingService:
                 row = {k.strip(): v.strip() for k, v in row.items()}
                 metrics.append(
                     {
-                        "epoch": int(row.get("epoch", 0)) + 1,
+                        "epoch": int(row.get("epoch", 0)),
                         "box_loss": _safe_float(row.get("train/box_loss", "")),
                         "cls_loss": _safe_float(row.get("train/cls_loss", "")),
                         "dfl_loss": _safe_float(row.get("train/dfl_loss", "")),
