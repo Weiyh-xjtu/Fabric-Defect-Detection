@@ -1,6 +1,7 @@
 """训练 API 测试。"""
 
-from app.entity.db_models import DetectionScene
+from app.entity.db_models import DetectionScene, TrainingMetric
+from app.training.training_service import TrainingService
 
 
 def _auth_headers(client):
@@ -52,3 +53,38 @@ def test_list_training_scenes_returns_active_scenes(client, db_session):
             }
         ]
     }
+
+
+def test_parse_final_results_does_not_add_an_extra_epoch(db_session, tmp_path):
+    """Ultralytics 的 results.csv 使用从 1 开始的 epoch 编号。"""
+    task_id = 1
+    task_uuid = "epoch-test"
+    results_dir = tmp_path / f"task_{task_uuid}"
+    results_dir.mkdir()
+    (results_dir / "results.csv").write_text(
+        "epoch,train/box_loss\n1,2.5\n2,2.4\n3,2.3\n4,2.2\n5,2.1\n",
+        encoding="utf-8",
+    )
+
+    for epoch in range(1, 6):
+        db_session.add(TrainingMetric(task_id=task_id, epoch=epoch))
+    db_session.commit()
+
+    TrainingService._parse_final_results(
+        db_session,
+        task_id=task_id,
+        task_uuid=task_uuid,
+        config={},
+        project_path=str(tmp_path),
+    )
+
+    epochs = [
+        metric.epoch
+        for metric in (
+            db_session.query(TrainingMetric)
+            .filter(TrainingMetric.task_id == task_id)
+            .order_by(TrainingMetric.epoch.asc())
+            .all()
+        )
+    ]
+    assert epochs == [1, 2, 3, 4, 5]
