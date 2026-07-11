@@ -1,7 +1,7 @@
 """训练 API 测试。"""
 
 from app.entity.db_models import DetectionScene, TrainingMetric
-from app.training.training_service import TrainingService
+from app.training.training_service import TrainingService, _get_epoch_loss_metrics
 
 
 def _auth_headers(client):
@@ -78,13 +78,32 @@ def test_parse_final_results_does_not_add_an_extra_epoch(db_session, tmp_path):
         project_path=str(tmp_path),
     )
 
-    epochs = [
-        metric.epoch
-        for metric in (
-            db_session.query(TrainingMetric)
-            .filter(TrainingMetric.task_id == task_id)
-            .order_by(TrainingMetric.epoch.asc())
-            .all()
-        )
-    ]
-    assert epochs == [1, 2, 3, 4, 5]
+    metrics = (
+        db_session.query(TrainingMetric)
+        .filter(TrainingMetric.task_id == task_id)
+        .order_by(TrainingMetric.epoch.asc())
+        .all()
+    )
+    assert [metric.epoch for metric in metrics] == [1, 2, 3, 4, 5]
+    assert metrics[-1].box_loss == 2.1
+
+
+def test_epoch_loss_metrics_use_trainer_average_loss():
+    """训练回调应使用 trainer.tloss，而不是验证指标字典。"""
+    class Trainer:
+        tloss = [2.313, 3.624, 1.876]
+
+        @staticmethod
+        def label_loss_items(losses):
+            assert losses == [2.313, 3.624, 1.876]
+            return {
+                "train/box_loss": losses[0],
+                "train/cls_loss": losses[1],
+                "train/dfl_loss": losses[2],
+            }
+
+    assert _get_epoch_loss_metrics(Trainer()) == {
+        "train/box_loss": 2.313,
+        "train/cls_loss": 3.624,
+        "train/dfl_loss": 1.876,
+    }
