@@ -106,9 +106,52 @@
           <div ref="mapChartRef" style="height: 350px"></div>
         </el-col>
       </el-row>
-    </el-card>
+      <el-card v-if="selectedTask.status === 'completed'" class="model-actions" shadow="never">
+        <template #header>
+          <div class="card-header">
+            <span>模型评估与导出</span>
+            <span class="action-hint">基于任务 {{ selectedTask.task_uuid }} 的 best.pt</span>
+          </div>
+        </template>
+        <el-space wrap>
+          <el-button type="primary" :loading="validating" @click="validateModel">模型评估</el-button>
+          <el-button type="success" @click="showExportDialog = true">导出模型</el-button>
+          <el-button @click="downloadModel">下载权重</el-button>
+          <el-button @click="openPredictDialog">测试验证</el-button>
+        </el-space>
 
-    <!-- ── 新建训练任务对话框 ── -->
+        <div v-if="evalReport" class="evaluation-report">
+          <el-row :gutter="16" class="evaluation-metrics">
+            <el-col v-for="metric in evaluationCards" :key="metric.label" :xs="12" :sm="6">
+              <div class="evaluation-metric">
+                <div class="metric-value">{{ metric.value }}</div>
+                <div class="metric-label">{{ metric.label }}</div>
+              </div>
+            </el-col>
+          </el-row>
+          <h4>分类 AP</h4>
+          <el-table
+            :data="perClassMetrics"
+            :row-class-name="evaluationRowClass"
+            empty-text="暂无分类指标"
+          >
+            <el-table-column prop="className" label="类别" min-width="160" />
+            <el-table-column label="AP@50" min-width="130">
+              <template #default="{ row }">
+                <span>{{ formatPercent(row.ap50) }}</span>
+                <el-tag v-if="row.ap50 < 0.5" type="danger" size="small" class="weak-tag">需调优</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="AP@50-95" min-width="130">
+              <template #default="{ row }">{{ formatPercent(row.ap50_95) }}</template>
+            </el-table-column>
+            <el-table-column prop="instances" label="样本数" min-width="100">
+              <template #default="{ row }">{{ row.instances ?? '-' }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </el-card>
+    </el-card>
     <el-dialog
       v-model="showCreateDialog"
       title="新建训练任务"
@@ -184,6 +227,26 @@
             :precision="4"
           />
         </el-form-item>
+
+        <el-divider content-position="left">数据增强调优</el-divider>
+        <el-form-item label="Mosaic">
+          <el-slider v-model="trainForm.augment_config.mosaic" :min="0" :max="1" :step="0.1" show-input />
+        </el-form-item>
+        <el-form-item label="MixUp">
+          <el-slider v-model="trainForm.augment_config.mixup" :min="0" :max="1" :step="0.05" show-input />
+        </el-form-item>
+        <el-form-item label="旋转角度">
+          <el-slider v-model="trainForm.augment_config.degrees" :min="0" :max="45" :step="1" show-input />
+        </el-form-item>
+        <el-form-item label="平移比例">
+          <el-slider v-model="trainForm.augment_config.translate" :min="0" :max="0.5" :step="0.05" show-input />
+        </el-form-item>
+        <el-form-item label="缩放比例">
+          <el-slider v-model="trainForm.augment_config.scale" :min="0" :max="1" :step="0.05" show-input />
+        </el-form-item>
+        <el-form-item label="水平翻转">
+          <el-slider v-model="trainForm.augment_config.fliplr" :min="0" :max="1" :step="0.1" show-input />
+        </el-form-item>
       </el-form>
 
       <template #footer>
@@ -198,13 +261,91 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showExportDialog" title="导出正式模型" width="520px" :close-on-click-modal="false">
+      <el-form :model="exportForm" label-width="110px">
+        <el-form-item label="版本号">
+          <el-input v-model="exportForm.version" placeholder="留空自动生成，如 v1.0.0" />
+        </el-form-item>
+        <el-form-item label="版本描述">
+          <el-input v-model="exportForm.description" type="textarea" :rows="3" maxlength="1000" show-word-limit />
+        </el-form-item>
+        <el-form-item label="设为默认">
+          <el-switch v-model="exportForm.set_default" />
+        </el-form-item>
+        <el-form-item label="上传 MinIO">
+          <el-switch v-model="exportForm.upload_minio" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showExportDialog = false">取消</el-button>
+        <el-button type="primary" :loading="exporting" @click="exportModel">确认导出</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showPredictDialog" title="测试图片验证" width="900px" :close-on-click-modal="false">
+      <el-upload
+        drag
+        :auto-upload="false"
+        :limit="1"
+        accept="image/jpeg,image/png,image/bmp,image/webp"
+        :on-change="handleTestFile"
+        :on-remove="clearTestFile"
+      >
+        <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+        <div class="el-upload__text">拖拽图片到此处，或 <em>点击选择</em></div>
+        <template #tip>
+          <div class="el-upload__tip">支持 JPEG、PNG、BMP、WebP；建议使用未参与训练或验证的新图片。</div>
+        </template>
+      </el-upload>
+
+      <el-row :gutter="24" class="predict-thresholds">
+        <el-col :span="12">
+          <div class="slider-label">置信度阈值：{{ predictForm.conf.toFixed(2) }}</div>
+          <el-slider v-model="predictForm.conf" :min="0.05" :max="0.95" :step="0.05" />
+        </el-col>
+        <el-col :span="12">
+          <div class="slider-label">IoU 阈值：{{ predictForm.iou.toFixed(2) }}</div>
+          <el-slider v-model="predictForm.iou" :min="0.1" :max="0.9" :step="0.05" />
+        </el-col>
+      </el-row>
+
+      <div v-if="predictResult" class="predict-result">
+        <el-descriptions :column="3" border>
+          <el-descriptions-item label="检测目标">{{ predictResult.total_objects }}</el-descriptions-item>
+          <el-descriptions-item label="推理耗时">{{ predictResult.inference_time }} ms</el-descriptions-item>
+          <el-descriptions-item label="文件名">{{ predictResult.filename }}</el-descriptions-item>
+        </el-descriptions>
+        <img
+          :src="`data:image/jpeg;base64,${predictResult.annotated_image}`"
+          alt="模型预测标注结果"
+          class="annotated-image"
+        />
+        <el-table :data="predictResult.detections" empty-text="未检测到目标">
+          <el-table-column prop="class_name" label="类别" min-width="140" />
+          <el-table-column label="置信度" min-width="120">
+            <template #default="{ row }">{{ formatPercent(row.confidence) }}</template>
+          </el-table-column>
+          <el-table-column label="边界框" min-width="260">
+            <template #default="{ row }">[{{ row.bbox.join(', ') }}]</template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <template #footer>
+        <el-button @click="showPredictDialog = false">关闭</el-button>
+        <el-button type="primary" :disabled="!predictForm.file" :loading="predicting" @click="runPredict">
+          开始预测
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { Plus, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import request from '@/utils/request'
 
@@ -216,6 +357,24 @@ const loadingScenes = ref(false)
 const selectedTask = ref(null)
 const showCreateDialog = ref(false)
 const creating = ref(false)
+const evalReport = ref(null)
+const validating = ref(false)
+const showExportDialog = ref(false)
+const exporting = ref(false)
+const exportForm = ref({
+  version: '',
+  description: '',
+  set_default: false,
+  upload_minio: true,
+})
+const showPredictDialog = ref(false)
+const predicting = ref(false)
+const predictResult = ref(null)
+const predictForm = ref({
+  file: null,
+  conf: 0.25,
+  iou: 0.45,
+})
 
 // ── 图表引用 ──
 const lossChartRef = ref(null)
@@ -236,6 +395,14 @@ const trainForm = ref({
   device: 'cpu',
   optimizer: 'SGD',
   lr0: 0.01,
+  augment_config: {
+    mosaic: 1,
+    mixup: 0,
+    degrees: 0,
+    translate: 0.1,
+    scale: 0.5,
+    fliplr: 0.5,
+  },
 })
 
 // ── 计算属性：最新指标卡片 ──
@@ -259,6 +426,32 @@ const metricCards = computed(() => {
     { label: 'mAP@50-95', value: m.map50_95 != null ? (m.map50_95 * 100).toFixed(1) + '%' : '-' },
   ]
 })
+
+const evaluationCards = computed(() => {
+  const overall = evalReport.value?.overall
+  if (!overall) return []
+  return [
+    { label: 'Precision', value: formatPercent(overall.precision) },
+    { label: 'Recall', value: formatPercent(overall.recall) },
+    { label: 'mAP@50', value: formatPercent(overall.map50) },
+    { label: 'mAP@50-95', value: formatPercent(overall.map50_95) },
+  ]
+})
+
+const perClassMetrics = computed(() => {
+  const entries = Object.entries(evalReport.value?.per_class || {})
+  return entries
+    .map(([className, metrics]) => ({ className, ...metrics }))
+    .sort((a, b) => b.ap50 - a.ap50)
+})
+
+function formatPercent(value) {
+  return value == null ? '-' : `${(value * 100).toFixed(1)}%`
+}
+
+function evaluationRowClass({ row }) {
+  return row.ap50 < 0.5 ? 'weak-class-row' : ''
+}
 
 // ── 状态映射 ──
 function statusType(status) {
@@ -320,6 +513,8 @@ async function fetchTasks() {
 // ── 选择任务并开始监控 ──
 async function selectTask(task) {
   selectedTask.value = task
+  evalReport.value = null
+  predictResult.value = null
   await nextTick()
   initCharts()
   fetchMetrics()
@@ -505,6 +700,98 @@ async function stopTask(taskId) {
   }
 }
 
+async function validateModel() {
+  if (!selectedTask.value) return
+  validating.value = true
+  try {
+    evalReport.value = await request.post(`/training/validate/${selectedTask.value.id}`, {
+      split: 'val',
+      conf: 0.001,
+      iou: 0.6,
+    })
+    ElMessage.success('模型评估完成')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '模型评估失败')
+  } finally {
+    validating.value = false
+  }
+}
+
+async function exportModel() {
+  if (!selectedTask.value) return
+  exporting.value = true
+  try {
+    const payload = {
+      ...exportForm.value,
+      version: exportForm.value.version.trim() || null,
+      description: exportForm.value.description.trim() || null,
+    }
+    const result = await request.post(`/training/export/${selectedTask.value.id}`, payload)
+    const { per_class, ...overall } = result.evaluation
+    evalReport.value = { overall, per_class }
+    showExportDialog.value = false
+    ElMessage.success(result.message)
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '模型导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function downloadModel() {
+  if (!selectedTask.value) return
+  try {
+    const blob = await request.get(`/training/download/${selectedTask.value.id}`, {
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `best_${selectedTask.value.task_uuid}.pt`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '模型下载失败')
+  }
+}
+
+function openPredictDialog() {
+  predictResult.value = null
+  showPredictDialog.value = true
+}
+
+function handleTestFile(uploadFile) {
+  predictForm.value.file = uploadFile.raw
+  predictResult.value = null
+}
+
+function clearTestFile() {
+  predictForm.value.file = null
+  predictResult.value = null
+}
+
+async function runPredict() {
+  if (!selectedTask.value || !predictForm.value.file) return
+  predicting.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', predictForm.value.file)
+    formData.append('task_id', selectedTask.value.id)
+    formData.append('conf', predictForm.value.conf)
+    formData.append('iou', predictForm.value.iou)
+    predictResult.value = await request.post('/training/predict', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    ElMessage.success('测试图片预测完成')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '测试图片预测失败')
+  } finally {
+    predicting.value = false
+  }
+}
+
 // ── 生命周期 ──
 onMounted(() => {
   fetchScenes()
@@ -572,5 +859,65 @@ onBeforeUnmount(() => {
 .task-list-card,
 .monitor-card {
   margin-bottom: 20px;
+}
+
+.model-actions {
+  margin-top: 20px;
+  border-color: #dcdfe6;
+}
+
+.action-hint,
+.slider-label {
+  color: #909399;
+  font-size: 13px;
+}
+
+.evaluation-report {
+  margin-top: 20px;
+}
+
+.evaluation-report h4 {
+  margin: 20px 0 12px;
+}
+
+.evaluation-metrics {
+  row-gap: 12px;
+}
+
+.evaluation-metric {
+  padding: 16px;
+  text-align: center;
+  background: #f5f7fa;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+}
+
+.weak-tag {
+  margin-left: 8px;
+}
+
+:deep(.weak-class-row) {
+  --el-table-tr-bg-color: #fef0f0;
+}
+
+.predict-thresholds {
+  margin: 20px 0;
+}
+
+.slider-label {
+  margin-bottom: 4px;
+}
+
+.predict-result {
+  margin-top: 20px;
+}
+
+.annotated-image {
+  display: block;
+  max-width: 100%;
+  max-height: 520px;
+  margin: 16px auto;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
 }
 </style>
