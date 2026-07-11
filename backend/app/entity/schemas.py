@@ -8,7 +8,7 @@ Pydantic 请求/响应模型
   - List 模型：分页列表查询的参数和响应
 """
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -266,6 +266,51 @@ class TrainingMetricResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- 模型评估与导出 ---
+class ModelValidateRequest(BaseModel):
+    """模型评估请求"""
+    split: Literal["train", "val", "test"] = Field(default="val", description="评估数据集划分")
+    conf: float = Field(default=0.001, ge=0, le=1, description="置信度阈值")
+    iou: float = Field(default=0.6, ge=0, le=1, description="NMS IoU 阈值")
+
+
+class ModelExportRequest(BaseModel):
+    """模型导出请求"""
+    version: Optional[str] = Field(
+        None,
+        pattern=r"^v\d+\.\d+\.\d+$",
+        description="版本号，如 v1.0.0",
+    )
+    description: Optional[str] = Field(None, max_length=1000, description="版本描述")
+    set_default: bool = Field(default=False, description="是否设为场景默认模型")
+    upload_minio: bool = Field(default=True, description="是否上传到 MinIO")
+
+
+class ModelValidateResponse(BaseModel):
+    """模型评估响应"""
+    task_id: int
+    task_uuid: str
+    split: str
+    overall: dict
+    per_class: dict
+    model_version_id: Optional[int] = None
+    model_version: Optional[str] = None
+
+
+class ModelExportResponse(BaseModel):
+    """模型导出响应"""
+    model_version_id: int
+    version: str
+    model_name: str
+    model_path: str
+    export_dir: str
+    minio_url: Optional[str] = None
+    file_size: Optional[int] = None
+    evaluation: dict
+    is_default: bool
+    message: str
 
 
 # --- 模型版本 ---

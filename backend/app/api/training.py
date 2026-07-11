@@ -11,7 +11,12 @@
   - GET    /api/training/results/{task_uuid}  获取 results.csv 原始数据
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+import base64
+import os
+import tempfile
+
+import cv2
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -19,18 +24,36 @@ from app.api.auth import get_current_user
 from app.config.settings import settings
 from app.core.logger import get_logger
 from app.database.session import get_db
+from app.entity.db_models import DetectionScene, TrainingTask
 from app.entity.schemas import (
+    ModelExportRequest,
+    ModelExportResponse,
+    ModelValidateRequest,
+    ModelValidateResponse,
+    TrainingMetricResponse,
     TrainingTaskCreate,
     TrainingTaskResponse,
-    TrainingMetricResponse,
 )
 from app.training.training_service import training_service
-
-import os
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/training", tags=["模型训练"])
+
+
+def _get_owned_task(db: Session, task_id: int, user) -> TrainingTask:
+    """获取当前用户拥有的训练任务，避免跨用户访问模型产物。"""
+    task = (
+        db.query(TrainingTask)
+        .filter(
+            TrainingTask.id == task_id,
+            TrainingTask.user_id == user.id,
+        )
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="训练任务不存在")
+    return task
 
 
 @router.get("/scenes")
@@ -39,8 +62,6 @@ async def list_training_scenes(
     _current_user=Depends(get_current_user),
 ):
     """获取可用于训练的启用场景。"""
-    from app.entity.db_models import DetectionScene
-
     scenes = (
         db.query(DetectionScene)
         .filter(DetectionScene.is_active.is_(True))
@@ -170,6 +191,7 @@ async def get_training_status(
     返回任务基本信息、当前进度和最新 epoch 指标
     前端可轮询此接口实现实时监控
     """
+    _get_owned_task(db, task_id, current_user)
     status = training_service.get_training_status(db, task_id)
     if "error" in status:
         raise HTTPException(status_code=404, detail=status["error"])
@@ -187,6 +209,7 @@ async def get_training_metrics(
 
     用于绘制完整的训练曲线（loss、mAP、precision、recall）
     """
+    _get_owned_task(db, task_id, current_user)
     metrics = training_service.get_training_metrics(db, task_id)
     return {"task_id": task_id, "total": len(metrics), "metrics": metrics}
 
@@ -198,6 +221,7 @@ async def stop_training(
     current_user=Depends(get_current_user),
 ):
     """停止正在运行的训练任务"""
+    _get_owned_task(db, task_id, current_user)
     result = training_service.stop_training(db, task_id)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -207,13 +231,21 @@ async def stop_training(
 @router.get("/results/{task_uuid}")
 async def get_results_csv(
     task_uuid: str,
+    db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """
-    获取 Ultralytics 生成的原始 results.csv 文件
+    """获取当前用户训练任务的 Ultralytics results.csv 文件。"""
+    task = (
+        db.query(TrainingTask)
+        .filter(
+            TrainingTask.task_uuid == task_uuid,
+            TrainingTask.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="训练任务不存在")
 
-    可用于离线分析或导出到其他工具
-    """
     results_path = os.path.join(
         settings.TRAIN_OUTPUT_DIR,
         f"task_{task_uuid}",
@@ -227,3 +259,184 @@ async def get_results_csv(
         media_type="text/csv",
         filename=f"training_results_{task_uuid}.csv",
     )
+
+
+@router.post("/validate/{task_id}", response_model=ModelValidateResponse)
+async def validate_model(
+    task_id: int,
+    request: ModelValidateRequest = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """对已完成训练的模型执行验证集或测试集评估。"""
+    _get_owned_task(db, task_id, current_user)
+    request = request or ModelValidateRequest()
+    result = training_service.validate_model(
+        db=db,
+        task_id=task_id,
+        split=request.split,
+        conf=request.conf,
+        iou=request.iou,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    logger.info(
+        "用户 %s 评估模型: task_id=%d, mAP50=%.4f",
+        current_user.username,
+        task_id,
+        result.get("overall", {}).get("map50", 0),
+    )
+    return result
+
+
+@router.post("/export/{task_id}", response_model=ModelExportResponse)
+async def export_model(
+    task_id: int,
+    request: ModelExportRequest = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """导出训练权重、评估报告和模型版本信息。"""
+    _get_owned_task(db, task_id, current_user)
+    request = request or ModelExportRequest()
+    result = training_service.export_model(
+        db=db,
+        task_id=task_id,
+        version=request.version,
+        description=request.description,
+        set_default=request.set_default,
+        upload_minio=request.upload_minio,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    logger.info(
+        "用户 %s 导出模型: task_id=%d, version=%s",
+        current_user.username,
+        task_id,
+        result["version"],
+    )
+    return result
+
+
+@router.get("/download/{task_id}")
+async def download_model(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """下载训练任务的 best.pt，缺失时回退到 last.pt。"""
+    _get_owned_task(db, task_id, current_user)
+    result = training_service.get_model_download_path(db, task_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return FileResponse(
+        path=result["file_path"],
+        media_type="application/octet-stream",
+        filename=result["filename"],
+    )
+
+
+@router.post("/predict")
+async def predict_test_image(
+    file: UploadFile = File(..., description="测试图片"),
+    task_id: int = Form(..., description="训练任务 ID"),
+    conf: float = Form(0.25, ge=0, le=1, description="置信度阈值"),
+    iou: float = Form(0.45, ge=0, le=1, description="NMS IoU 阈值"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """上传测试图片并使用已完成任务的模型进行预测。"""
+    allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp"}
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {file.content_type}")
+
+    task = _get_owned_task(db, task_id, current_user)
+    if task.status != "completed":
+        raise HTTPException(status_code=400, detail="训练任务未完成，无法进行预测")
+
+    weight_result = training_service.get_model_download_path(db, task_id)
+    if "error" in weight_result:
+        raise HTTPException(status_code=404, detail=weight_result["error"])
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="上传图片不能为空")
+
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".jpg"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        from ultralytics import YOLO
+
+        model = YOLO(weight_result["file_path"])
+        results = model.predict(
+            source=tmp_path,
+            conf=conf,
+            iou=iou,
+            imgsz=task.img_size,
+            device="cpu",
+            save=False,
+            verbose=False,
+        )
+        if not results:
+            raise HTTPException(status_code=500, detail="模型未返回预测结果")
+
+        result = results[0]
+        detections = []
+        if result.boxes is not None:
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+                if isinstance(model.names, dict):
+                    class_name = model.names.get(class_id, f"class_{class_id}")
+                else:
+                    class_name = (
+                        model.names[class_id]
+                        if class_id < len(model.names)
+                        else f"class_{class_id}"
+                    )
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                detections.append(
+                    {
+                        "class_name": class_name,
+                        "class_id": class_id,
+                        "confidence": round(float(box.conf[0]), 4),
+                        "bbox": [
+                            round(x1, 1),
+                            round(y1, 1),
+                            round(x2, 1),
+                            round(y2, 1),
+                        ],
+                    }
+                )
+
+        encoded, buffer = cv2.imencode(
+            ".jpg",
+            result.plot(),
+            [cv2.IMWRITE_JPEG_QUALITY, 85],
+        )
+        if not encoded:
+            raise HTTPException(status_code=500, detail="标注图片编码失败")
+
+        class_counts = {}
+        for detection in detections:
+            class_name = detection["class_name"]
+            class_counts[class_name] = class_counts.get(class_name, 0) + 1
+
+        return {
+            "task_id": task_id,
+            "task_uuid": task.task_uuid,
+            "filename": file.filename,
+            "total_objects": len(detections),
+            "detections": detections,
+            "class_counts": class_counts,
+            "annotated_image": base64.b64encode(buffer).decode("utf-8"),
+            "inference_time": round(float(result.speed.get("inference", 0)), 2),
+        }
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        await file.close()

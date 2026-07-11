@@ -27,15 +27,23 @@
 """
 
 import csv
+import json
 import os
+import shutil
 import threading
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from app.config.settings import settings
 from app.core.logger import get_logger
 from app.database.session import SessionLocal
-from app.entity.db_models import TrainingMetric, TrainingTask
+from app.entity.db_models import (
+    DetectionScene,
+    ModelVersion,
+    TrainingMetric,
+    TrainingTask,
+)
 
 logger = get_logger(__name__)
 
@@ -215,6 +223,7 @@ class TrainingService:
                 "save": True,
                 "plots": False,
             }
+            train_kwargs.update(_get_augmentation_kwargs(config.get("augment_config")))
 
             # ── 注册训练回调：每个 epoch 结束时更新数据库 ──
             def on_train_epoch_end(trainer):
@@ -567,6 +576,296 @@ class TrainingService:
         ]
 
     @staticmethod
+    def validate_model(
+        db,
+        task_id: int,
+        split: str = "val",
+        conf: float = 0.001,
+        iou: float = 0.6,
+    ) -> dict:
+        """在指定数据集划分上评估已完成训练的最佳权重。"""
+        task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
+        if not task:
+            return {"error": "训练任务不存在"}
+        if task.status != "completed":
+            return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能评估"}
+
+        weights_path = _task_output_dir(task.task_uuid) / "weights" / "best.pt"
+        if not weights_path.exists():
+            return {"error": f"模型权重不存在: {weights_path}"}
+
+        data_yaml = _resolve_data_yaml(task)
+        if not data_yaml:
+            return {"error": "data.yaml 不存在"}
+
+        scene = (
+            db.query(DetectionScene)
+            .filter(DetectionScene.id == task.scene_id)
+            .first()
+        )
+        if not scene:
+            return {"error": "关联场景不存在"}
+
+        logger.info(
+            "开始模型评估: task_id=%d, weights=%s, split=%s",
+            task_id,
+            weights_path,
+            split,
+        )
+
+        try:
+            from ultralytics import YOLO
+
+            model = YOLO(str(weights_path))
+            task_output_dir = _task_output_dir(task.task_uuid)
+            results = model.val(
+                data=str(data_yaml),
+                split=split,
+                conf=conf,
+                iou=iou,
+                imgsz=task.img_size,
+                device="cpu",
+                save_json=True,
+                plots=True,
+                project=str(task_output_dir.parent),
+                name=task_output_dir.name,
+                exist_ok=True,
+                verbose=False,
+            )
+            overall, per_class = _parse_evaluation_results(results, model.names)
+
+            model_version = (
+                db.query(ModelVersion)
+                .filter(ModelVersion.training_task_id == task_id)
+                .first()
+            )
+            if not model_version:
+                existing_count = (
+                    db.query(ModelVersion)
+                    .filter(ModelVersion.scene_id == task.scene_id)
+                    .count()
+                )
+                version = f"v{existing_count + 1}.0.0"
+                model_version = ModelVersion(
+                    scene_id=task.scene_id,
+                    training_task_id=task_id,
+                    version=version,
+                    model_name=f"{task.model_name}_{scene.name}_{version}",
+                    model_type=task.model_name,
+                    model_path=str(weights_path),
+                    description=f"训练任务 {task.task_uuid} 自动产出",
+                )
+                db.add(model_version)
+
+            model_version.map50 = overall["map50"]
+            model_version.map50_95 = overall["map50_95"]
+            model_version.precision = overall["precision"]
+            model_version.recall = overall["recall"]
+            model_version.per_class_ap = per_class
+            model_version.file_size = weights_path.stat().st_size
+            db.commit()
+            db.refresh(model_version)
+
+            report = {
+                "task_id": task_id,
+                "task_uuid": task.task_uuid,
+                "split": split,
+                "overall": overall,
+                "per_class": per_class,
+                "model_version_id": model_version.id,
+                "model_version": model_version.version,
+            }
+            logger.info(
+                "模型评估完成: task_id=%d, mAP50=%.4f, mAP50-95=%.4f",
+                task_id,
+                overall["map50"],
+                overall["map50_95"],
+            )
+            return report
+        except Exception as e:
+            db.rollback()
+            logger.error(
+                "模型评估异常: task_id=%d, error=%s",
+                task_id,
+                str(e),
+                exc_info=True,
+            )
+            return {"error": f"评估失败: {str(e)}"}
+
+    @staticmethod
+    def export_model(
+        db,
+        task_id: int,
+        version: str = None,
+        description: str = None,
+        set_default: bool = False,
+        upload_minio: bool = True,
+    ) -> dict:
+        """将训练权重、评估报告和图表导出为正式模型版本。"""
+        task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
+        if not task:
+            return {"error": "训练任务不存在"}
+        if task.status != "completed":
+            return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能导出"}
+
+        weights_path = _task_output_dir(task.task_uuid) / "weights" / "best.pt"
+        if not weights_path.exists():
+            return {"error": f"模型权重不存在: {weights_path}"}
+
+        scene = (
+            db.query(DetectionScene)
+            .filter(DetectionScene.id == task.scene_id)
+            .first()
+        )
+        if not scene:
+            return {"error": "关联场景不存在"}
+
+        model_version = (
+            db.query(ModelVersion)
+            .filter(ModelVersion.training_task_id == task_id)
+            .first()
+        )
+        if not version:
+            if model_version:
+                version = model_version.version
+            else:
+                existing_count = (
+                    db.query(ModelVersion)
+                    .filter(ModelVersion.scene_id == task.scene_id)
+                    .count()
+                )
+                version = f"v{existing_count + 1}.0.0"
+
+        evaluation = TrainingService.validate_model(db, task_id, split="val")
+        if "error" in evaluation:
+            return {"error": evaluation["error"]}
+
+        try:
+            export_dir = _backend_dir() / "models" / f"{scene.name}_{version}"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            exported_weight = export_dir / "best.pt"
+            shutil.copy2(weights_path, exported_weight)
+
+            task_output_dir = _task_output_dir(task.task_uuid)
+            for plot_name in (
+                "confusion_matrix.png",
+                "PR_curve.png",
+                "F1_curve.png",
+                "results.png",
+            ):
+                plot_path = task_output_dir / plot_name
+                if plot_path.exists():
+                    shutil.copy2(plot_path, export_dir / plot_name)
+
+            overall = evaluation["overall"]
+            per_class = evaluation["per_class"]
+            report = {
+                "version": version,
+                "model_name": task.model_name,
+                "scene": scene.name,
+                "training_task": task.task_uuid,
+                "evaluation": {
+                    "split": "val",
+                    "overall": overall,
+                    "per_class": per_class,
+                },
+                "training_config": {
+                    "epochs": task.epochs,
+                    "batch_size": task.batch_size,
+                    "img_size": task.img_size,
+                    "optimizer": task.optimizer,
+                    "lr0": task.lr0,
+                    "device": task.device,
+                    "augment_config": task.augment_config,
+                },
+                "exported_at": datetime.now().isoformat(),
+            }
+            with (export_dir / "eval_report.json").open("w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2, ensure_ascii=False)
+
+            minio_url = None
+            if upload_minio:
+                try:
+                    from app.storage.minio_client import MinIOClient
+
+                    object_name = f"models/{scene.name}/{version}/best.pt"
+                    minio_url = MinIOClient().upload_file(
+                        object_name,
+                        str(exported_weight),
+                    )
+                except Exception as e:
+                    logger.warning("MinIO 上传失败（不影响导出）: %s", str(e))
+
+            model_version = (
+                db.query(ModelVersion)
+                .filter(ModelVersion.training_task_id == task_id)
+                .first()
+            )
+            model_version.version = version
+            model_version.model_name = f"{task.model_name}_{scene.name}_{version}"
+            model_version.model_path = str(exported_weight)
+            model_version.minio_url = minio_url
+            model_version.map50 = overall["map50"]
+            model_version.map50_95 = overall["map50_95"]
+            model_version.precision = overall["precision"]
+            model_version.recall = overall["recall"]
+            model_version.per_class_ap = per_class
+            model_version.file_size = exported_weight.stat().st_size
+            model_version.description = description or f"训练任务 {task.task_uuid} 导出"
+
+            if set_default:
+                db.query(ModelVersion).filter(
+                    ModelVersion.scene_id == task.scene_id,
+                    ModelVersion.id != model_version.id,
+                ).update({"is_default": False}, synchronize_session=False)
+                model_version.is_default = True
+
+            db.commit()
+            db.refresh(model_version)
+            return {
+                "model_version_id": model_version.id,
+                "version": version,
+                "model_name": model_version.model_name,
+                "model_path": str(exported_weight),
+                "export_dir": str(export_dir),
+                "minio_url": minio_url,
+                "file_size": model_version.file_size,
+                "evaluation": {
+                    **overall,
+                    "per_class": per_class,
+                },
+                "is_default": model_version.is_default,
+                "message": f"模型已导出为版本 {version}",
+            }
+        except Exception as e:
+            db.rollback()
+            logger.error(
+                "模型导出异常: task_id=%d, error=%s",
+                task_id,
+                str(e),
+                exc_info=True,
+            )
+            return {"error": f"导出失败: {str(e)}"}
+
+    @staticmethod
+    def get_model_download_path(db, task_id: int) -> dict:
+        """返回训练任务可下载的最佳权重，必要时回退到 last.pt。"""
+        task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
+        if not task:
+            return {"error": "训练任务不存在"}
+
+        weights_dir = _task_output_dir(task.task_uuid) / "weights"
+        for weight_name in ("best.pt", "last.pt"):
+            weight_path = weights_dir / weight_name
+            if weight_path.exists():
+                return {
+                    "file_path": str(weight_path),
+                    "filename": f"{weight_path.stem}_{task.task_uuid}.pt",
+                    "file_size": weight_path.stat().st_size,
+                }
+        return {"error": "模型权重文件不存在"}
+
+    @staticmethod
     def parse_results_csv(results_csv_path: str) -> list:
         """
         独立解析 results.csv 文件（工具方法，可用于离线分析）
@@ -604,6 +903,117 @@ class TrainingService:
 # ══════════════════════════════════════════════════════════════
 # 工具函数
 # ══════════════════════════════════════════════════════════════
+
+
+# Ultralytics 数据增强参数白名单，防止 augment_config 覆盖 data/project 等核心参数。
+_AUGMENTATION_KEYS = frozenset(
+    {
+        "hsv_h",
+        "hsv_s",
+        "hsv_v",
+        "degrees",
+        "translate",
+        "scale",
+        "shear",
+        "perspective",
+        "flipud",
+        "fliplr",
+        "bgr",
+        "mosaic",
+        "mixup",
+        "cutmix",
+        "copy_paste",
+        "erasing",
+    }
+)
+
+
+def _backend_dir() -> Path:
+    """返回 backend 根目录。"""
+    return Path(__file__).resolve().parents[2]
+
+
+def _training_output_dir() -> Path:
+    """返回训练产物根目录，兼容绝对路径配置。"""
+    output_dir = Path(settings.TRAIN_OUTPUT_DIR)
+    if not output_dir.is_absolute():
+        output_dir = _backend_dir() / output_dir
+    return output_dir.resolve()
+
+
+def _task_output_dir(task_uuid: str) -> Path:
+    """返回指定训练任务的产物目录。"""
+    return _training_output_dir() / f"task_{task_uuid}"
+
+
+def _resolve_data_yaml(task: TrainingTask):
+    """从任务记录中解析存在的 data.yaml 路径。"""
+    candidates = []
+    if task.data_yaml:
+        candidates.append(Path(task.data_yaml))
+    if task.dataset_path:
+        candidates.append(Path(task.dataset_path) / "data.yaml")
+
+    for candidate in candidates:
+        paths = [candidate]
+        if not candidate.is_absolute():
+            paths.append(_backend_dir() / candidate)
+        for path in paths:
+            if path.exists():
+                return path.resolve()
+    return None
+
+
+def _get_augmentation_kwargs(augment_config) -> dict:
+    """过滤并返回 Ultralytics 支持的数据增强参数。"""
+    if not isinstance(augment_config, dict):
+        return {}
+    return {
+        key: value
+        for key, value in augment_config.items()
+        if key in _AUGMENTATION_KEYS and value is not None
+    }
+
+
+def _class_name(class_names, class_id: int) -> str:
+    if isinstance(class_names, dict):
+        return class_names.get(class_id, f"class_{class_id}")
+    if class_id < len(class_names):
+        return class_names[class_id]
+    return f"class_{class_id}"
+
+
+def _parse_evaluation_results(results, class_names) -> tuple[dict, dict]:
+    """将 Ultralytics 验证结果转换为可序列化指标。"""
+    box = getattr(results, "box", None)
+    if box is None:
+        raise ValueError("评估结果中缺少目标检测指标")
+
+    overall = {
+        "precision": float(box.mp),
+        "recall": float(box.mr),
+        "map50": float(box.map50),
+        "map50_95": float(box.map),
+    }
+    per_class = {}
+    ap_values = getattr(box, "ap", None)
+    ap50_values = getattr(box, "ap50", None)
+    if ap_values is None or ap50_values is None:
+        return overall, per_class
+
+    instance_values = getattr(box, "nt_per_class", None)
+    if instance_values is None:
+        instance_values = getattr(box, "np", None)
+
+    for class_id, ap50 in enumerate(ap50_values):
+        metrics = {
+            "ap50": round(float(ap50), 4),
+            "ap50_95": round(float(ap_values[class_id]), 4),
+        }
+        if instance_values is not None and class_id < len(instance_values):
+            metrics["instances"] = int(instance_values[class_id])
+        per_class[_class_name(class_names, class_id)] = metrics
+    return overall, per_class
 
 
 def _get_epoch_loss_metrics(trainer) -> dict:
