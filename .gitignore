@@ -157,3 +157,7 @@ $RECYCLE.BIN/
 .dmypy.json
 dmypy.json
 .claude/
+
+# 数据集
+datasets/
+*.zip
