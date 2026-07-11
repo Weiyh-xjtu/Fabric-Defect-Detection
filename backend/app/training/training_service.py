@@ -223,28 +223,14 @@ class TrainingService:
                     # 从 trainer 获取当前 epoch 指标
                     epoch = trainer.epoch + 1  # ultralytics epoch 从 0 开始
                     metrics = trainer.metrics or {}
-                    loss_items = (
-                        trainer.loss_items if hasattr(trainer, "loss_items") else {}
-                    )
+                    loss_metrics = _get_epoch_loss_metrics(trainer)
 
                     metric_record = TrainingMetric(
                         task_id=task_id,
                         epoch=epoch,
-                        box_loss=float(
-                            metrics.get("metrics/box_loss", 0)
-                            if isinstance(metrics, dict)
-                            else 0
-                        ),
-                        cls_loss=float(
-                            metrics.get("metrics/cls_loss", 0)
-                            if isinstance(metrics, dict)
-                            else 0
-                        ),
-                        dfl_loss=float(
-                            metrics.get("metrics/dfl_loss", 0)
-                            if isinstance(metrics, dict)
-                            else 0
-                        ),
+                        box_loss=_safe_float(loss_metrics.get("train/box_loss")),
+                        cls_loss=_safe_float(loss_metrics.get("train/cls_loss")),
+                        dfl_loss=_safe_float(loss_metrics.get("train/dfl_loss")),
                         precision=float(
                             metrics.get("metrics/precision(B)", 0)
                             if isinstance(metrics, dict)
@@ -371,12 +357,10 @@ class TrainingService:
 
         try:
             # 读取已有的 epoch 记录
-            existing_epochs = set()
-            existing = (
-                db.query(TrainingMetric).filter(TrainingMetric.task_id == task_id).all()
-            )
-            for m in existing:
-                existing_epochs.add(m.epoch)
+            existing_metrics = {
+                metric.epoch: metric
+                for metric in db.query(TrainingMetric).filter(TrainingMetric.task_id == task_id).all()
+            }
 
             # 解析 results.csv
             with open(results_csv, "r", encoding="utf-8") as f:
@@ -385,24 +369,22 @@ class TrainingService:
                     # results.csv 的列名可能带空格
                     row = {k.strip(): v.strip() for k, v in row.items()}
                     epoch = int(row.get("epoch", 0))  # Ultralytics CSV 中 epoch 从 1 开始
+                    metric_values = {
+                        "box_loss": _safe_float(row.get("train/box_loss", "")),
+                        "cls_loss": _safe_float(row.get("train/cls_loss", "")),
+                        "dfl_loss": _safe_float(row.get("train/dfl_loss", "")),
+                        "precision": _safe_float(row.get("metrics/precision(B)", "")),
+                        "recall": _safe_float(row.get("metrics/recall(B)", "")),
+                        "map50": _safe_float(row.get("metrics/mAP50(B)", "")),
+                        "map50_95": _safe_float(row.get("metrics/mAP50-95(B)", "")),
+                        "lr": _safe_float(row.get("lr/pg0", "")),
+                    }
 
-                    # 跳过已存在的 epoch（回调已写入）
-                    if epoch in existing_epochs:
-                        continue
-
-                    metric = TrainingMetric(
-                        task_id=task_id,
-                        epoch=epoch,
-                        box_loss=_safe_float(row.get("train/box_loss", "")),
-                        cls_loss=_safe_float(row.get("train/cls_loss", "")),
-                        dfl_loss=_safe_float(row.get("train/dfl_loss", "")),
-                        precision=_safe_float(row.get("metrics/precision(B)", "")),
-                        recall=_safe_float(row.get("metrics/recall(B)", "")),
-                        map50=_safe_float(row.get("metrics/mAP50(B)", "")),
-                        map50_95=_safe_float(row.get("metrics/mAP50-95(B)", "")),
-                        lr=_safe_float(row.get("lr/pg0", "")),
-                    )
-                    db.add(metric)
+                    if metric := existing_metrics.get(epoch):
+                        for field, value in metric_values.items():
+                            setattr(metric, field, value)
+                    else:
+                        db.add(TrainingMetric(task_id=task_id, epoch=epoch, **metric_values))
 
             db.commit()
             logger.info("results.csv 解析完成，指标已补充到数据库")
@@ -622,6 +604,14 @@ class TrainingService:
 # ══════════════════════════════════════════════════════════════
 # 工具函数
 # ══════════════════════════════════════════════════════════════
+
+
+def _get_epoch_loss_metrics(trainer) -> dict:
+    """获取当前 epoch 的平均训练损失。"""
+    tloss = getattr(trainer, "tloss", None)
+    if tloss is None or not hasattr(trainer, "label_loss_items"):
+        return {}
+    return trainer.label_loss_items(tloss)
 
 
 def _safe_float(value) -> float:
