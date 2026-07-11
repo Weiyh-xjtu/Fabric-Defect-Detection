@@ -217,7 +217,7 @@ class DetectionStatistics(BaseModel):
 class TrainingTaskCreate(BaseModel):
     """创建训练任务"""
     scene_id: int = Field(..., description="关联场景 ID")
-    model_name: str = Field(default="yolov11n", description="基础模型")
+    model_name: str = Field(default="yolo11n", description="基础模型")
     epochs: int = Field(default=100, ge=10, le=500, description="训练轮数")
     img_size: int = Field(default=640, description="图像尺寸")
     batch_size: int = Field(default=16, ge=1, le=64, description="批次大小")
@@ -314,7 +314,7 @@ class ModelVersionCreate(BaseModel):
     scene_id: int
     version: str = Field(..., description="版本号")
     model_name: str = Field(..., description="模型名称")
-    model_type: str = Field(default="yolov11n", description="模型类型")
+    model_type: str = Field(default="yolo11n", description="模型类型")
     description: Optional[str] = None
 
 
