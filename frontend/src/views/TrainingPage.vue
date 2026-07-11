@@ -3,7 +3,7 @@
     <!-- ── 页面标题 ── -->
     <div class="page-header">
       <h2>模型训练与监控</h2>
-      <el-button type="primary" @click="showCreateDialog = true">
+      <el-button type="primary" @click="openCreateDialog">
         <el-icon><Plus /></el-icon>新建训练任务
       </el-button>
     </div>
@@ -117,10 +117,18 @@
     >
       <el-form :model="trainForm" label-width="120px">
         <el-form-item label="检测场景">
-          <el-select v-model="trainForm.scene_id" placeholder="选择场景">
-            <el-option label="遥感目标检测" :value="1" />
-            <el-option label="工业缺陷检测" :value="2" />
-            <el-option label="农业病害检测" :value="3" />
+          <el-select
+            v-model="trainForm.scene_id"
+            placeholder="选择场景"
+            :loading="loadingScenes"
+            :disabled="!sceneList.length"
+          >
+            <el-option
+              v-for="scene in sceneList"
+              :key="scene.id"
+              :label="scene.display_name"
+              :value="scene.id"
+            />
           </el-select>
         </el-form-item>
 
@@ -180,7 +188,12 @@
 
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
-        <el-button type="primary" @click="createTask" :loading="creating">
+        <el-button
+          type="primary"
+          @click="createTask"
+          :loading="creating"
+          :disabled="!trainForm.scene_id"
+        >
           启动训练
         </el-button>
       </template>
@@ -198,6 +211,8 @@ import request from '@/utils/request'
 // ── 状态变量 ──
 const taskList = ref([])
 const loadingTasks = ref(false)
+const sceneList = ref([])
+const loadingScenes = ref(false)
 const selectedTask = ref(null)
 const showCreateDialog = ref(false)
 const creating = ref(false)
@@ -213,7 +228,7 @@ let pollTimer = null
 
 // ── 训练表单 ──
 const trainForm = ref({
-  scene_id: 1,
+  scene_id: null,
   model_name: 'yolo11n',
   epochs: 50,
   batch_size: 8,
@@ -266,6 +281,27 @@ function statusText(status) {
     cancelled: '已取消',
   }
   return map[status] || status
+}
+
+async function openCreateDialog() {
+  await fetchScenes()
+  showCreateDialog.value = true
+}
+
+// ── 获取可用检测场景 ──
+async function fetchScenes() {
+  loadingScenes.value = true
+  try {
+    const res = await request.get('/training/scenes')
+    sceneList.value = res.items || []
+    if (!sceneList.value.some((scene) => scene.id === trainForm.value.scene_id)) {
+      trainForm.value.scene_id = sceneList.value[0]?.id ?? null
+    }
+  } catch (e) {
+    console.error('获取检测场景失败', e)
+  } finally {
+    loadingScenes.value = false
+  }
 }
 
 // ── 获取任务列表 ──
@@ -471,6 +507,7 @@ async function stopTask(taskId) {
 
 // ── 生命周期 ──
 onMounted(() => {
+  fetchScenes()
   fetchTasks()
 })
 

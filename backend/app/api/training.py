@@ -2,7 +2,8 @@
 训练相关 API 路由
 
 接口列表：
-  - POST   /api/training/start              启动训练任务
+  - GET    /api/training/scenes              获取可用检测场景
+  - POST   /api/training/start               启动训练任务
   - GET    /api/training/tasks               获取训练任务列表
   - GET    /api/training/status/{task_id}    获取训练状态（含最新指标）
   - GET    /api/training/metrics/{task_id}   获取训练指标历史（所有 epoch）
@@ -30,6 +31,32 @@ import os
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/training", tags=["模型训练"])
+
+
+@router.get("/scenes")
+async def list_training_scenes(
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_user),
+):
+    """获取可用于训练的启用场景。"""
+    from app.entity.db_models import DetectionScene
+
+    scenes = (
+        db.query(DetectionScene)
+        .filter(DetectionScene.is_active.is_(True))
+        .order_by(DetectionScene.id.asc())
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": scene.id,
+                "name": scene.name,
+                "display_name": scene.display_name,
+            }
+            for scene in scenes
+        ]
+    }
 
 
 @router.post("/start")
