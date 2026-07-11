@@ -36,8 +36,10 @@ export default defineConfig(({ mode }) => ({
 
   // ── 开发服务器配置 ────────────────────────────────
   server: {
+    host: '0.0.0.0', // 监听所有网络接口，允许容器外部访问
     port: 5173,
     open: true, // 启动时自动打开浏览器
+    allowedHosts: true, // 允许所有主机名（域名动态变化时无需逐个配置）
 
     // API 代理：将 /api 开头的请求转发到后端
     proxy: {
