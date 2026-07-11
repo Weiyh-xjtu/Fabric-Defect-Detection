@@ -126,16 +126,16 @@
 
         <el-form-item label="基础模型">
           <el-select v-model="trainForm.model_name">
-            <el-option label="YOLOv11n (Nano, 最快)" value="yolov11n" />
-            <el-option label="YOLOv11s (Small)" value="yolov11s" />
-            <el-option label="YOLOv11m (Medium)" value="yolov11m" />
-            <el-option label="YOLOv11l (Large)" value="yolov11l" />
-            <el-option label="YOLOv11x (XLarge, 最强)" value="yolov11x" />
+            <el-option label="YOLOv11n (Nano, 最快)" value="yolo11n" />
+            <el-option label="YOLOv11s (Small)" value="yolo11s" />
+            <el-option label="YOLOv11m (Medium)" value="yolo11m" />
+            <el-option label="YOLOv11l (Large)" value="yolo11l" />
+            <el-option label="YOLOv11x (XLarge, 最强)" value="yolo11x" />
           </el-select>
         </el-form-item>
 
         <el-form-item label="训练轮数">
-          <el-slider v-model="trainForm.epochs" :min="10" :max="500" :step="10" show-input />
+          <el-slider v-model="trainForm.epochs" :min="5" :max="500" :step="10" show-input />
         </el-form-item>
 
         <el-form-item label="批次大小">
@@ -214,7 +214,7 @@ let pollTimer = null
 // ── 训练表单 ──
 const trainForm = ref({
   scene_id: 1,
-  model_name: 'yolov11n',
+  model_name: 'yolo11n',
   epochs: 50,
   batch_size: 8,
   img_size: 640,
@@ -272,8 +272,8 @@ function statusText(status) {
 async function fetchTasks() {
   loadingTasks.value = true
   try {
-    const res = await request.get('/api/training/tasks')
-    taskList.value = res.data?.items || []
+    const res = await request.get('/training/tasks')
+    taskList.value = res.items || []
   } catch (e) {
     console.error('获取任务列表失败', e)
   } finally {
@@ -308,13 +308,18 @@ async function fetchMetrics() {
   if (!selectedTask.value) return
   try {
     const taskId = selectedTask.value.id || selectedTask.value.task?.id
-    const res = await request.get(`/api/training/metrics/${taskId}`)
-    const metrics = res.data?.metrics || []
+    const res = await request.get(`/training/metrics/${taskId}`)
+    const metrics = res.metrics || []
 
     // 更新任务状态
-    const statusRes = await request.get(`/api/training/status/${taskId}`)
-    if (statusRes.data) {
-      selectedTask.value = { ...selectedTask.value, ...statusRes.data }
+    const statusRes = await request.get(`/training/status/${taskId}`)
+    if (statusRes) {
+      selectedTask.value = {
+        ...selectedTask.value,
+        ...statusRes.task,
+        latest_metric: statusRes.latest_metric,
+        is_running: statusRes.is_running,
+      }
     }
 
     if (metrics.length > 0) {
@@ -432,13 +437,13 @@ function stopPolling() {
 async function createTask() {
   creating.value = true
   try {
-    const res = await request.post('/api/training/start', trainForm.value)
-    ElMessage.success(`训练任务已创建：${res.data?.task_uuid}`)
+    const res = await request.post('/training/start', trainForm.value)
+    ElMessage.success(`训练任务已创建：${res.task_uuid}`)
     showCreateDialog.value = false
     await fetchTasks()
     // 自动选中新创建的任务
-    if (res.data?.id) {
-      const newTask = taskList.value.find((t) => t.id === res.data.id)
+    if (res.id) {
+      const newTask = taskList.value.find((t) => t.id === res.id)
       if (newTask) selectTask(newTask)
     }
   } catch (e) {
@@ -454,7 +459,7 @@ async function stopTask(taskId) {
     await ElMessageBox.confirm('确定要停止当前训练任务吗？训练进度将被保留。', '确认停止', {
       type: 'warning',
     })
-    await request.post(`/api/training/stop/${taskId}`)
+    await request.post(`/training/stop/${taskId}`)
     ElMessage.success('训练任务已停止')
     await fetchTasks()
   } catch (e) {
