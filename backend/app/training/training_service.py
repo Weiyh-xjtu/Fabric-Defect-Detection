@@ -289,12 +289,12 @@ class TrainingService:
             )
             results = model.train(**train_kwargs)
 
-            # ── 判断是正常完成还是被中途停止 ──
-            # trainer.stop 被 stop_training() 置为 True 时，train() 会提前返回。
-            was_stopped = bool(getattr(getattr(model, "trainer", None), "stop", False))
-
+            # ── 判断是正常完成还是被用户中途停止 ──
+            # 注意：不能用 trainer.stop 判断——Ultralytics 正常训练到最后一个
+            # epoch 时也会把 trainer.stop 置为 True（final_epoch）。只有
+            # stop_training() 会把任务状态写成 "stopping"，这是唯一可靠的信号。
             db.refresh(task)
-            if was_stopped or task.status == "stopping":
+            if task.status == "stopping":
                 task.status = "cancelled"
                 task.completed_at = datetime.now()
                 db.commit()
