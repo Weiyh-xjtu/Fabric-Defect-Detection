@@ -283,13 +283,25 @@ class TrainingService:
             # 添加回调
             model.add_callback("on_train_epoch_end", on_train_epoch_end)
 
-            # ── 开始训练（阻塞直到完成）──
+            # ── 开始训练（阻塞直到完成或被停止）──
             logger.info(
                 "开始训练：data=%s, epochs=%d", data_yaml, train_kwargs["epochs"]
             )
             results = model.train(**train_kwargs)
 
-            # ── 训练完成，解析最终结果 ──
+            # ── 判断是正常完成还是被中途停止 ──
+            # trainer.stop 被 stop_training() 置为 True 时，train() 会提前返回。
+            was_stopped = bool(getattr(getattr(model, "trainer", None), "stop", False))
+
+            db.refresh(task)
+            if was_stopped or task.status == "stopping":
+                task.status = "cancelled"
+                task.completed_at = datetime.now()
+                db.commit()
+                logger.info("训练已被停止：task_id=%d, uuid=%s", task_id, task_uuid)
+                return
+
+            # ── 训练正常完成，解析最终结果 ──
             task.status = "completed"
             task.progress = 100
             task.current_epoch = config.get("epochs", 50)
@@ -522,22 +534,49 @@ class TrainingService:
         if task.status != "running":
             return {"error": f"任务当前状态为 {task.status}，无法停止"}
 
+        stop_flag_set = False
         with _running_lock:
             model = _running_tasks.get(task.task_uuid)
-            if model:
-                # ultralytics 支持通过设置 model.train 的 interrupt 来停止
+            if model is not None:
+                # Ultralytics 的 BaseTrainer.stop 是布尔标志（不是方法）：
+                # 训练循环在每个 epoch 末尾检查 `if self.stop: break`，
+                # 因此这里只需把标志置为 True，训练会在当前 epoch 结束后优雅退出。
                 try:
-                    model.trainer.stop()
+                    trainer = getattr(model, "trainer", None)
+                    if trainer is not None:
+                        trainer.stop = True
+                        stop_flag_set = True
+                    else:
+                        # trainer 尚未创建（训练还在预热/加载阶段），
+                        # 记录待停止标记，交由后台线程在启动后自行退出。
+                        logger.warning(
+                            "停止训练：trainer 尚未就绪，task_uuid=%s", task.task_uuid
+                        )
                 except Exception as e:
                     logger.warning("停止训练异常：%s", str(e))
+            else:
+                # 不在运行注册表中：线程可能已结束或从未真正启动。
+                logger.warning(
+                    "停止训练：运行注册表中无此任务，task_uuid=%s", task.task_uuid
+                )
 
-        # 更新状态
-        task.status = "cancelled"
-        task.completed_at = datetime.now()
+        # 更新状态为 stopping：真正的 cancelled 状态由后台线程在训练循环
+        # 实际退出后写入，避免“页面显示已停止但后端仍在训练”的假象。
+        task.status = "stopping" if stop_flag_set else "cancelled"
+        if not stop_flag_set:
+            task.completed_at = datetime.now()
         db.commit()
 
-        logger.info("训练任务已停止：task_id=%d", task_id)
-        return {"message": "训练任务已停止", "task_id": task_id}
+        logger.info(
+            "训练停止请求已提交：task_id=%d, flag_set=%s", task_id, stop_flag_set
+        )
+        return {
+            "message": "已请求停止训练，将在当前 epoch 结束后退出"
+            if stop_flag_set
+            else "训练任务已停止",
+            "task_id": task_id,
+            "status": task.status,
+        }
 
     @staticmethod
     def get_task_list(db, user_id: int = None, limit: int = 20) -> list:
