@@ -154,6 +154,8 @@ async function sendMessage() {
   // ── 关键：在清空之前保存文件引用 ──
   const fileToSend = selectedFile.value;
   const imagePreview = fileToSend ? URL.createObjectURL(fileToSend) : null;
+  // 仅发送图片、未输入文字时，补充默认指令，避免后端因空消息拒绝
+  const effectiveMessage = message || (fileToSend ? "请检测这张图片" : "");
 
   // 添加用户消息到列表
   agentStore.addMessage({
@@ -198,7 +200,7 @@ async function sendMessage() {
 
   // 发起 SSE 流式请求
   const requestBody = {
-    message,
+    message: effectiveMessage,
     ...(serverImagePath ? { image_path: serverImagePath } : {}),
   };
 

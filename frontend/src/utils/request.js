@@ -13,9 +13,9 @@ import router from '@/router'
 const request = axios.create({
   baseURL: '/api',          // 配合 Vite proxy，实际请求转发到后端
   timeout: 30000,           // 请求超时 30 秒
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  // 不在此处硬编码 Content-Type：让 Axios 按请求体自动推断
+  //   - 普通对象 → application/json
+  //   - FormData → multipart/form-data; boundary=...（文件上传必须）
 })
 
 // ── 请求拦截器 ──────────────────────────────────────
