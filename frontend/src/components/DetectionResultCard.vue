@@ -14,7 +14,7 @@
         <img
           :src="annotatedImageSrc"
           alt="检测标注图"
-          @click="showFullImage = true"
+          @click="previewImageSrc(annotatedImageSrc)"
         />
       </div>
 
@@ -118,9 +118,15 @@ const batchImages = computed(() => {
   }));
 });
 
-/** 点击预览图片 */
+/** 点击预览图片（批量模式） */
 function previewImage(img) {
   previewSrc.value = img.src;
+  showFullImage.value = true;
+}
+
+/** 点击预览图片（单图模式） */
+function previewImageSrc(src) {
+  previewSrc.value = src;
   showFullImage.value = true;
 }
 
