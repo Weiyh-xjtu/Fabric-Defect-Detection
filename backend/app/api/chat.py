@@ -87,10 +87,13 @@ async def chat_stream(
     # ── SSE 流式响应 ──
     async def event_generator():
         try:
-            # 使用 Agent 流式处理
+            # 使用 Agent 流式处理（透传当前用户，用于检测记录归属）
+            # 注：scene_id 不传，由检测服务自动选取默认场景；
+            # session_id 是会话 ID，与检测场景无关，不可混用。
             async for event in detection_agent.chat_stream(
                 message=message,
                 image_path=image_path,
+                user_id=current_user.id,
             ):
                 # 将事件序列化为 SSE 格式
                 event_data = json.dumps(event, ensure_ascii=False)

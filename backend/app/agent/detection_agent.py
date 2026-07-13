@@ -16,6 +16,7 @@
   response = await agent.chat("检测这张图片", image_path="xxx.jpg")
 """
 
+import contextvars
 import json
 from typing import AsyncGenerator
 
@@ -29,6 +30,20 @@ from app.core.logger import get_logger
 from app.services.detection_service import detection_service
 
 logger = get_logger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════
+# 零、请求级上下文（用于把当前用户/场景透传给工具）
+# ══════════════════════════════════════════════════════════════
+# 工具是模块级 @tool 函数，无法通过 LLM 参数传入 user_id（也不应让 LLM
+# 决定归属用户）。这里用 contextvars 在每次请求开始时注入，工具执行时读取。
+# contextvars 对 asyncio 任务安全，天然隔离并发请求。
+_current_user_id: contextvars.ContextVar = contextvars.ContextVar(
+    "current_user_id", default=None
+)
+_current_scene_id: contextvars.ContextVar = contextvars.ContextVar(
+    "current_scene_id", default=None
+)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -49,7 +64,13 @@ def detect_single_image(image_path: str, conf: float = 0.25, iou: float = 0.45) 
     Returns:
         JSON 字符串，包含检测结果（目标数量、类别统计、标注图路径）
     """
-    result = detection_service.detect_single(image_path, conf=conf, iou=iou)
+    result = detection_service.detect_single(
+        image_path,
+        conf=conf,
+        iou=iou,
+        scene_id=_current_scene_id.get(),
+        user_id=_current_user_id.get(),
+    )
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -65,7 +86,12 @@ def detect_batch_images(image_paths: list[str], conf: float = 0.25) -> str:
     Returns:
         JSON 字符串，包含每张图片的检测结果汇总
     """
-    result = detection_service.detect_batch(image_paths, conf=conf)
+    result = detection_service.detect_batch(
+        image_paths,
+        conf=conf,
+        scene_id=_current_scene_id.get(),
+        user_id=_current_user_id.get(),
+    )
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -81,7 +107,12 @@ def detect_zip_images_file(zip_path: str, conf: float = 0.25) -> str:
     Returns:
         JSON 字符串，包含 ZIP 内所有图片的检测结果汇总
     """
-    result = detection_service.detect_zip(zip_path, conf=conf)
+    result = detection_service.detect_zip(
+        zip_path,
+        conf=conf,
+        scene_id=_current_scene_id.get(),
+        user_id=_current_user_id.get(),
+    )
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -184,13 +215,21 @@ class DetectionAgent:
 
         logger.info("DetectionAgent 初始化完成，绑定 %d 个工具", len(DETECTION_TOOLS))
 
-    async def chat(self, message: str, image_path: str = None) -> dict:
+    async def chat(
+        self,
+        message: str,
+        image_path: str = None,
+        user_id: int = None,
+        scene_id: int = None,
+    ) -> dict:
         """
         处理用户对话消息
 
         Args:
             message: 用户文本消息
             image_path: 附带的图片路径（可选）
+            user_id: 当前登录用户 ID，用于检测记录归属
+            scene_id: 检测场景 ID（可选）
 
         Returns:
             Agent 响应字典
@@ -199,6 +238,9 @@ class DetectionAgent:
         if image_path:
             message = f"{message}\n[附件图片路径: {image_path}]"
 
+        # 注入请求级上下文，供工具读取
+        token_user = _current_user_id.set(user_id)
+        token_scene = _current_scene_id.set(scene_id)
         try:
             result = await self.executor.ainvoke({"input": message})
 
@@ -212,8 +254,17 @@ class DetectionAgent:
                 "output": f"抱歉，处理过程中出现错误：{str(e)}",
                 "intermediate_steps": [],
             }
+        finally:
+            _current_user_id.reset(token_user)
+            _current_scene_id.reset(token_scene)
 
-    async def chat_stream(self, message: str, image_path: str = None) -> AsyncGenerator:
+    async def chat_stream(
+        self,
+        message: str,
+        image_path: str = None,
+        user_id: int = None,
+        scene_id: int = None,
+    ) -> AsyncGenerator:
         """
         流式处理对话消息（用于 SSE）
 
@@ -222,6 +273,8 @@ class DetectionAgent:
         Args:
             message: 用户文本消息
             image_path: 附带的图片路径（可选）
+            user_id: 当前登录用户 ID，用于检测记录归属
+            scene_id: 检测场景 ID（可选）
 
         Yields:
             SSE 事件数据字典
@@ -229,6 +282,9 @@ class DetectionAgent:
         if image_path:
             message = f"{message}\n[附件图片路径: {image_path}]"
 
+        # 注入请求级上下文，供工具读取
+        token_user = _current_user_id.set(user_id)
+        token_scene = _current_scene_id.set(scene_id)
         try:
             async for event in self.executor.astream_events(
                 {"input": message},
@@ -282,6 +338,9 @@ class DetectionAgent:
                 "type": "error",
                 "content": f"处理出错：{str(e)}",
             }
+        finally:
+            _current_user_id.reset(token_user)
+            _current_scene_id.reset(token_scene)
 
 
 # 创建全局单例

@@ -286,23 +286,32 @@ class DetectionService:
                 class_counts[name] = class_counts.get(name, 0) + 1
 
             # ── 持久化到数据库 ──
+            # 仅当有登录用户时才写库；场景缺省时自动选取第一个可用场景，
+            # 避免 Agent 路径因未传 scene_id 而丢失检测记录。
             task_id = None
             annotated_image_url = None
-            if user_id and scene_id:
-                save_result = self._save_task_and_results(
-                    db=db,
-                    user_id=user_id,
-                    scene_id=scene_id,
-                    task_type="single",
-                    detections=detections,
-                    annotated_image=buffer.tobytes(),
-                    original_filename=os.path.basename(image_path),
-                    inference_time=float(result.speed.get("inference", 0)),
-                    conf=conf,
-                    iou=iou,
-                )
-                task_id = save_result["task_id"]
-                annotated_image_url = save_result.get("annotated_image_url")
+            if user_id:
+                if not scene_id:
+                    default_scene = db.query(DetectionScene).first()
+                    scene_id = default_scene.id if default_scene else None
+
+                if scene_id:
+                    save_result = self._save_task_and_results(
+                        db=db,
+                        user_id=user_id,
+                        scene_id=scene_id,
+                        task_type="single",
+                        detections=detections,
+                        annotated_image=buffer.tobytes(),
+                        original_filename=os.path.basename(image_path),
+                        inference_time=float(result.speed.get("inference", 0)),
+                        conf=conf,
+                        iou=iou,
+                    )
+                    task_id = save_result["task_id"]
+                    annotated_image_url = save_result.get("annotated_image_url")
+                else:
+                    logger.warning("无可用检测场景，单图检测结果未持久化")
 
             logger.info(
                 "单图检测完成: %s, 检测到 %d 个目标, 耗时 %.2fms",
@@ -350,26 +359,7 @@ class DetectionService:
         try:
             model = self._get_model(scene_id)
 
-            # 当 scene_id 为 None 时，自动查询第一个可用场景
-            if not scene_id:
-                default_scene = db.query(DetectionScene).first()
-                if default_scene:
-                    scene_id = default_scene.id
-                else:
-                    return {"error": "数据库中没有可用的检测场景，请先创建检测场景"}
-
-            # ── 创建批量检测任务 ──
-            task = DetectionTask(
-                user_id=user_id or 0,
-                scene_id=scene_id,
-                task_type="batch",
-                status="processing",
-                total_images=len(image_paths),
-                conf_threshold=conf,
-            )
-            db.add(task)
-            db.flush()
-
+            # ── 推理所有图片（与是否写库解耦，保证结果始终返回）──
             all_detections = []
             annotated_images = []  # 每张图片的标注图 base64
             total_objects = 0
@@ -426,25 +416,47 @@ class DetectionService:
                         # 统计类别计数
                         class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
 
-                    # 保存检测结果到数据库
-                    for det in all_detections:
-                        if det["image_path"] == image_path:
-                            db_result = DetectionResult(
-                                task_id=task.id,
-                                image_path=image_path,
-                                class_name=det["class_name"],
-                                class_id=det["class_id"],
-                                confidence=det["confidence"],
-                                bbox=det["bbox"],
-                                inference_time=inference_time,
-                            )
-                            db.add(db_result)
+            # ── 持久化到数据库 ──
+            # 仅当有登录用户时才写库；场景缺省时自动选取第一个可用场景。
+            # 无用户（如未透传身份）时跳过写库，但检测结果照常返回。
+            task_id = None
+            if user_id:
+                if not scene_id:
+                    default_scene = db.query(DetectionScene).first()
+                    scene_id = default_scene.id if default_scene else None
 
-            task.status = "completed"
-            task.total_objects = total_objects
-            task.total_inference_time = total_inference_time
-            task.completed_at = datetime.now()
-            db.commit()
+                if scene_id:
+                    task = DetectionTask(
+                        user_id=user_id,
+                        scene_id=scene_id,
+                        task_type="batch",
+                        status="processing",
+                        total_images=len(image_paths),
+                        conf_threshold=conf,
+                    )
+                    db.add(task)
+                    db.flush()
+
+                    for det in all_detections:
+                        db_result = DetectionResult(
+                            task_id=task.id,
+                            image_path=det["image_path"],
+                            class_name=det["class_name"],
+                            class_id=det["class_id"],
+                            confidence=det["confidence"],
+                            bbox=det["bbox"],
+                            inference_time=det["inference_time"],
+                        )
+                        db.add(db_result)
+
+                    task.status = "completed"
+                    task.total_objects = total_objects
+                    task.total_inference_time = total_inference_time
+                    task.completed_at = datetime.now()
+                    db.commit()
+                    task_id = task.id
+                else:
+                    logger.warning("无可用检测场景，批量检测结果未持久化")
 
             logger.info(
                 "批量检测完成: %d 张图, 共 %d 个目标, 总耗时 %.2fms",
@@ -454,7 +466,7 @@ class DetectionService:
             )
 
             return {
-                "task_id": task.id,
+                "task_id": task_id,
                 "total_images": len(image_paths),
                 "total_objects": total_objects,
                 "class_counts": class_counts,
