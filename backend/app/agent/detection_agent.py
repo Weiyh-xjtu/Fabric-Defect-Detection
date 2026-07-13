@@ -17,6 +17,7 @@
 """
 
 import contextvars
+import copy
 import json
 from typing import AsyncGenerator
 
@@ -45,10 +46,58 @@ _current_scene_id: contextvars.ContextVar = contextvars.ContextVar(
     "current_scene_id", default=None
 )
 
+# 暂存最近一次工具调用的「完整」检测结果 JSON（含 base64 标注图），
+# 供 chat_stream 在 on_tool_end 时取出、原样发给前端渲染标注图。
+# 工具返回给 LLM 的是剥离 base64 的精简版（省 token），二者数据通道分离。
+_last_full_tool_result: contextvars.ContextVar = contextvars.ContextVar(
+    "last_full_tool_result", default=None
+)
+
 
 # ══════════════════════════════════════════════════════════════
 # 一、定义检测工具（Agent 可调用的 Tools）
 # ══════════════════════════════════════════════════════════════
+
+
+def _strip_base64_for_llm(result: dict) -> dict:
+    """
+    剥离检测结果中的 base64 标注图字段，返回精简后的副本。
+
+    原因：base64 标注图（单张可达数万 token）会作为 ToolMessage 回喂给 LLM，
+    但纯文本 LLM 无法理解图像像素，这些 token 对生成回复毫无帮助，纯属浪费，
+    还可能撑爆上下文、拖慢响应。标注图通过前端检测结果卡片直接展示，无需过 LLM。
+
+    注意：不修改原始 result（前端仍需 base64 渲染），只返回给 LLM 的精简副本。
+    """
+    if not isinstance(result, dict):
+        return result
+    slim = copy.copy(result)
+    # 单图路径：顶层 base64 字段
+    slim.pop("annotated_image_base64", None)
+    # 批量/ZIP 路径：annotated_images 列表内每张图的 base64
+    if isinstance(slim.get("annotated_images"), list):
+        slim["annotated_images"] = [
+            {k: v for k, v in item.items() if k != "annotated_image_base64"}
+            if isinstance(item, dict)
+            else item
+            for item in slim["annotated_images"]
+        ]
+    return slim
+
+
+def _finalize_tool_result(result: dict) -> str:
+    """
+    把检测结果拆成两条通道：
+      - 完整版（含 base64）存入 contextvar，供 chat_stream 发给前端渲染标注图；
+      - 精简版（剥离 base64）作为工具返回值回喂给 LLM，避免浪费数万 token。
+
+    Returns:
+        精简版结果的 JSON 字符串（给 LLM）。
+    """
+    # 完整版原样存起来，前端 SSE 用它渲染标注图
+    _last_full_tool_result.set(json.dumps(result, ensure_ascii=False))
+    # 精简版返回给 LLM
+    return json.dumps(_strip_base64_for_llm(result), ensure_ascii=False)
 
 
 @tool
@@ -71,7 +120,7 @@ def detect_single_image(image_path: str, conf: float = 0.25, iou: float = 0.45) 
         scene_id=_current_scene_id.get(),
         user_id=_current_user_id.get(),
     )
-    return json.dumps(result, ensure_ascii=False)
+    return _finalize_tool_result(result)
 
 
 @tool
@@ -92,7 +141,7 @@ def detect_batch_images(image_paths: list[str], conf: float = 0.25) -> str:
         scene_id=_current_scene_id.get(),
         user_id=_current_user_id.get(),
     )
-    return json.dumps(result, ensure_ascii=False)
+    return _finalize_tool_result(result)
 
 
 @tool
@@ -113,7 +162,7 @@ def detect_zip_images_file(zip_path: str, conf: float = 0.25) -> str:
         scene_id=_current_scene_id.get(),
         user_id=_current_user_id.get(),
     )
-    return json.dumps(result, ensure_ascii=False)
+    return _finalize_tool_result(result)
 
 
 # 工具列表（绑定到 Agent）
@@ -285,6 +334,7 @@ class DetectionAgent:
         # 注入请求级上下文，供工具读取
         token_user = _current_user_id.set(user_id)
         token_scene = _current_scene_id.set(scene_id)
+        token_full = _last_full_tool_result.set(None)
         try:
             async for event in self.executor.astream_events(
                 {"input": message},
@@ -326,10 +376,19 @@ class DetectionAgent:
                     )
                     # 记录 event data 的所有键，便于调试
                     logger.debug("on_tool_end data keys: %s", list(tool_data.keys()))
+                    # 发给前端的用「完整版」结果（含 base64 标注图），供结果卡片渲染；
+                    # LLM 收到的仍是工具返回的精简版（不含 base64）。两条通道分离。
+                    full_result = _last_full_tool_result.get()
+                    frontend_result = (
+                        full_result
+                        if full_result is not None
+                        else (str(tool_output) if tool_output else "")
+                    )
+                    _last_full_tool_result.set(None)  # 用完即清，防止串到下一次工具调用
                     yield {
                         "type": "tool_result",
                         "tool": tool_name,
-                        "result": str(tool_output) if tool_output else "",
+                        "result": frontend_result,
                     }
 
         except Exception as e:
@@ -341,6 +400,7 @@ class DetectionAgent:
         finally:
             _current_user_id.reset(token_user)
             _current_scene_id.reset(token_scene)
+            _last_full_tool_result.reset(token_full)
 
 
 # 创建全局单例
