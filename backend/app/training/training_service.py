@@ -43,6 +43,7 @@ from app.entity.db_models import (
     ModelVersion,
     TrainingMetric,
     TrainingTask,
+    User,
 )
 
 logger = get_logger(__name__)
@@ -124,6 +125,9 @@ class TrainingService:
         db.commit()
         db.refresh(task)
 
+        # ── 落盘初始元数据（产物自描述，用于数据库重建后恢复）──
+        _write_task_meta(task)
+
         # ── 启动后台训练线程 ──
         thread = threading.Thread(
             target=TrainingService._run_training,
@@ -171,6 +175,7 @@ class TrainingService:
             task.status = "running"
             task.started_at = datetime.now()
             db.commit()
+            _write_task_meta(task)
 
             # ── 导入 ultralytics ──
             from ultralytics import YOLO
@@ -298,6 +303,7 @@ class TrainingService:
                 task.status = "cancelled"
                 task.completed_at = datetime.now()
                 db.commit()
+                _write_task_meta(task)
                 logger.info("训练已被停止：task_id=%d, uuid=%s", task_id, task_uuid)
                 return
 
@@ -312,6 +318,10 @@ class TrainingService:
             project_path = os.path.join(original_cwd, settings.TRAIN_OUTPUT_DIR)
             TrainingService._parse_final_results(db, task_id, task_uuid, config, project_path)
 
+            # ── 落盘最终元数据（含 completed 状态）──
+            db.refresh(task)
+            _write_task_meta(task)
+
             logger.info("训练完成：task_id=%d, uuid=%s", task_id, task_uuid)
 
         except FileNotFoundError as e:
@@ -319,6 +329,7 @@ class TrainingService:
             task.status = "failed"
             task.error_message = str(e)
             db.commit()
+            _write_task_meta(task)
 
         except Exception as e:
             logger.error(
@@ -327,6 +338,7 @@ class TrainingService:
             task.status = "failed"
             task.error_message = str(e)[:2000]  # 限制错误信息长度
             db.commit()
+            _write_task_meta(task)
 
         finally:
             # 恢复 data.yaml 原始内容
@@ -566,6 +578,7 @@ class TrainingService:
         if not stop_flag_set:
             task.completed_at = datetime.now()
         db.commit()
+        _write_task_meta(task)
 
         logger.info(
             "训练停止请求已提交：task_id=%d, flag_set=%s", task_id, stop_flag_set
@@ -905,6 +918,162 @@ class TrainingService:
         return {"error": "模型权重文件不存在"}
 
     @staticmethod
+    def rescan_tasks(db) -> dict:
+        """扫描训练产物目录，将磁盘上存在但数据库缺失的任务重新登记。
+
+        用于数据库重建后从磁盘恢复训练历史：遍历 ``runs/train/task_*`` 目录，
+        读取每个目录下的 ``meta.json``（产物自描述），对数据库中不存在的
+        ``task_uuid`` 执行 upsert，并从 ``results.csv`` 补录训练指标。
+
+        恢复策略：
+          - 仅恢复 meta.json 中 user_id / scene_id 仍能对应到现有记录的任务；
+            归属用户不存在则跳过不恢复，找不到场景时按 scene_name 重新匹配。
+          - 已存在（task_uuid 命中）的任务跳过，不覆盖现有数据。
+          - 正在运行的任务不做恢复（进程内存中才有其真实状态）。
+
+        Returns:
+            统计字典：{"scanned", "recovered", "skipped", "failed", "details"}
+        """
+        root = _training_output_dir()
+        result = {"scanned": 0, "recovered": 0, "skipped": 0, "failed": 0, "details": []}
+        if not root.exists():
+            logger.info("训练产物目录不存在，跳过恢复：%s", root)
+            return result
+
+        # 预取现有 task_uuid，避免逐目录查询
+        existing_uuids = {
+            row[0] for row in db.query(TrainingTask.task_uuid).all()
+        }
+
+        for task_dir in sorted(root.glob("task_*")):
+            if not task_dir.is_dir():
+                continue
+            task_uuid = task_dir.name[len("task_"):]
+            result["scanned"] += 1
+
+            if task_uuid in existing_uuids:
+                result["skipped"] += 1
+                continue
+
+            meta_path = task_dir / _META_FILENAME
+            if not meta_path.exists():
+                # 没有元数据无法可靠恢复归属，跳过（仅记录）
+                result["skipped"] += 1
+                result["details"].append(
+                    {"task_uuid": task_uuid, "action": "skip", "reason": "缺少 meta.json"}
+                )
+                continue
+
+            try:
+                with meta_path.open("r", encoding="utf-8") as f:
+                    meta = json.load(f)
+
+                # ── 解析归属场景（优先 scene_id，回退 scene_name）──
+                scene_id = meta.get("scene_id")
+                scene = None
+                if scene_id is not None:
+                    scene = db.query(DetectionScene).filter(DetectionScene.id == scene_id).first()
+                if scene is None and meta.get("scene_name"):
+                    scene = (
+                        db.query(DetectionScene)
+                        .filter(DetectionScene.name == meta["scene_name"])
+                        .first()
+                    )
+                if scene is None:
+                    result["failed"] += 1
+                    result["details"].append(
+                        {"task_uuid": task_uuid, "action": "fail", "reason": "关联场景不存在"}
+                    )
+                    continue
+
+                # ── 解析归属用户：user_id 必须仍对应现有用户，否则跳过不恢复 ──
+                user_id = meta.get("user_id")
+                user = None
+                if user_id is not None:
+                    user = db.query(User).filter(User.id == user_id).first()
+                if user is None:
+                    result["skipped"] += 1
+                    result["details"].append(
+                        {
+                            "task_uuid": task_uuid,
+                            "action": "skip",
+                            "reason": "归属用户不存在，跳过恢复",
+                        }
+                    )
+                    continue
+
+                # ── 恢复状态：running/stopping 已中断，落库为 failed ──
+                status = meta.get("status") or "completed"
+                error_message = meta.get("error_message")
+                if status in ("running", "stopping", "pending"):
+                    status = "failed"
+                    error_message = error_message or "服务重启导致训练中断，已从磁盘恢复"
+
+                task = TrainingTask(
+                    user_id=user.id,
+                    scene_id=scene.id,
+                    task_uuid=task_uuid,
+                    status=status,
+                    model_name=meta.get("model_name", "yolo11n"),
+                    epochs=meta.get("epochs", 0) or 0,
+                    img_size=meta.get("img_size", 640) or 640,
+                    batch_size=meta.get("batch_size", 8) or 8,
+                    device=meta.get("device", "cpu") or "cpu",
+                    optimizer=meta.get("optimizer", "SGD") or "SGD",
+                    lr0=meta.get("lr0", 0.01),
+                    augment_config=meta.get("augment_config"),
+                    current_epoch=meta.get("current_epoch", 0) or 0,
+                    progress=meta.get("progress", 0) or 0,
+                    dataset_path=meta.get("dataset_path"),
+                    dataset_size=meta.get("dataset_size"),
+                    data_yaml=meta.get("data_yaml"),
+                    error_message=error_message,
+                    created_at=_parse_meta_datetime(meta.get("created_at")),
+                    started_at=_parse_meta_datetime(meta.get("started_at")),
+                    completed_at=_parse_meta_datetime(meta.get("completed_at")),
+                )
+                db.add(task)
+                db.commit()
+                db.refresh(task)
+
+                # ── 从 results.csv 补录训练指标曲线 ──
+                results_csv = task_dir / "results.csv"
+                if results_csv.exists():
+                    for m in TrainingService.parse_results_csv(str(results_csv)):
+                        db.add(TrainingMetric(task_id=task.id, **m))
+                    db.commit()
+
+                existing_uuids.add(task_uuid)
+                result["recovered"] += 1
+                result["details"].append(
+                    {
+                        "task_uuid": task_uuid,
+                        "action": "recover",
+                        "task_id": task.id,
+                        "status": status,
+                    }
+                )
+                logger.info(
+                    "恢复训练任务：uuid=%s, task_id=%d, status=%s", task_uuid, task.id, status
+                )
+            except Exception as e:  # noqa: BLE001
+                db.rollback()
+                result["failed"] += 1
+                result["details"].append(
+                    {"task_uuid": task_uuid, "action": "fail", "reason": str(e)}
+                )
+                logger.warning("恢复训练任务失败：uuid=%s, error=%s", task_uuid, str(e))
+
+        logger.info(
+            "训练历史恢复完成：扫描 %d，恢复 %d，跳过 %d，失败 %d",
+            result["scanned"],
+            result["recovered"],
+            result["skipped"],
+            result["failed"],
+        )
+        return result
+
+    @staticmethod
     def parse_results_csv(results_csv_path: str) -> list:
         """
         独立解析 results.csv 文件（工具方法，可用于离线分析）
@@ -985,21 +1154,124 @@ def _task_output_dir(task_uuid: str) -> Path:
     return _training_output_dir() / f"task_{task_uuid}"
 
 
+# 每个训练任务产物目录下的自描述元数据文件名。
+# 有了它，即使数据库被重建，也能从磁盘完整恢复训练历史。
+_META_FILENAME = "meta.json"
+
+# meta.json 中持久化的 TrainingTask 字段（用于落盘与恢复）。
+_META_TASK_FIELDS = (
+    "task_uuid",
+    "user_id",
+    "scene_id",
+    "status",
+    "model_name",
+    "epochs",
+    "img_size",
+    "batch_size",
+    "device",
+    "optimizer",
+    "lr0",
+    "augment_config",
+    "current_epoch",
+    "progress",
+    "dataset_path",
+    "dataset_size",
+    "data_yaml",
+    "error_message",
+)
+
+# meta.json 中以 ISO 字符串持久化的时间字段。
+_META_DATETIME_FIELDS = ("created_at", "started_at", "completed_at")
+
+
+def _write_task_meta(task: TrainingTask) -> None:
+    """将训练任务元数据写入产物目录的 meta.json（产物自描述）。
+
+    每当任务状态发生变化时调用，确保磁盘上始终保有可用于恢复的快照。
+    失败不抛出——元数据落盘不应影响训练主流程。
+    """
+    try:
+        task_dir = _task_output_dir(task.task_uuid)
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+        meta = {field: getattr(task, field, None) for field in _META_TASK_FIELDS}
+        for field in _META_DATETIME_FIELDS:
+            value = getattr(task, field, None)
+            meta[field] = value.isoformat() if value else None
+        # 记录场景名，便于数据库重建后按名称（而非易变的自增 id）重新关联场景。
+        scene = getattr(task, "scene", None)
+        meta["scene_name"] = scene.name if scene else None
+        meta["_meta_version"] = 1
+
+        with (task_dir / _META_FILENAME).open("w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+    except Exception as e:  # noqa: BLE001 — 元数据落盘失败不影响训练
+        logger.warning("写入 meta.json 失败（不影响训练）：%s", str(e))
+
+
+def _parse_meta_datetime(value):
+    """将 meta.json 中的 ISO 字符串解析回 datetime，失败返回 None。"""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _relocate_under_backend(path_str: str):
+    """将其它机器上的绝对路径按 datasets 锚点重定位到本地 backend 目录。
+
+    云端/其它机器训练产生的 meta.json 里存的是当时的绝对路径（如
+    /workspace/.../backend/datasets/rsod/yolo_dataset/data.yaml），在本机不存在。
+    这里截取 ``datasets`` 及其之后的部分，拼到本地 backend 目录下重新定位。
+    """
+    if not path_str:
+        return None
+    parts = path_str.replace("\\", "/").split("/")
+    if "datasets" in parts:
+        idx = parts.index("datasets")
+        candidate = _backend_dir() / Path(*parts[idx:])
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
 def _resolve_data_yaml(task: TrainingTask):
-    """从任务记录中解析存在的 data.yaml 路径。"""
+    """从任务记录中解析存在的 data.yaml 路径。
+
+    兼容三种情况：同机训练（原样路径）、相对路径、以及跨机恢复
+    （meta.json 中残留其它机器的绝对路径，需重定位到本地）。
+    """
     candidates = []
     if task.data_yaml:
-        candidates.append(Path(task.data_yaml))
+        candidates.append(str(task.data_yaml))
     if task.dataset_path:
-        candidates.append(Path(task.dataset_path) / "data.yaml")
+        candidates.append(str(Path(task.dataset_path) / "data.yaml"))
 
     for candidate in candidates:
-        paths = [candidate]
-        if not candidate.is_absolute():
-            paths.append(_backend_dir() / candidate)
-        for path in paths:
-            if path.exists():
-                return path.resolve()
+        path = Path(candidate)
+        # 1. 原样路径（同机训练）
+        if path.exists():
+            return path.resolve()
+        # 2. 相对路径回退到 backend 目录
+        if not path.is_absolute():
+            rooted = _backend_dir() / path
+            if rooted.exists():
+                return rooted.resolve()
+        # 3. 跨机恢复：按 datasets 锚点重定位到本地 backend
+        relocated = _relocate_under_backend(candidate)
+        if relocated:
+            return relocated
+
+    # 4. 场景约定路径兜底：backend/datasets/{scene}/yolo_dataset/data.yaml
+    scene = getattr(task, "scene", None)
+    if scene is not None and scene.name:
+        convention = (
+            _backend_dir() / "datasets" / scene.name / "yolo_dataset" / "data.yaml"
+        )
+        if convention.exists():
+            return convention.resolve()
     return None
 
 

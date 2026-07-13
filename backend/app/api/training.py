@@ -179,6 +179,27 @@ async def list_training_tasks(
     return {"total": len(tasks), "items": tasks}
 
 
+@router.post("/rescan")
+async def rescan_training_tasks(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """扫描训练产物目录，将磁盘上存在但数据库缺失的训练任务恢复入库。
+
+    用于数据库重建后从 backend/runs/train 目录恢复历史训练记录，
+    恢复后即可正常查看历史、评估、导出与下载模型。
+    """
+    result = training_service.rescan_tasks(db)
+    logger.info(
+        "用户 %s 触发训练历史恢复：恢复 %d 条，跳过 %d 条，失败 %d 条",
+        current_user.username,
+        result["recovered"],
+        result["skipped"],
+        result["failed"],
+    )
+    return result
+
+
 @router.get("/status/{task_id}")
 async def get_training_status(
     task_id: int,

@@ -21,12 +21,32 @@ def init_minio():
         print(f"MinIO 初始化失败: {e}")
 
 
+def recover_training_history():
+    """启动时从磁盘产物恢复训练历史，抵御数据库重建导致的记录丢失。"""
+    from app.database.session import SessionLocal
+    from app.training.training_service import training_service
+
+    db = SessionLocal()
+    try:
+        result = training_service.rescan_tasks(db)
+        if result["recovered"]:
+            print(
+                f"训练历史恢复完成：恢复 {result['recovered']} 条，"
+                f"跳过 {result['skipped']} 条，失败 {result['failed']} 条"
+            )
+    except Exception as e:
+        print(f"训练历史恢复失败: {e}")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
     print("正在初始化服务...")
     init_minio()
+    recover_training_history()
     yield
     # 关闭时执行（如果需要）
     print("服务已关闭")
