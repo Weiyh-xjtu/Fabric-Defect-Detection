@@ -20,6 +20,16 @@ export function loginApi(data) {
   return request.post('/auth/login', data)
 }
 
+/** 使用 HttpOnly Refresh Cookie 续期登录会话。 */
+export function refreshSessionApi() {
+  return request.post('/auth/refresh', null, { skipGlobalError: true })
+}
+
+/** 清除服务端 Refresh Cookie。 */
+export function logoutApi() {
+  return request.post('/auth/logout', null, { skipGlobalError: true })
+}
+
 /**
  * 获取当前用户信息（需要 Token）
  */

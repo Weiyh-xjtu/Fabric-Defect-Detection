@@ -14,7 +14,12 @@
  *   )
  */
 
-import { expireAuthSession, getValidStoredToken } from '@/utils/authSession'
+import { useUserStore } from '@/stores/user'
+import {
+  expireAuthSession,
+  getValidStoredToken,
+  isTokenExpired,
+} from '@/utils/authSession'
 
 /**
  * 发起 SSE 流式请求
@@ -29,31 +34,41 @@ import { expireAuthSession, getValidStoredToken } from '@/utils/authSession'
  */
 export function streamChat(url, body, callbacks) {
   const { onMessage, onDone, onError } = callbacks;
-
-  // 读取并校验 Token，避免继续使用已经过期的本地会话。
-  const token = getValidStoredToken();
-
-  if (!token) {
-    queueMicrotask(() => onError?.(new Error("登录已过期，请重新登录")));
-    return () => {};
-  }
-
-  // 使用 fetch + ReadableStream 实现 SSE
   const controller = new AbortController();
 
-  fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-    signal: controller.signal,
-  })
-    .then(async (response) => {
+  async function openStream() {
+    let token = getValidStoredToken();
+    if (!token) {
+      onError?.(new Error("长时间未操作，登录已超时，请重新登录"));
+      return;
+    }
+
+    if (isTokenExpired(token)) {
+      try {
+        const userStore = useUserStore();
+        await userStore.refreshSession();
+        token = userStore.token;
+      } catch {
+        expireAuthSession();
+        onError?.(new Error("登录会话已失效，请重新登录"));
+        return;
+      }
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    try {
       if (response.status === 401) {
         expireAuthSession();
-        throw new Error("登录已过期，请重新登录");
+        throw new Error("登录会话已失效，请重新登录");
       }
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -96,12 +111,18 @@ export function streamChat(url, body, callbacks) {
           }
         }
       }
-    })
-    .catch((err) => {
+    } catch (err) {
       if (err.name !== "AbortError") {
         onError?.(err);
       }
-    });
+    }
+  }
+
+  void openStream().catch((err) => {
+    if (err.name !== "AbortError") {
+      onError?.(err);
+    }
+  });
 
   // 返回中断函数
   return () => controller.abort();

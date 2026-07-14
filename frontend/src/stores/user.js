@@ -3,13 +3,20 @@
  * 管理用户登录信息、Token、角色等
  */
 import { defineStore } from 'pinia'
-import { loginApi, getUserInfoApi } from '@/api/auth'
+import {
+  getUserInfoApi,
+  loginApi,
+  logoutApi,
+  refreshSessionApi,
+} from '@/api/auth'
 import {
   clearAuthSession,
   getStoredAuthSession,
-  isTokenExpired,
+  isSessionInactive,
   persistAuthSession,
-  scheduleAuthExpiration,
+  persistRefreshedAuthSession,
+  startAuthSessionMonitoring,
+  TOKEN_KEY,
   USER_KEY,
 } from '@/utils/authSession'
 
@@ -22,7 +29,7 @@ export const useUserStore = defineStore('user', {
 
   getters: {
     /** 是否已登录 */
-    isLoggedIn: (state) => !!state.token && !isTokenExpired(state.token),
+    isLoggedIn: (state) => !!state.token && !isSessionInactive(),
 
     /** 用户名 */
     username: (state) => state.user?.username || '',
@@ -48,7 +55,10 @@ export const useUserStore = defineStore('user', {
       this.token = res.access_token
       this.user = res.user
       persistAuthSession(res.access_token, res.user)
-      scheduleAuthExpiration(res.access_token)
+      startAuthSessionMonitoring(
+        res.access_token,
+        () => this.refreshSession(),
+      )
 
       return res
     },
@@ -61,25 +71,61 @@ export const useUserStore = defineStore('user', {
         const user = await getUserInfoApi()
         this.user = user
         localStorage.setItem(USER_KEY, JSON.stringify(user))
-      } catch {
-        this.logout()
+      } catch (error) {
+        if (error.response?.status === 401) {
+          this.clearSession()
+        }
+        throw error
       }
     },
 
-    /** 页面刷新后恢复 JWT 的过期定时器。 */
+    /** 使用 Refresh Cookie 取得新的 Access Token。 */
+    async refreshSession() {
+      const res = await refreshSessionApi()
+      if (!this.applyRefreshedSession(res)) {
+        throw new Error('当前登录会话已失效')
+      }
+      return res
+    },
+
+    /** 应用自动续期返回的新 Token 和用户信息。 */
+    applyRefreshedSession(res) {
+      if (
+        !this.token
+        || !localStorage.getItem(TOKEN_KEY)
+        || isSessionInactive()
+      ) {
+        return false
+      }
+      this.token = res.access_token
+      this.user = res.user
+      persistRefreshedAuthSession(res.access_token, res.user)
+      return true
+    },
+
+    /** 页面刷新后恢复闲置监控。 */
     initializeSession() {
       if (this.token) {
-        scheduleAuthExpiration(this.token)
+        startAuthSessionMonitoring(
+          this.token,
+          () => this.refreshSession(),
+        )
       }
+    },
+
+    /** 仅清理本地登录状态。 */
+    clearSession() {
+      this.token = ''
+      this.user = null
+      clearAuthSession()
     },
 
     /**
      * 退出登录
      */
     logout() {
-      this.token = ''
-      this.user = null
-      clearAuthSession()
+      void logoutApi().catch(() => null)
+      this.clearSession()
     },
   },
 })

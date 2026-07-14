@@ -2,15 +2,19 @@
 认证相关 API 路由
 - POST /api/auth/register  用户注册
 - POST /api/auth/login     用户登录
+- POST /api/auth/refresh   刷新登录会话
+- POST /api/auth/logout    清除刷新 Cookie
 - GET  /api/auth/me        获取当前用户信息
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
 
-from app.core.security import decode_access_token
+from app.config.settings import settings
+from app.core.security import decode_access_token, decode_refresh_token
 from app.database.session import get_db
+from app.entity.db_models import User
 from app.entity.schemas import TokenResponse, UserLogin, UserRegister, UserResponse
 from app.services.user_service import user_service
 
@@ -20,6 +24,37 @@ router = APIRouter(prefix="/api/auth", tags=["认证"])
 # Swagger UI 的 Authorize 弹窗可直接粘贴 Token（不需要加 Bearer 前缀）
 # auto_error=False：缺少 Token 时不抛默认的 403，由我们统一返回 401
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _build_token_response(user: User, db: Session) -> dict:
+    """构造登录或续期成功后的统一响应。"""
+    access_token = user_service.create_access_token_for_user(user)
+    roles = user_service.get_user_roles(db, user)
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "avatar": user.avatar,
+            "roles": roles,
+        },
+    }
+
+
+def _set_refresh_cookie(response: Response, user: User) -> None:
+    """签发短期 HttpOnly Refresh Cookie，用于滑动续期。"""
+    refresh_token = user_service.create_refresh_token_for_user(user)
+    response.set_cookie(
+        key=settings.REFRESH_COOKIE_NAME,
+        value=refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60,
+        httponly=True,
+        secure=settings.REFRESH_COOKIE_SECURE,
+        samesite="lax",
+        path="/api/auth",
+    )
 
 
 async def get_current_user(
@@ -71,7 +106,11 @@ async def register(request: UserRegister, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(request: UserLogin, db: Session = Depends(get_db)):
+async def login(
+    request: UserLogin,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     """
     用户登录
 
@@ -84,20 +123,53 @@ async def login(request: UserLogin, db: Session = Depends(get_db)):
         password=request.password,
     )
 
-    access_token = user_service.create_access_token_for_user(user)
-    roles = user_service.get_user_roles(db, user)
+    _set_refresh_cookie(response, user)
+    return _build_token_response(user, db)
 
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "avatar": user.avatar,
-            "roles": roles,
-        },
-    }
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_login_session(
+    response: Response,
+    refresh_token: str | None = Cookie(
+        default=None,
+        alias=settings.REFRESH_COOKIE_NAME,
+    ),
+    db: Session = Depends(get_db),
+):
+    """轮换 Refresh Cookie，并签发新的 Access Token。"""
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="登录会话已失效，请重新登录",
+    )
+    if not refresh_token:
+        raise credentials_exception
+
+    try:
+        payload = decode_refresh_token(refresh_token)
+        user_id_str = payload.get("sub")
+        if user_id_str is None:
+            raise credentials_exception
+        user = user_service.get_user_by_id(db, int(user_id_str))
+    except (JWTError, ValueError, HTTPException):
+        raise credentials_exception
+
+    if not user.is_active:
+        raise credentials_exception
+
+    _set_refresh_cookie(response, user)
+    return _build_token_response(user, db)
+
+
+@router.post("/logout", status_code=204)
+async def logout(response: Response) -> None:
+    """清除浏览器中的 Refresh Cookie。"""
+    response.delete_cookie(
+        key=settings.REFRESH_COOKIE_NAME,
+        path="/api/auth",
+        secure=settings.REFRESH_COOKIE_SECURE,
+        httponly=True,
+        samesite="lax",
+    )
 
 
 @router.get("/me", response_model=UserResponse)
