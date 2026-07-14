@@ -10,7 +10,7 @@ import { createApp } from 'vue'
 import '@/assets/styles/global.scss'
 
 // Element Plus
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElMessage } from 'element-plus'
 import 'element-plus/dist/index.css'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 
@@ -19,6 +19,8 @@ import App from './App.vue'
 import router from './router'
 import pinia from './stores'
 import { setupErrorReporting } from '@/utils/errorReporter'
+import { useUserStore } from '@/stores/user'
+import { AUTH_SESSION_EXPIRED_EVENT } from '@/utils/authSession'
 
 // ── 创建并配置应用 ────────────────────────────────────
 const app = createApp(App)
@@ -28,7 +30,30 @@ setupErrorReporting(app)
 
 // 注册插件
 app.use(pinia)                          // 状态管理
+const userStore = useUserStore(pinia)
+
+window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, (event) => {
+  const currentRoute = router.currentRoute.value
+  const isAuthPage = ['/login', '/register'].includes(currentRoute.path)
+
+  userStore.logout()
+
+  if (event.detail?.notify !== false && !isAuthPage) {
+    ElMessage.error('登录已过期，请重新登录')
+  }
+
+  if (event.detail?.redirect !== false && !isAuthPage) {
+    router.replace({
+      path: '/login',
+      query: currentRoute.fullPath && currentRoute.fullPath !== '/'
+        ? { redirect: currentRoute.fullPath }
+        : {},
+    })
+  }
+})
+
 app.use(router)                         // 路由
+userStore.initializeSession()
 app.use(ElementPlus, { locale: zhCn })  // UI 组件库（中文语言包）
 
 // 挂载到 DOM
