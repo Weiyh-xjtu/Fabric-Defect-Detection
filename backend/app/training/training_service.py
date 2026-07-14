@@ -669,6 +669,15 @@ class TrainingService:
             from ultralytics import YOLO
 
             model = YOLO(str(weights_path))
+            validation_stats = {}
+
+            def capture_validation_stats(validator: object) -> None:
+                """保存验证器统计；这些字段不会包含在 model.val() 的返回值中。"""
+                validation_stats["nt_per_class"] = getattr(
+                    validator, "nt_per_class", None
+                )
+
+            model.add_callback("on_val_end", capture_validation_stats)
             task_output_dir = _task_output_dir(task.task_uuid)
             results = model.val(
                 data=str(data_yaml),
@@ -684,7 +693,11 @@ class TrainingService:
                 exist_ok=True,
                 verbose=False,
             )
-            overall, per_class = _parse_evaluation_results(results, model.names)
+            overall, per_class = _parse_evaluation_results(
+                results,
+                model.names,
+                validation_stats.get("nt_per_class"),
+            )
 
             model_version = (
                 db.query(ModelVersion)
@@ -1294,7 +1307,11 @@ def _class_name(class_names, class_id: int) -> str:
     return f"class_{class_id}"
 
 
-def _parse_evaluation_results(results, class_names) -> tuple[dict, dict]:
+def _parse_evaluation_results(
+    results,
+    class_names,
+    instance_values=None,
+) -> tuple[dict, dict]:
     """将 Ultralytics 验证结果转换为可序列化指标。"""
     box = getattr(results, "box", None)
     if box is None:
@@ -1312,14 +1329,21 @@ def _parse_evaluation_results(results, class_names) -> tuple[dict, dict]:
     if ap_values is None or ap50_values is None:
         return overall, per_class
 
-    instance_values = getattr(box, "nt_per_class", None)
     if instance_values is None:
-        instance_values = getattr(box, "np", None)
+        instance_values = getattr(results, "nt_per_class", None)
+    if instance_values is None:
+        # 兼容旧版或测试替身曾将统计值挂在 box 上的情况。
+        instance_values = getattr(box, "nt_per_class", None)
 
-    for class_id, ap50 in enumerate(ap50_values):
+    ap_class_ids = getattr(box, "ap_class_index", None)
+    if ap_class_ids is None:
+        ap_class_ids = range(len(ap50_values))
+
+    for metric_index, ap50 in enumerate(ap50_values):
+        class_id = int(ap_class_ids[metric_index])
         metrics = {
             "ap50": round(float(ap50), 4),
-            "ap50_95": round(float(ap_values[class_id]), 4),
+            "ap50_95": round(float(ap_values[metric_index]), 4),
         }
         if instance_values is not None and class_id < len(instance_values):
             metrics["instances"] = int(instance_values[class_id])

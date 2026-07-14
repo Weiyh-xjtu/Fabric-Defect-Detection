@@ -157,6 +157,8 @@ $RECYCLE.BIN/
 .dmypy.json
 dmypy.json
 .claude/
+AGENTS.md
+CLAUDE.md
 
 # 数据集
 datasets/

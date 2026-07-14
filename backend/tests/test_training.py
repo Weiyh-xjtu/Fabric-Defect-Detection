@@ -187,17 +187,23 @@ def test_validate_export_and_download_model(db_session, tmp_path, monkeypatch):
         map = 0.51
         ap50 = [0.83]
         ap = [0.51]
-        nt_per_class = [12]
+        ap_class_index = [0]
 
     class FakeYOLO:
         names = {0: "defect"}
 
         def __init__(self, weights):
             assert weights.endswith("best.pt")
+            self.callbacks = {}
+
+        def add_callback(self, event, callback):
+            self.callbacks[event] = callback
 
         def val(self, **kwargs):
             assert kwargs["data"] == str(data_yaml)
             assert kwargs["plots"] is True
+            validator = types.SimpleNamespace(nt_per_class=[12])
+            self.callbacks["on_val_end"](validator)
             return types.SimpleNamespace(box=BoxMetrics())
 
     monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO))

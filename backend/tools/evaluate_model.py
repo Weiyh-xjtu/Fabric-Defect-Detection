@@ -46,7 +46,7 @@ def _class_name(class_names, class_id: int) -> str:
     return f"class_{class_id}"
 
 
-def parse_evaluation_results(results, class_names) -> dict:
+def parse_evaluation_results(results, class_names, instance_values=None) -> dict:
     """将 Ultralytics 验证结果转换为 JSON 可序列化报告。"""
     box = getattr(results, "box", None)
     if box is None:
@@ -67,14 +67,20 @@ def parse_evaluation_results(results, class_names) -> dict:
     if ap_values is None or ap50_values is None:
         return report
 
-    instance_values = getattr(box, "nt_per_class", None)
     if instance_values is None:
-        instance_values = getattr(box, "np", None)
+        instance_values = getattr(results, "nt_per_class", None)
+    if instance_values is None:
+        instance_values = getattr(box, "nt_per_class", None)
 
-    for class_id, ap50 in enumerate(ap50_values):
+    ap_class_ids = getattr(box, "ap_class_index", None)
+    if ap_class_ids is None:
+        ap_class_ids = range(len(ap50_values))
+
+    for metric_index, ap50 in enumerate(ap50_values):
+        class_id = int(ap_class_ids[metric_index])
         metrics = {
             "ap50": float(ap50),
-            "ap50_95": float(ap_values[class_id]),
+            "ap50_95": float(ap_values[metric_index]),
             "instances": None,
         }
         if instance_values is not None and class_id < len(instance_values):
@@ -130,6 +136,12 @@ def run_evaluation(
     data = Path(data_yaml).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve() if output_dir else weights.parent.parent
     model = YOLO(str(weights))
+    validation_stats = {}
+
+    def capture_validation_stats(validator: object) -> None:
+        validation_stats["nt_per_class"] = getattr(validator, "nt_per_class", None)
+
+    model.add_callback("on_val_end", capture_validation_stats)
     results = model.val(
         data=str(data),
         split=split,
@@ -146,7 +158,11 @@ def run_evaluation(
         exist_ok=True,
         verbose=True,
     )
-    report = parse_evaluation_results(results, model.names)
+    report = parse_evaluation_results(
+        results,
+        model.names,
+        validation_stats.get("nt_per_class"),
+    )
     print_report(report)
 
     report_path = output / "eval" / "eval_report.json"
