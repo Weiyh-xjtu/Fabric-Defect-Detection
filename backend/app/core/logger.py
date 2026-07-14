@@ -83,6 +83,7 @@ def setup_logging():
 
     # ── 降低第三方库日志级别，避免刷屏 ──────────────────
     logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("watchfiles").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
     logging.getLogger("minio").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
