@@ -21,6 +21,11 @@
           <div v-if="msg.videoUrl" class="message-video">
             <video :src="msg.videoUrl" controls preload="metadata"></video>
           </div>
+          <div v-if="msg.fileAttachments?.length" class="message-files">
+            <span v-for="filename in msg.fileAttachments" :key="filename">
+              📦 {{ filename }}
+            </span>
+          </div>
         </div>
 
         <!-- AI 消息 -->
@@ -76,6 +81,17 @@
       <el-button @click="openCameraDetection">📹 摄像头</el-button>
     </div>
 
+    <div v-if="selectedFiles.length" class="selected-files">
+      <el-tag
+        v-for="(file, index) in selectedFiles"
+        :key="`${file.name}-${file.lastModified}`"
+        closable
+        @close="removeSelectedFile(index)"
+      >
+        {{ file.name }}
+      </el-tag>
+    </div>
+
     <!-- ── 输入区域 ── -->
     <div class="input-area">
       <!-- 附件按钮 -->
@@ -90,7 +106,8 @@
       <input
         ref="fileInputRef"
         type="file"
-        accept="image/*,.zip"
+        accept="image/*,video/*,.zip"
+        multiple
         style="display: none"
         @change="handleFileSelect"
       />
@@ -98,7 +115,7 @@
       <!-- 文本输入框 -->
       <el-input
         v-model="inputText"
-        placeholder="输入消息，或拖拽图片/ZIP 到这里..."
+        placeholder="输入消息，可附加单图、多图、ZIP 或视频..."
         @keyup.enter="sendMessage"
         :disabled="agentStore.isLoading"
       />
@@ -108,7 +125,7 @@
         v-if="!agentStore.isLoading"
         type="primary"
         @click="sendMessage"
-        :disabled="!inputText.trim() && !selectedFile"
+        :disabled="!inputText.trim() && !selectedFiles.length"
       >
         发送
       </el-button>
@@ -123,7 +140,7 @@
  *
  * 功能：
  *   - 消息气泡（用户/AI 区分）
- *   - 文件附件上传（图片/ZIP 拖拽或选择）
+ *   - 文件附件上传（单图/多图/ZIP/视频）
  *   - SSE 流式渲染 AI 回复
  *   - 检测结果卡片展示
  *   - 快捷操作栏（单图/批量/视频/摄像头）
@@ -151,13 +168,21 @@ const router = useRouter();
 
 // ── 响应式状态 ──
 const inputText = ref("");
-const selectedFile = ref(null);
+const selectedFiles = ref([]);
 const messageListRef = ref(null);
 const fileInputRef = ref(null);
 
+const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "bmp", "webp"]);
+const VIDEO_EXTENSIONS = new Set(["mp4", "avi", "mov", "mkv", "wmv", "flv"]);
+const MAX_FILE_SIZES = {
+  image: 10 * 1024 * 1024,
+  zip: 100 * 1024 * 1024,
+  video: 50 * 1024 * 1024,
+};
+
 // ── 计算属性 ──
 const canSend = computed(() => {
-  return inputText.value.trim() || selectedFile.value;
+  return inputText.value.trim() || selectedFiles.value.length;
 });
 
 // ── 方法 ──
@@ -167,49 +192,75 @@ async function sendMessage() {
   if (!canSend.value) return;
 
   const message = inputText.value.trim();
-  // ── 关键：在清空之前保存文件引用 ──
-  const fileToSend = selectedFile.value;
-  const imagePreview = fileToSend ? URL.createObjectURL(fileToSend) : null;
-  // 仅发送图片、未输入文字时，补充默认指令，避免后端因空消息拒绝
-  const effectiveMessage = message || (fileToSend ? "请检测这张图片" : "");
+  const filesToSend = [...selectedFiles.value];
+  const attachmentType = filesToSend.length
+    ? getAttachmentType(filesToSend[0])
+    : null;
+  const effectiveMessage =
+    message || getDefaultAttachmentInstruction(attachmentType, filesToSend.length);
+
+  const userMessage = {
+    role: "user",
+    content: effectiveMessage,
+  };
+  if (attachmentType === "image" && filesToSend.length === 1) {
+    userMessage.image = filesToSend[0].name;
+    userMessage.imagePreview = URL.createObjectURL(filesToSend[0]);
+  } else if (attachmentType === "image") {
+    userMessage.images = filesToSend.map((file) => URL.createObjectURL(file));
+  } else if (attachmentType === "video") {
+    userMessage.videoUrl = URL.createObjectURL(filesToSend[0]);
+  } else if (attachmentType === "zip") {
+    userMessage.fileAttachments = filesToSend.map((file) => file.name);
+  }
 
   // 添加用户消息到列表
-  agentStore.addMessage({
-    role: "user",
-    content: message,
-    image: fileToSend ? fileToSend.name : null,
-    imagePreview,
-  });
+  agentStore.addMessage(userMessage);
 
   // 清空输入
   inputText.value = "";
-  selectedFile.value = null;
+  selectedFiles.value = [];
+  if (fileInputRef.value) fileInputRef.value.value = "";
 
   // 添加 AI 加载占位
+  const assistantMessageIndex = agentStore.messages.length;
   agentStore.addMessage({
     role: "assistant",
     content: "",
     loading: true,
   });
+  const assistantMessage = agentStore.messages[assistantMessageIndex];
+  agentStore.setLoading(true);
 
   // 滚动到底部
   scrollToBottom();
 
-  // ── 如果有附件图片，先上传到服务端获取真实路径 ──
-  let serverImagePath = null;
-  if (fileToSend) {
+  // ── 上传附件，获取供 Agent 工具调用的服务端路径 ──
+  let serverAttachments = [];
+  if (filesToSend.length) {
     try {
       const formData = new FormData();
-      formData.append("file", fileToSend);
+      filesToSend.forEach((file) => formData.append("files", file));
       // 不设置 Content-Type，让 axios 自动添加 boundary
-      const uploadResult = await request.post("/chat/upload", formData);
-      serverImagePath = uploadResult.image_path;
+      const uploadResult = await request.post("/chat/upload", formData, {
+        timeout: 180000,
+      });
+      serverAttachments = uploadResult.attachments || [];
+      if (serverAttachments.length !== filesToSend.length) {
+        throw new Error("后端返回的附件数量不一致");
+      }
     } catch (err) {
-      console.error("[图片上传失败]", err.response?.data || err.message || err);
-      const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-      lastMsg.content = `图片上传失败：${err.response?.data?.detail || err.message || "未知错误"}，请重试`;
-      lastMsg.loading = false;
-      lastMsg.error = true;
+      console.error("[附件上传失败]", err.response?.data || err.message || err);
+      const errorMessage =
+        err.response?.data?.message ||
+        err.response?.data?.detail ||
+        err.response?.data?.error ||
+        err.message ||
+        "未知错误";
+      assistantMessage.content = `附件上传失败：${errorMessage}，请重试`;
+      assistantMessage.loading = false;
+      assistantMessage.error = true;
+      agentStore.setLoading(false);
       return;
     }
   }
@@ -217,7 +268,7 @@ async function sendMessage() {
   // 发起 SSE 流式请求
   const requestBody = {
     message: effectiveMessage,
-    ...(serverImagePath ? { image_path: serverImagePath } : {}),
+    ...(serverAttachments.length ? { attachments: serverAttachments } : {}),
   };
 
   let fullContent = "";
@@ -229,50 +280,48 @@ async function sendMessage() {
 
       if (data.type === "text_chunk") {
         fullContent += data.content;
-        agentStore.updateLastAssistantMessage(fullContent);
+        assistantMessage.content = fullContent;
         scrollToBottom();
       } else if (data.type === "tool_call") {
         // 工具调用中，更新最后一条 AI 消息的工具信息
-        const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-        lastMsg.toolCall = { tool: data.tool, input: data.input };
+        assistantMessage.toolCall = { tool: data.tool, input: data.input };
       } else if (data.type === "tool_result") {
         // 工具调用返回结果
-        const lastMsg = agentStore.messages[agentStore.messages.length - 1];
         console.log("[工具结果] tool:", data.tool, "result长度:", data.result?.length);
         try {
           const result = JSON.parse(data.result);
           console.log("[工具结果解析]", "total_objects:", result.total_objects, "detections:", result.detections?.length);
-          if (result.detections) {
-            // 有检测结果，设置到消息中
-            lastMsg.detectionResult = result;
-            lastMsg.loading = false;
-            console.log("[检测结果卡片已设置]", lastMsg.detectionResult);
+          if (result.error) {
+            assistantMessage.content = `检测失败：${result.error}`;
+            assistantMessage.loading = false;
+            assistantMessage.error = true;
+          } else if (Object.prototype.hasOwnProperty.call(result, "total_objects")) {
+            assistantMessage.detectionResult = result;
+            assistantMessage.loading = false;
+            console.log("[检测结果卡片已设置]", assistantMessage.detectionResult);
           }
         } catch (e) {
           console.warn("[工具结果解析失败]", e.message, "原始数据:", data.result?.substring(0, 200));
           // 非检测结果 JSON，作为普通文本
-          lastMsg.content += `\n[工具结果: ${data.result?.substring(0, 100)}...]`;
+          assistantMessage.content += `\n[工具结果: ${data.result?.substring(0, 100)}...]`;
         }
         scrollToBottom();
       } else if (data.type === "error") {
-        const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-        lastMsg.content = data.content;
-        lastMsg.loading = false;
-        lastMsg.error = true;
+        assistantMessage.content = data.content;
+        assistantMessage.loading = false;
+        assistantMessage.error = true;
       }
     },
     onDone: () => {
-      const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-      if (lastMsg.loading) {
-        lastMsg.loading = false;
+      if (assistantMessage.loading) {
+        assistantMessage.loading = false;
       }
       agentStore.setLoading(false);
     },
     onError: (err) => {
-      const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-      lastMsg.content = `抱歉，处理出错了：${err.message}`;
-      lastMsg.loading = false;
-      lastMsg.error = true;
+      assistantMessage.content = `抱歉，处理出错了：${err.message}`;
+      assistantMessage.loading = false;
+      assistantMessage.error = true;
       agentStore.setLoading(false);
       ElMessage.error("对话请求失败，请重试");
     },
@@ -299,13 +348,68 @@ function triggerFileInput() {
 
 /** 文件选择回调 */
 function handleFileSelect(event) {
-  const file = event.target.files[0];
-  if (file) {
-    selectedFile.value = file;
-    // 临时保存文件路径（后续上传用）
-    file._tempPath = URL.createObjectURL(file);
-    ElMessage.info(`${file.name} 已选择`);
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  if (!validateAttachments(files)) {
+    selectedFiles.value = [];
+    event.target.value = "";
+    return;
   }
+  selectedFiles.value = files;
+  ElMessage.info(`已选择 ${files.length} 个附件`);
+}
+
+function removeSelectedFile(index) {
+  selectedFiles.value.splice(index, 1);
+}
+
+function getAttachmentType(file) {
+  const extension = file.name.split(".").pop()?.toLowerCase() || "";
+  if (file.type.startsWith("image/") || IMAGE_EXTENSIONS.has(extension)) {
+    return "image";
+  }
+  if (extension === "zip") return "zip";
+  if (file.type.startsWith("video/") || VIDEO_EXTENSIONS.has(extension)) {
+    return "video";
+  }
+  return null;
+}
+
+function validateAttachments(files) {
+  const fileTypes = files.map(getAttachmentType);
+  if (fileTypes.some((type) => !type)) {
+    ElMessage.warning("仅支持图片、ZIP 和视频文件");
+    return false;
+  }
+  if (new Set(fileTypes).size > 1) {
+    ElMessage.warning("一次消息不能混合不同类型的附件");
+    return false;
+  }
+
+  const attachmentType = fileTypes[0];
+  if (["zip", "video"].includes(attachmentType) && files.length > 1) {
+    ElMessage.warning("ZIP 或视频附件一次只能选择一个");
+    return false;
+  }
+  if (attachmentType === "image" && files.length > 20) {
+    ElMessage.warning("批量图片一次最多选择 20 张");
+    return false;
+  }
+  if (files.some((file) => file.size > MAX_FILE_SIZES[attachmentType])) {
+    const limitMb = MAX_FILE_SIZES[attachmentType] / (1024 * 1024);
+    ElMessage.warning(`附件大小不能超过 ${limitMb}MB`);
+    return false;
+  }
+  return true;
+}
+
+function getDefaultAttachmentInstruction(attachmentType, fileCount) {
+  if (attachmentType === "image") {
+    return fileCount === 1 ? "请检测这张图片" : "请批量检测这些图片";
+  }
+  if (attachmentType === "zip") return "请检测这个 ZIP 压缩包中的图片";
+  if (attachmentType === "video") return "请检测这个视频";
+  return "";
 }
 
 /** 滚动到底部 */
@@ -668,6 +772,14 @@ onMounted(() => {
   background: white;
 }
 
+.selected-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 20px 0;
+  background: white;
+}
+
 /* ── 输入区域 ── */
 .input-area {
   display: flex;
@@ -718,6 +830,14 @@ onMounted(() => {
     background: #000;
     border-radius: 8px;
   }
+}
+
+.message-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 13px;
 }
 
 /* ── 工具调用信息 ── */
