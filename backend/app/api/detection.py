@@ -17,6 +17,7 @@ import time
 
 import cv2
 import numpy as np
+import torch
 
 from fastapi import (
     APIRouter,
@@ -352,6 +353,18 @@ async def get_video_detection_status(
 _camera_frame_buffer = {}
 
 
+def _resolve_camera_device(mode: str) -> torch.device:
+    """Resolve a camera inference device without changing process CUDA visibility."""
+    normalized_mode = mode.strip().lower()
+    if normalized_mode == "cpu":
+        return torch.device("cpu")
+    if normalized_mode == "gpu":
+        if not torch.cuda.is_available():
+            raise RuntimeError("GPU 模式不可用：PyTorch 当前未检测到 CUDA 设备")
+        return torch.device("cuda:0")
+    raise ValueError(f"不支持的检测模式: {mode}")
+
+
 @router.websocket("/camera")
 async def camera_detection_ws(websocket: WebSocket):
     """
@@ -377,6 +390,7 @@ async def camera_detection_ws(websocket: WebSocket):
     iou = 0.45
     scene_id = None
     model = None
+    inference_device = torch.device("cpu")
 
     # ── 帧处理状态 ──
     last_frame_time = 0
@@ -398,9 +412,10 @@ async def camera_detection_ws(websocket: WebSocket):
                 iou = data.get("iou", 0.45)
                 scene_id = data.get("scene_id")
 
-                # 加载模型（指定设备）
-                device = "cpu" if mode == "cpu" else "0"
                 try:
+                    # 使用 torch.device 避免 Ultralytics 在运行时改写
+                    # 进程级 CUDA_VISIBLE_DEVICES，导致 CPU 后无法切换 GPU。
+                    inference_device = _resolve_camera_device(mode)
                     model = await asyncio.to_thread(
                         detection_service._get_model, scene_id
                     )
@@ -412,7 +427,7 @@ async def camera_detection_ws(websocket: WebSocket):
                         conf=conf,
                         iou=iou,
                         imgsz=640,
-                        device=device,
+                        device=inference_device,
                         save=False,
                         verbose=False,
                     )
@@ -458,7 +473,6 @@ async def camera_detection_ws(websocket: WebSocket):
                     if frame is None:
                         continue
 
-                    device = "cpu" if mode == "cpu" else "0"
                     imgsz = 416 if mode == "cpu" else 640
 
                     results = await asyncio.to_thread(
@@ -467,7 +481,7 @@ async def camera_detection_ws(websocket: WebSocket):
                         conf=conf,
                         iou=iou,
                         imgsz=imgsz,
-                        device=device,
+                        device=inference_device,
                         save=False,
                         verbose=False,
                         half=False,
