@@ -64,7 +64,13 @@
       >
         📁 批量/ZIP
       </el-button>
-      <el-button disabled>🎬 视频</el-button>
+      <el-button
+        @click="handleVideoDetect"
+        :disabled="agentStore.isLoading"
+      >
+        🎬 视频
+      </el-button>
+
       <el-button disabled>📹 摄像头</el-button>
     </div>
 
@@ -121,7 +127,7 @@
  *   - 快捷操作栏（单图/批量/视频/摄像头）
  *   - 中断当前对话
  */
-import { detectBatch, detectSingle, detectZip } from "@/api/detection";
+import { detectBatch, detectSingle, detectVideo, detectZip, getVideoStatus } from "@/api/detection";
 import DetectionResultCard from "@/components/DetectionResultCard.vue";
 import { useAgentStore } from "@/stores/agent";
 import { renderMarkdown } from "@/utils/markdown";
@@ -226,7 +232,7 @@ async function sendMessage() {
         try {
           const result = JSON.parse(data.result);
           console.log("[工具结果解析]", "total_objects:", result.total_objects, "detections:", result.detections?.length);
-          if (result.detections) {
+          if (result.detections || result.type === "video" || result.key_frames) {
             // 有检测结果，设置到消息中
             lastMsg.detectionResult = result;
             lastMsg.loading = false;
@@ -415,6 +421,103 @@ async function handleQuickDetect(type) {
     };
     input.click();
   }
+}
+
+/**
+ * 视频检测流程：
+ * 1. 用户点击 "🎬 视频" 按钮
+ * 2. 弹出文件选择框（限制视频格式）
+ * 3. 选择视频后，上传到后端
+ * 4. 后端返回 task_id，前端开始轮询进度
+ * 5. 处理完成后，展示关键帧结果卡片
+ */
+async function handleVideoDetect() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "video/mp4,video/avi,video/quicktime,video/x-msvideo";
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // 校验文件大小（50MB）
+    const maxSize = 50 * 1024 * 1024;
+    if (file.size > maxSize) {
+      ElMessage.warning("视频文件不能超过 50MB");
+      return;
+    }
+
+    // 创建视频的 Blob URL 用于预览
+    const videoUrl = URL.createObjectURL(file);
+
+    // 添加用户消息
+    agentStore.addMessage({
+      role: "user",
+      content: `[视频检测] ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)}MB)`,
+      videoUrl,
+    });
+
+    // 添加加载占位
+    agentStore.addMessage({
+      role: "assistant",
+      content: "正在上传视频...",
+      loading: true,
+    });
+
+    // 上传视频
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const uploadResult = await detectVideo(formData);
+      const taskId = uploadResult.task_id;
+
+      // 更新加载消息
+      const lastMsg = agentStore.messages[agentStore.messages.length - 1];
+      lastMsg.content = "视频已上传，正在处理中...";
+
+      // 开始轮询进度
+      await pollVideoProgress(taskId);
+    } catch (err) {
+      console.error("[视频检测失败]", err);
+      const lastMsg = agentStore.messages[agentStore.messages.length - 1];
+      lastMsg.content = `视频检测失败：${err.message || err}`;
+      lastMsg.loading = false;
+      lastMsg.error = true;
+    }
+  };
+  input.click();
+}
+
+/** 轮询视频检测进度，完成后将结果标记为 video 类型交给结果卡片展示。 */
+async function pollVideoProgress(taskId) {
+  const maxAttempts = 300;
+  const lastMsg = agentStore.messages[agentStore.messages.length - 1];
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const status = await getVideoStatus(taskId);
+
+    if (status.status === "completed") {
+      const result = {
+        ...(status.result || {}),
+        type: "video",
+        task_id: status.task_id || taskId,
+      };
+      lastMsg.content = status.message || "视频检测完成";
+      lastMsg.loading = false;
+      lastMsg.detectionResult = result;
+      agentStore.setLoading(false);
+      return result;
+    }
+
+    if (status.status === "failed") {
+      throw new Error(status.message || "视频检测失败");
+    }
+
+    lastMsg.content = status.message || `视频处理中... ${status.progress || 0}%`;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+
+  throw new Error("视频检测超时，请稍后查询任务状态");
 }
 
 onMounted(() => {

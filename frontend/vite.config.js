@@ -47,6 +47,12 @@ export default defineConfig(({ mode }) => ({
         target: loadEnv(mode, __dirname, '').VITE_API_BASE_URL,
         changeOrigin: true,
       },
+      // WebSocket 代理（关键！）
+      "/api/detection/camera": {
+        target: "ws://localhost:8000",
+        ws: true,  // 启用 WebSocket 代理
+        changeOrigin: true,
+      },
     },
   },
 

@@ -67,6 +67,7 @@ checkpoints/
 # YOLOv11 特定
 runs/
 ultralytics/
+eval/
 
 # ── 日志文件 ───────────────────────────────────────
 # 忽略日志目录内容，但保留 .gitkeep 以便 Git 追踪空目录

@@ -24,9 +24,9 @@ describe('Axios 请求封装', () => {
     expect(request.defaults.timeout).toBe(30000)
   })
 
-  it('请求拦截器应该设置 Content-Type', async () => {
+  it('请求实例不应硬编码 Content-Type', async () => {
     const { default: request } = await import('@/utils/request')
-    expect(request.defaults.headers['Content-Type']).toBe('application/json')
+    expect(request.defaults.headers['Content-Type']).toBeUndefined()
   })
 })
 

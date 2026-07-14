@@ -11,6 +11,7 @@ from app.api.health import router as health_router
 from app.api.training import router as training_router  # 【新增】导入训练路由
 from app.api.chat import router as chat_router
 from app.api.detection import router as detection_router
+from app.middleware.rate_limiter import RateLimiterMiddleware
 
 
 def init_minio():
@@ -82,6 +83,9 @@ app.add_middleware(
 # 2. 请求日志中间件（在 CORS 之后执行）
 app.add_middleware(RequestLogMiddleware)
 
+# 3. 速率限制中间件（在请求日志之后执行）
+app.add_middleware(RateLimiterMiddleware)
+
 # ── 注册路由 ─────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(health_router)
@@ -103,4 +107,12 @@ def root():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # 日志文件会在每个请求中变化。若被 reload 监控，会持续重启服务并中断
+    # 视频检测等后台线程。
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_excludes=["logs", "logs/*"],
+    )

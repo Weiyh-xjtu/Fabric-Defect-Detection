@@ -31,6 +31,48 @@
         </div>
       </div>
 
+      <!-- 视频检测结果：标注视频播放器 -->
+      <div
+        v-if="result.type === 'video'"
+        class="video-result"
+      >
+        <div class="video-info">
+          <el-tag type="info">时长: {{ result.duration_seconds }}s</el-tag>
+          <el-tag type="info">FPS: {{ result.fps }}</el-tag>
+          <el-tag type="info">采样帧: {{ result.processed_frames }}</el-tag>
+          <el-tag type="success">目标: {{ result.total_objects }}</el-tag>
+        </div>
+        <!-- 标注视频播放器 -->
+        <div v-if="result.annotated_video_url" class="video-player">
+          <video
+            :src="result.annotated_video_url"
+            controls
+            preload="metadata"
+          ></video>
+        </div>
+        <!-- 降级：如果视频 URL 不可用，展示少量关键帧缩略图 -->
+        <div v-else-if="result.key_frames" class="frames-fallback">
+          <p class="fallback-hint">标注视频生成中或上传失败，以下为关键帧预览：</p>
+          <div class="frames-container">
+            <div
+              v-for="(frame, index) in thumbnailFrames"
+              :key="index"
+              class="frame-card"
+              @click="previewVideoFrame(frame)"
+            >
+              <img
+                :src="`data:image/jpeg;base64,${frame.annotated_image_base64}`"
+                :alt="`帧 ${frame.frame_index}`"
+              />
+              <div class="frame-info">
+                <span>{{ frame.timestamp }}s</span>
+                <span>{{ frame.object_count }} 个目标</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 统计信息 -->
       <div class="result-stats">
         <div class="stat-item">
@@ -118,6 +160,13 @@ const batchImages = computed(() => {
   }));
 });
 
+/** 视频降级展示的关键帧缩略图 */
+const thumbnailFrames = computed(() => {
+  return Array.isArray(props.result.key_frames)
+    ? props.result.key_frames.slice(0, 6)
+    : [];
+});
+
 /** 点击预览图片（批量模式） */
 function previewImage(img) {
   previewSrc.value = img.src;
@@ -127,6 +176,13 @@ function previewImage(img) {
 /** 点击预览图片（单图模式） */
 function previewImageSrc(src) {
   previewSrc.value = src;
+  showFullImage.value = true;
+}
+
+/** 点击预览视频关键帧 */
+function previewVideoFrame(frame) {
+  if (!frame.annotated_image_base64) return;
+  previewSrc.value = `data:image/jpeg;base64,${frame.annotated_image_base64}`;
   showFullImage.value = true;
 }
 
@@ -219,6 +275,68 @@ const classCountsArray = computed(() => {
       white-space: nowrap;
     }
   }
+}
+
+/* 视频检测结果 */
+.video-result {
+  flex: 1;
+  min-width: 0;
+}
+
+.video-info {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.video-player {
+  video {
+    width: 100%;
+    max-height: 360px;
+    border-radius: 8px;
+    background: #000;
+  }
+}
+
+/* 降级：关键帧缩略图 */
+.fallback-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 8px;
+}
+
+.frames-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.frame-card {
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: opacity 0.2s;
+
+  &:hover {
+    opacity: 0.8;
+  }
+
+  img {
+    width: 100%;
+    height: 120px;
+    object-fit: cover;
+  }
+}
+
+.frame-info {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: #666;
+  background: #fafafa;
 }
 
 .result-stats {
