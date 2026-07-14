@@ -5,6 +5,7 @@
  * - 路由守卫自动检查登录状态
  */
 import { createRouter, createWebHistory } from 'vue-router'
+import { getValidStoredToken } from '@/utils/authSession'
 
 // ── 路由定义 ────────────────────────────────────────
 const routes = [
@@ -82,8 +83,11 @@ router.beforeEach((to, from, next) => {
     : 'RSOD Agent Platform'
 
   // 检查是否需要认证
-  const token = localStorage.getItem('rsod_token')
   const requiresAuth = to.matched.some((record) => record.meta.requiresAuth !== false)
+  const token = getValidStoredToken({
+    notify: requiresAuth,
+    redirect: false,
+  })
 
   if (requiresAuth && !token) {
     // 需要登录但未登录，跳转到登录页

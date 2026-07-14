@@ -14,6 +14,8 @@
  *   )
  */
 
+import { expireAuthSession, getValidStoredToken } from '@/utils/authSession'
+
 /**
  * 发起 SSE 流式请求
  *
@@ -28,8 +30,13 @@
 export function streamChat(url, body, callbacks) {
   const { onMessage, onDone, onError } = callbacks;
 
-  // 从 localStorage 获取 Token
-  const token = localStorage.getItem("rsod_token");
+  // 读取并校验 Token，避免继续使用已经过期的本地会话。
+  const token = getValidStoredToken();
+
+  if (!token) {
+    queueMicrotask(() => onError?.(new Error("登录已过期，请重新登录")));
+    return () => {};
+  }
 
   // 使用 fetch + ReadableStream 实现 SSE
   const controller = new AbortController();
@@ -44,6 +51,10 @@ export function streamChat(url, body, callbacks) {
     signal: controller.signal,
   })
     .then(async (response) => {
+      if (response.status === 401) {
+        expireAuthSession();
+        throw new Error("登录已过期，请重新登录");
+      }
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }

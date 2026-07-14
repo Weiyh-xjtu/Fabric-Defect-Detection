@@ -7,7 +7,31 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
-import router from '@/router'
+import { expireAuthSession, isTokenExpired } from '@/utils/authSession'
+
+/** 从 FastAPI 默认响应或项目统一响应中提取可读错误信息。 */
+export function getApiErrorMessage(response, fallback) {
+  const payload = response?.data
+  const detail = payload?.detail
+
+  if (typeof detail === 'string' && detail) return detail
+  if (Array.isArray(detail) && detail.length > 0) {
+    return detail[0]?.msg || String(detail[0])
+  }
+  if (Array.isArray(payload?.data) && payload.data.length > 0) {
+    return String(payload.data[0])
+  }
+  if (typeof payload?.message === 'string' && payload.message) {
+    return payload.message
+  }
+  return fallback
+}
+
+/** 登录和注册接口的 401 属于业务错误，不代表已有会话过期。 */
+export function isAuthenticationEndpoint(url = '') {
+  const pathWithoutQuery = url.split('?')[0].replace(/\/$/, '')
+  return ['/auth/login', '/auth/register'].some((path) => pathWithoutQuery.endsWith(path))
+}
 
 // ── 创建 Axios 实例 ──────────────────────────────────
 const request = axios.create({
@@ -24,7 +48,11 @@ request.interceptors.request.use(
     // 从 Pinia store 获取 Token，自动注入请求头
     const userStore = useUserStore()
     if (userStore.token) {
-      config.headers.Authorization = `Bearer ${userStore.token}`
+      if (isTokenExpired(userStore.token)) {
+        expireAuthSession()
+      } else if (!isAuthenticationEndpoint(config.url)) {
+        config.headers.Authorization = `Bearer ${userStore.token}`
+      }
     }
     return config
   },
@@ -43,39 +71,25 @@ request.interceptors.response.use(
     const { response } = error
 
     if (response) {
-      switch (response.status) {
-        case 401:
-          // Token 过期或无效，清除用户信息并跳转登录页
-          ElMessage.error('登录已过期，请重新登录')
-          const userStore = useUserStore()
-          userStore.logout()
-          router.push('/login')
-          break
+      const requestUrl = error.config?.url || response.config?.url || ''
 
-        case 403:
-          ElMessage.error('没有权限执行此操作')
-          break
-
-        case 404:
-          ElMessage.error('请求的资源不存在')
-          break
-
-        case 422:
-          // Pydantic 验证错误
-          const detail = response.data?.detail
-          if (Array.isArray(detail)) {
-            ElMessage.error(detail[0]?.msg || '参数验证失败')
-          } else {
-            ElMessage.error(detail || '参数验证失败')
-          }
-          break
-
-        case 500:
-          ElMessage.error('服务器内部错误')
-          break
-
-        default:
-          ElMessage.error(response.data?.detail || `请求失败 (${response.status})`)
+      if (response.status === 401 && !isAuthenticationEndpoint(requestUrl)) {
+        expireAuthSession()
+      } else {
+        const fallbackMessages = {
+          400: '请求参数错误',
+          401: '用户名或密码错误',
+          403: '没有权限执行此操作',
+          404: '请求的资源不存在',
+          422: '参数验证失败',
+          500: '服务器内部错误',
+        }
+        ElMessage.error(
+          getApiErrorMessage(
+            response,
+            fallbackMessages[response.status] || `请求失败 (${response.status})`,
+          ),
+        )
       }
     } else {
       // 网络错误或请求超时

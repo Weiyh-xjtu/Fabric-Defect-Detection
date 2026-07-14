@@ -4,21 +4,25 @@
  */
 import { defineStore } from 'pinia'
 import { loginApi, getUserInfoApi } from '@/api/auth'
+import {
+  clearAuthSession,
+  getStoredAuthSession,
+  isTokenExpired,
+  persistAuthSession,
+  scheduleAuthExpiration,
+  USER_KEY,
+} from '@/utils/authSession'
 
-const TOKEN_KEY = 'rsod_token'
-const USER_KEY = 'rsod_user'
+function createInitialState() {
+  return getStoredAuthSession()
+}
 
 export const useUserStore = defineStore('user', {
-  state: () => ({
-    // JWT Token
-    token: localStorage.getItem(TOKEN_KEY) || '',
-    // 用户信息
-    user: JSON.parse(localStorage.getItem(USER_KEY) || 'null'),
-  }),
+  state: createInitialState,
 
   getters: {
     /** 是否已登录 */
-    isLoggedIn: (state) => !!state.token,
+    isLoggedIn: (state) => !!state.token && !isTokenExpired(state.token),
 
     /** 用户名 */
     username: (state) => state.user?.username || '',
@@ -41,13 +45,10 @@ export const useUserStore = defineStore('user', {
     async login(credentials) {
       const res = await loginApi(credentials)
 
-      // 保存 Token
       this.token = res.access_token
-      localStorage.setItem(TOKEN_KEY, res.access_token)
-
-      // 保存用户信息
       this.user = res.user
-      localStorage.setItem(USER_KEY, JSON.stringify(res.user))
+      persistAuthSession(res.access_token, res.user)
+      scheduleAuthExpiration(res.access_token)
 
       return res
     },
@@ -65,14 +66,20 @@ export const useUserStore = defineStore('user', {
       }
     },
 
+    /** 页面刷新后恢复 JWT 的过期定时器。 */
+    initializeSession() {
+      if (this.token) {
+        scheduleAuthExpiration(this.token)
+      }
+    },
+
     /**
      * 退出登录
      */
     logout() {
       this.token = ''
       this.user = null
-      localStorage.removeItem(TOKEN_KEY)
-      localStorage.removeItem(USER_KEY)
+      clearAuthSession()
     },
   },
 })
