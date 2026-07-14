@@ -103,8 +103,14 @@ def _finalize_tool_result(result: dict) -> str:
     Returns:
         精简版结果的 JSON 字符串（给 LLM）。
     """
-    # 完整版原样存起来，前端 SSE 用它渲染标注图
-    _last_full_tool_result.set(json.dumps(result, ensure_ascii=False))
+    # LangChain 会在线程中执行同步工具。ContextVar 的值会复制到子线程，
+    # 但子线程 set() 的新值不会回传，因此使用父子上下文共享的可变 holder。
+    full_result = json.dumps(result, ensure_ascii=False)
+    result_holder = _last_full_tool_result.get()
+    if isinstance(result_holder, dict):
+        result_holder["result"] = full_result
+    else:
+        _last_full_tool_result.set(full_result)
     # 精简版返回给 LLM
     return json.dumps(_strip_base64_for_llm(result), ensure_ascii=False)
 
@@ -420,7 +426,8 @@ class DetectionAgent:
         # 注入请求级上下文，供工具读取
         token_user = _current_user_id.set(user_id)
         token_scene = _current_scene_id.set(scene_id)
-        token_full = _last_full_tool_result.set(None)
+        result_holder = {"result": None}
+        token_full = _last_full_tool_result.set(result_holder)
         try:
             async for event in self.executor.astream_events(
                 {"input": message},
@@ -464,13 +471,21 @@ class DetectionAgent:
                     logger.debug("on_tool_end data keys: %s", list(tool_data.keys()))
                     # 发给前端的用「完整版」结果（含 base64 标注图），供结果卡片渲染；
                     # LLM 收到的仍是工具返回的精简版（不含 base64）。两条通道分离。
-                    full_result = _last_full_tool_result.get()
+                    current_holder = _last_full_tool_result.get()
+                    full_result = (
+                        current_holder.get("result")
+                        if isinstance(current_holder, dict)
+                        else current_holder
+                    )
                     frontend_result = (
                         full_result
                         if full_result is not None
                         else (str(tool_output) if tool_output else "")
                     )
-                    _last_full_tool_result.set(None)  # 用完即清，防止串到下一次工具调用
+                    if isinstance(current_holder, dict):
+                        current_holder["result"] = None
+                    else:
+                        _last_full_tool_result.set(None)
                     yield {
                         "type": "tool_result",
                         "tool": tool_name,

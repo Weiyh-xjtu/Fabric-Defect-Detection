@@ -1,3 +1,5 @@
+import asyncio
+import json
 import os
 import tempfile
 from types import SimpleNamespace
@@ -7,6 +9,8 @@ import pytest
 from app.api import chat as chat_api
 from app.api.auth import get_current_user
 from app.agent.detection_agent import (
+    _finalize_tool_result,
+    _last_full_tool_result,
     _append_attachment_context,
     _strip_base64_for_llm,
 )
@@ -157,3 +161,29 @@ def test_video_result_is_slimmed_without_mutating_frontend_result():
     assert "annotated_image_base64" not in slim["key_frames"][0]
     assert result["annotated_video_url"]
     assert result["key_frames"][0]["annotated_image_base64"] == "base64-data"
+
+
+@pytest.mark.asyncio
+async def test_full_tool_result_survives_tool_thread_context():
+    result = {
+        "total_objects": 1,
+        "annotated_images": [
+            {
+                "image_path": "sample.jpg",
+                "annotated_image_base64": "preview-data",
+            }
+        ],
+    }
+    holder = {"result": None}
+    token = _last_full_tool_result.set(holder)
+    try:
+        slim_result = await asyncio.to_thread(_finalize_tool_result, result)
+
+        assert "preview-data" not in slim_result
+        frontend_result = json.loads(holder["result"])
+        assert (
+            frontend_result["annotated_images"][0]["annotated_image_base64"]
+            == "preview-data"
+        )
+    finally:
+        _last_full_tool_result.reset(token)
