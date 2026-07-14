@@ -104,6 +104,16 @@ def root():
 
 
 if __name__ == "__main__":
+    from pathlib import Path
+
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    backend_dir = Path(__file__).resolve().parent
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_dirs=[str(backend_dir / "app")],
+        reload_excludes=["logs/*", "*.log", "runs/*", "datasets/*"],
+    )
