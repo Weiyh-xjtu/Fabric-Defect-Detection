@@ -23,6 +23,8 @@
 
 import base64
 import os
+import shutil
+import subprocess
 import tempfile
 import zipfile
 from datetime import datetime
@@ -596,7 +598,7 @@ class DetectionService:
         db = SessionLocal()
         try:
             # ── 加载模型 ──
-            model = get_model(scene_id)
+            model = self._get_model(scene_id)
 
             # ── 打开视频 ──
             cap = cv2.VideoCapture(video_path)
@@ -641,26 +643,30 @@ class DetectionService:
             # ── 计算需要采样的帧索引 ──
             # 根据视频总帧数和 max_frames 动态计算采样间隔，
             # 确保帧均匀分布在整个视频时长内，避免密集采样导致重复帧
-            effective_interval = max(frame_sample_rate, total_frames // max_frames)
-            sample_indices = list(range(0, total_frames, effective_interval))
-            if len(sample_indices) > max_frames:
+            if total_frames > 0:
+                effective_interval = max(
+                    frame_sample_rate, total_frames // max_frames
+                )
+                sample_indices = list(range(0, total_frames, effective_interval))
                 sample_indices = sample_indices[:max_frames]
+                sample_set = set(sample_indices)
+            else:
+                # 某些编码器无法提供总帧数，退化为固定间隔动态采样。
+                sample_indices = []
+                sample_set = None
 
             # 更新任务的总图像数
             if task:
-                task.total_images = len(sample_indices)
+                task.total_images = len(sample_indices) or max_frames
                 db.commit()
 
-            # ── 逐帧处理：场景变化检测 + 目标跟踪 + 合成标注视频 ──
-            sample_set = set(sample_indices)
+            # ── 逐帧处理：采样推理 + 非采样帧复用结果 + 合成标注视频 ──
             key_frames = []
             total_objects = 0
             total_inference_time = 0
             class_counts = {}
             sampled_count = 0
             last_detections = []
-            last_frame = None
-            current_scene_seen_track_ids = set()
             class_colors = {
                 "person": (0, 255, 0),
                 "car": (255, 0, 0),
@@ -709,23 +715,15 @@ class DetectionService:
                 if not ret:
                     break
 
-                # 场景变化检测：比较当前帧与上一帧的差异
-                current_frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                current_frame_gray = cv2.resize(current_frame_gray, (100, 100))
+                should_infer = (
+                    frame_idx in sample_set
+                    if sample_set is not None
+                    else frame_idx % frame_sample_rate == 0
+                    and sampled_count < max_frames
+                )
 
-                scene_changed = False
-                if last_frame is not None:
-                    frame_diff = cv2.absdiff(last_frame, current_frame_gray)
-                    diff_score = frame_diff.mean()
-                    if diff_score > 10:
-                        scene_changed = True
-                else:
-                    scene_changed = True
-
-                last_frame = current_frame_gray.copy()
-
-                # 场景变化时才执行检测和计数
-                if scene_changed:
+                # 采样帧执行检测，其余帧复用最近一次检测结果。
+                if should_infer:
                     results = model.predict(
                         source=frame,
                         conf=conf,
@@ -815,7 +813,7 @@ class DetectionService:
                         len(frame_detections),
                     )
                 else:
-                    # 场景未变化：使用上一帧的检测结果绘制
+                    # 非采样帧：使用上一采样帧的检测结果绘制
                     if last_detections:
                         annotated_frame = draw_detections_on_frame(frame, last_detections)
                         video_writer.write(annotated_frame)
@@ -878,6 +876,7 @@ class DetectionService:
             # ── 更新任务状态为完成 ──
             if task:
                 task.status = "completed"
+                task.total_images = len(key_frames)
                 task.total_objects = total_objects
                 task.total_inference_time = total_inference_time
                 task.completed_at = datetime.now()
@@ -892,6 +891,7 @@ class DetectionService:
             )
 
             return {
+                "type": "video",
                 "task_id": task_id,
                 "total_frames": total_frames,
                 "processed_frames": len(key_frames),

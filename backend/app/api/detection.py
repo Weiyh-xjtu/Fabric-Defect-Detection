@@ -8,15 +8,26 @@
   - GET  /api/detection/status/:id 查询任务状态
 """
 
+import asyncio
+import base64
 import os
 import tempfile
-import threading #【新增】后台线程
+import threading
 import time
-import base64
+
 import cv2
 import numpy as np
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import JSONResponse
 
 from app.api.auth import get_current_user
@@ -156,9 +167,11 @@ from app.storage.redis_client import redis_client
 @router.post("/video", summary="视频检测")
 async def detect_video_api(
     file: UploadFile = File(..., description="视频文件（mp4/avi/mov）"),
-    conf: float = Form(0.25, description="置信度阈值"),
-    frame_sample_rate: int = Form(5, description="帧采样间隔（每 N 帧取 1 帧）"),
-    max_frames: int = Form(50, description="最多处理的关键帧数量"),
+    conf: float = Form(0.25, ge=0.1, le=0.9, description="置信度阈值"),
+    frame_sample_rate: int = Form(
+        5, ge=1, description="帧采样间隔（每 N 帧取 1 帧）"
+    ),
+    max_frames: int = Form(50, ge=1, le=500, description="最多处理的关键帧数量"),
     scene_id: int = Form(None, description="场景 ID"),
     current_user=Depends(get_current_user),
 ):
@@ -170,7 +183,7 @@ async def detect_video_api(
     """
     # ── 校验文件格式 ──
     allowed_video_types = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv"}
-    suffix = os.path.splitext(file.filename)[1].lower()
+    suffix = os.path.splitext(file.filename or "")[1].lower()
     if suffix not in allowed_video_types:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -180,9 +193,16 @@ async def detect_video_api(
             },
         )
 
+    content = await file.read()
+    max_file_size = 50 * 1024 * 1024
+    if len(content) > max_file_size:
+        return JSONResponse(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            content={"error": "视频文件不能超过 50MB"},
+        )
+
     # ── 保存视频到临时文件 ──
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -194,10 +214,11 @@ async def detect_video_api(
     )
 
     # ── 先创建检测任务记录 ──
+    user_id = current_user.id
     db = SessionLocal()
     try:
         task = DetectionTask(
-            user_id=current_user.id,
+            user_id=user_id,
             scene_id=scene_id or 1,
             task_type="video",
             status="processing",
@@ -226,7 +247,7 @@ async def detect_video_api(
                 frame_sample_rate=frame_sample_rate,
                 max_frames=max_frames,
                 scene_id=scene_id,
-                user_id=current_user.id,
+                user_id=user_id,
                 task_id=task_id,
             )
 
@@ -326,12 +347,6 @@ async def get_video_detection_status(
     finally:
         db.close()
 
-import asyncio
-import time
-
-from fastapi import WebSocket, WebSocketDisconnect
-
-
 # ── 单帧缓冲区（CPU 模式优化）──
 # 键为 WebSocket 连接 ID，值为最新帧数据
 _camera_frame_buffer = {}
@@ -368,6 +383,7 @@ async def camera_detection_ws(websocket: WebSocket):
     frame_count = 0
     fps_start_time = time.time()
     fps_frame_count = 0
+    current_fps = 0.0
 
     try:
         while True:
@@ -385,11 +401,13 @@ async def camera_detection_ws(websocket: WebSocket):
                 # 加载模型（指定设备）
                 device = "cpu" if mode == "cpu" else "0"
                 try:
-                    from app.services.detection_service import get_model
-                    model = get_model(scene_id)
+                    model = await asyncio.to_thread(
+                        detection_service._get_model, scene_id
+                    )
 
                     dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                    model.predict(
+                    await asyncio.to_thread(
+                        model.predict,
                         source=dummy_frame,
                         conf=conf,
                         iou=iou,
@@ -443,7 +461,8 @@ async def camera_detection_ws(websocket: WebSocket):
                     device = "cpu" if mode == "cpu" else "0"
                     imgsz = 416 if mode == "cpu" else 640
 
-                    results = model.predict(
+                    results = await asyncio.to_thread(
+                        model.predict,
                         source=frame,
                         conf=conf,
                         iou=iou,
@@ -489,8 +508,6 @@ async def camera_detection_ws(websocket: WebSocket):
                         current_fps = fps_frame_count / elapsed
                         fps_frame_count = 0
                         fps_start_time = time.time()
-                    else:
-                        current_fps = 0
 
                     frame_count += 1
 

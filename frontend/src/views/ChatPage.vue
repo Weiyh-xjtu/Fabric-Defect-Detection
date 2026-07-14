@@ -18,6 +18,9 @@
           <div v-if="msg.images && msg.images.length" class="message-attachments-grid">
             <img v-for="(src, i) in msg.images" :key="i" :src="src" alt="附件图片" />
           </div>
+          <div v-if="msg.videoUrl" class="message-video">
+            <video :src="msg.videoUrl" controls preload="metadata"></video>
+          </div>
         </div>
 
         <!-- AI 消息 -->
@@ -70,7 +73,7 @@
       >
         🎬 视频
       </el-button>
-      <el-button disabled>📹 摄像头</el-button>
+      <el-button @click="openCameraDetection">📹 摄像头</el-button>
     </div>
 
     <!-- ── 输入区域 ── -->
@@ -126,7 +129,13 @@
  *   - 快捷操作栏（单图/批量/视频/摄像头）
  *   - 中断当前对话
  */
-import { detectBatch, detectSingle, detectZip } from "@/api/detection";
+import {
+  detectBatch,
+  detectSingle,
+  detectVideo,
+  detectZip,
+  getVideoStatus,
+} from "@/api/detection";
 import DetectionResultCard from "@/components/DetectionResultCard.vue";
 import { useAgentStore } from "@/stores/agent";
 import { renderMarkdown } from "@/utils/markdown";
@@ -134,10 +143,11 @@ import request from "@/utils/request";
 import { streamChat } from "@/utils/stream";
 import { ElMessage } from "element-plus";
 import { computed, nextTick, onMounted, ref } from "vue";
-import { detectBatch, detectSingle, detectVideo, detectZip, getVideoStatus } from "@/api/detection";
+import { useRouter } from "vue-router";
 
 // ── Store ──
 const agentStore = useAgentStore();
+const router = useRouter();
 
 // ── 响应式状态 ──
 const inputText = ref("");
@@ -431,10 +441,54 @@ async function handleQuickDetect(type) {
  * 4. 后端返回 task_id，前端开始轮询进度
  * 5. 处理完成后，展示关键帧结果卡片
  */
+const VIDEO_POLL_INTERVAL = 1500;
+const VIDEO_POLL_TIMEOUT = 10 * 60 * 1000;
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 轮询视频检测进度，完成后将结果写回对应消息 */
+async function pollVideoProgress(taskId, resultMessage) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < VIDEO_POLL_TIMEOUT) {
+    const statusResult = await getVideoStatus(taskId);
+
+    if (statusResult.status === "completed") {
+      const result = statusResult.result || statusResult;
+      resultMessage.content =
+        statusResult.message ||
+        `视频检测完成！共发现 ${result.total_objects ?? 0} 个目标。`;
+      resultMessage.loading = false;
+      resultMessage.detectionResult = {
+        ...result,
+        type: "video",
+      };
+      return;
+    }
+
+    if (statusResult.status === "failed") {
+      throw new Error(
+        statusResult.message || statusResult.error || "视频处理失败",
+      );
+    }
+
+    const progress = Number(statusResult.progress || 0);
+    resultMessage.content = progress
+      ? `视频处理中... ${progress}%`
+      : statusResult.message || "视频处理中...";
+
+    await wait(VIDEO_POLL_INTERVAL);
+  }
+
+  throw new Error("视频处理超时，请稍后在历史记录中查看结果");
+}
+
 async function handleVideoDetect() {
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = "video/mp4,video/avi,video/quicktime,video/x-msvideo";
+  input.accept = ".mp4,.avi,.mov,.mkv,.wmv,.flv,video/*";
   input.onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -457,11 +511,13 @@ async function handleVideoDetect() {
     });
 
     // 添加加载占位
+    const resultMessageIndex = agentStore.messages.length;
     agentStore.addMessage({
       role: "assistant",
       content: "正在上传视频...",
       loading: true,
     });
+    const resultMessage = agentStore.messages[resultMessageIndex];
 
     // 上传视频
     const formData = new FormData();
@@ -472,20 +528,26 @@ async function handleVideoDetect() {
       const taskId = uploadResult.task_id;
 
       // 更新加载消息
-      const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-      lastMsg.content = "视频已上传，正在处理中...";
+      if (!taskId) {
+        throw new Error("后端未返回视频任务 ID");
+      }
+
+      resultMessage.content = "视频已上传，正在处理中...";
 
       // 开始轮询进度
-      await pollVideoProgress(taskId);
+      await pollVideoProgress(taskId, resultMessage);
     } catch (err) {
       console.error("[视频检测失败]", err);
-      const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-      lastMsg.content = `视频检测失败：${err.message || err}`;
-      lastMsg.loading = false;
-      lastMsg.error = true;
+      resultMessage.content = `视频检测失败：${err.message || err}`;
+      resultMessage.loading = false;
+      resultMessage.error = true;
     }
   };
   input.click();
+}
+
+function openCameraDetection() {
+  router.push("/detection");
 }
 
 onMounted(() => {
@@ -643,6 +705,18 @@ onMounted(() => {
     object-fit: cover;
     border-radius: 6px;
     border: 1px solid #e0e0e0;
+  }
+}
+
+.message-video {
+  margin-top: 8px;
+
+  video {
+    display: block;
+    width: min(420px, 100%);
+    max-height: 260px;
+    background: #000;
+    border-radius: 8px;
   }
 }
 

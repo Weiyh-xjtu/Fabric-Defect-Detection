@@ -46,6 +46,7 @@ export default defineConfig(({ mode }) => ({
       '/api': {
         target: loadEnv(mode, __dirname, '').VITE_API_BASE_URL,
         changeOrigin: true,
+        ws: true,
       },
     },
   },
