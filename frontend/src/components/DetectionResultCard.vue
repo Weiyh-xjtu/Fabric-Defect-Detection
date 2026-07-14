@@ -9,8 +9,47 @@
     </div>
 
     <div class="card-body">
+      <!-- 视频模式：优先播放标注视频，上传失败时展示关键帧 -->
+      <div v-if="isVideo" class="video-result">
+        <div class="video-info">
+          <el-tag type="info">时长: {{ result.duration_seconds ?? 0 }}s</el-tag>
+          <el-tag type="info">FPS: {{ result.fps ?? 0 }}</el-tag>
+          <el-tag type="info">处理帧: {{ result.processed_frames ?? 0 }}</el-tag>
+          <el-tag type="success">目标: {{ result.total_objects ?? 0 }}</el-tag>
+        </div>
+
+        <div v-if="result.annotated_video_url" class="video-player">
+          <video :src="result.annotated_video_url" controls preload="metadata"></video>
+        </div>
+
+        <div v-else-if="thumbnailFrames.length" class="frames-fallback">
+          <p class="fallback-hint">
+            标注视频暂不可用，以下为关键帧预览：
+          </p>
+          <div class="frames-container">
+            <div
+              v-for="frame in thumbnailFrames"
+              :key="frame.frame_index"
+              class="frame-card"
+              @click="previewVideoFrame(frame)"
+            >
+              <img
+                :src="`data:image/jpeg;base64,${frame.annotated_image_base64}`"
+                :alt="`帧 ${frame.frame_index}`"
+              />
+              <div class="frame-info">
+                <span>{{ frame.timestamp }}s</span>
+                <span>{{ frame.object_count }} 个目标</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-else class="video-empty">暂无可预览的视频或关键帧</div>
+      </div>
+
       <!-- 单图模式：标注图 -->
-      <div class="result-image" v-if="annotatedImageSrc && !isBatch">
+      <div class="result-image" v-if="annotatedImageSrc && !isBatch && !isVideo">
         <img
           :src="annotatedImageSrc"
           alt="检测标注图"
@@ -93,9 +132,16 @@ const props = defineProps({
 const showFullImage = ref(false);
 const previewSrc = ref(null);
 
+/** 判断是否为视频检测结果 */
+const isVideo = computed(() => props.result.type === "video");
+
 /** 判断是否为批量检测结果 */
 const isBatch = computed(() => {
-  return Array.isArray(props.result.annotated_images) && props.result.annotated_images.length > 0;
+  return (
+    !isVideo.value &&
+    Array.isArray(props.result.annotated_images) &&
+    props.result.annotated_images.length > 0
+  );
 });
 
 /** 单图模式：标注图 URL（优先使用 MinIO URL，否则用 base64） */
@@ -118,6 +164,14 @@ const batchImages = computed(() => {
   }));
 });
 
+/** 视频模式：仅展示后端实际返回了缩略图数据的前 6 帧 */
+const thumbnailFrames = computed(() => {
+  if (!Array.isArray(props.result.key_frames)) return [];
+  return props.result.key_frames
+    .filter((frame) => frame.annotated_image_base64)
+    .slice(0, 6);
+});
+
 /** 点击预览图片（批量模式） */
 function previewImage(img) {
   previewSrc.value = img.src;
@@ -128,6 +182,13 @@ function previewImage(img) {
 function previewImageSrc(src) {
   previewSrc.value = src;
   showFullImage.value = true;
+}
+
+/** 点击预览视频关键帧 */
+function previewVideoFrame(frame) {
+  previewImageSrc(
+    `data:image/jpeg;base64,${frame.annotated_image_base64}`,
+  );
 }
 
 /** 类别统计转为数组（用于 el-table） */
@@ -163,6 +224,72 @@ const classCountsArray = computed(() => {
   display: flex;
   gap: 16px;
   padding: 12px;
+}
+
+.video-result {
+  flex: 1;
+  min-width: 0;
+}
+
+.video-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.video-player video {
+  width: 100%;
+  max-height: 360px;
+  border-radius: 8px;
+  background: #000;
+}
+
+.fallback-hint {
+  margin: 0 0 8px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.frames-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.frame-card {
+  overflow: hidden;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+
+  &:hover {
+    opacity: 0.8;
+  }
+
+  img {
+    width: 100%;
+    height: 120px;
+    object-fit: cover;
+  }
+}
+
+.frame-info {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 8px;
+  color: #666;
+  font-size: 12px;
+  background: #fafafa;
+}
+
+.video-empty {
+  padding: 32px 12px;
+  color: #909399;
+  text-align: center;
+  background: #fafafa;
+  border-radius: 8px;
 }
 
 .result-image {
@@ -238,6 +365,16 @@ const classCountsArray = computed(() => {
   .stat-value {
     font-weight: 600;
     color: #303133;
+  }
+}
+
+@media (max-width: 900px) {
+  .card-body {
+    flex-direction: column;
+  }
+
+  .result-stats {
+    flex-basis: auto;
   }
 }
 </style>
