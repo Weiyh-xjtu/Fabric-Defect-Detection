@@ -23,6 +23,13 @@ class RedisClient:
 
     _instance = None
     _pool = None
+    _FIXED_WINDOW_INCREMENT_SCRIPT = """
+    local current = redis.call('INCR', KEYS[1])
+    if current == 1 then
+        redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+    end
+    return current
+    """
 
     def __new__(cls):
         if cls._instance is None:
@@ -33,6 +40,7 @@ class RedisClient:
     def _connect(self):
         """初始化 Redis 连接池"""
         self._memory_cache = {}
+        self._memory_rate_limits = {}
         try:
             self._pool = redis.ConnectionPool(
                 host=settings.REDIS_HOST,
@@ -96,6 +104,34 @@ class RedisClient:
         return self._retry_on_fail(
             lambda: bool(self._client.exists(key)) if self._use_redis else key in self._memory_cache
         )
+
+    def increment_with_window(self, key: str, window: int) -> int:
+        """在固定时间窗口内原子递增计数，只在首次请求时设置过期时间。"""
+        if window <= 0:
+            raise ValueError("window must be greater than 0")
+
+        def increment() -> int:
+            if self._use_redis and self._client:
+                return int(
+                    self._client.eval(
+                        self._FIXED_WINDOW_INCREMENT_SCRIPT,
+                        1,
+                        key,
+                        window,
+                    )
+                )
+
+            now = time.monotonic()
+            current, expires_at = self._memory_rate_limits.get(key, (0, 0.0))
+            if now >= expires_at:
+                current = 0
+                expires_at = now + window
+
+            current += 1
+            self._memory_rate_limits[key] = (current, expires_at)
+            return current
+
+        return int(self._retry_on_fail(increment))
 
     def set_json(self, key: str, data: dict, expire: Optional[int] = None) -> Any:
         """设置 JSON 数据"""

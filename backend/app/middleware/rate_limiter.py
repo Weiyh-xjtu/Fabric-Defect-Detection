@@ -40,19 +40,17 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         key = f"rate_limit:{path}:{client_ip}"
 
         try:
-            current = redis_client.get(key)
-            if current is None:
-                redis_client.set(key, 1, expire=limit_config["window"])
-                current = 1
-            else:
-                current = int(current) + 1
-                redis_client.set(key, current, expire=limit_config["window"])
+            current = redis_client.increment_with_window(
+                key,
+                limit_config["window"],
+            )
 
             if current > limit_config["limit"]:
                 return Response(
                     content='{"error": "Rate limit exceeded", "message": "Too many requests, please try again later"}',
                     status_code=429,
                     media_type="application/json",
+                    headers={"Retry-After": str(limit_config["window"])},
                 )
 
         except Exception:
