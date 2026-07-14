@@ -82,6 +82,15 @@ def _strip_base64_for_llm(result: dict) -> dict:
             else item
             for item in slim["annotated_images"]
         ]
+    # 视频路径：关键帧列表内的 base64，以及仅供前端播放器使用的视频 URL。
+    if isinstance(slim.get("key_frames"), list):
+        slim["key_frames"] = [
+            {k: v for k, v in item.items() if k != "annotated_image_base64"}
+            if isinstance(item, dict)
+            else item
+            for item in slim["key_frames"]
+        ]
+    slim.pop("annotated_video_url", None)
     return slim
 
 
@@ -98,6 +107,49 @@ def _finalize_tool_result(result: dict) -> str:
     _last_full_tool_result.set(json.dumps(result, ensure_ascii=False))
     # 精简版返回给 LLM
     return json.dumps(_strip_base64_for_llm(result), ensure_ascii=False)
+
+
+def _append_attachment_context(
+    message: str,
+    attachments: list[dict] = None,
+    image_path: str = None,
+) -> str:
+    """把结构化附件转换成 Agent 可稳定识别的路径提示。"""
+    normalized = list(attachments or [])
+    if image_path and not normalized:
+        normalized.append({"type": "image", "path": image_path})
+
+    image_paths = [
+        item["path"]
+        for item in normalized
+        if item.get("type") == "image" and item.get("path")
+    ]
+    zip_paths = [
+        item["path"]
+        for item in normalized
+        if item.get("type") == "zip" and item.get("path")
+    ]
+    video_paths = [
+        item["path"]
+        for item in normalized
+        if item.get("type") == "video" and item.get("path")
+    ]
+
+    context_lines = []
+    if len(image_paths) == 1:
+        context_lines.append(f"[附件图片路径: {image_paths[0]}]")
+    elif image_paths:
+        context_lines.append(
+            f"[附件图片路径列表: {json.dumps(image_paths, ensure_ascii=False)}]"
+        )
+    if zip_paths:
+        context_lines.append(f"[附件ZIP路径: {zip_paths[0]}]")
+    if video_paths:
+        context_lines.append(f"[附件视频路径: {video_paths[0]}]")
+
+    if not context_lines:
+        return message
+    return f"{message}\n" + "\n".join(context_lines)
 
 
 @tool
@@ -183,13 +235,10 @@ def detect_video_file(
         video_path,
         conf=conf,
         frame_sample_rate=frame_sample_rate,
+        scene_id=_current_scene_id.get(),
+        user_id=_current_user_id.get(),
     )
-    # 返回时去掉 LLM 无法使用的大体积数据
-    if "key_frames" in result:
-        for frame in result["key_frames"]:
-            frame.pop("annotated_image_base64", None)
-    result.pop("annotated_video_url", None)
-    return json.dumps(result, ensure_ascii=False)
+    return _finalize_tool_result(result)
 
 
 # 工具列表（绑定到 Agent）
@@ -249,10 +298,12 @@ class DetectionAgent:
         self.llm = create_llm()
 
         # OpenAI Tools Agent 系统提示词
-        system_prompt = """你是一个专业的目标检测助手。你可以帮用户检测图片中的目标物体。
+        system_prompt = """你是一个专业的目标检测助手。你可以帮用户检测图片、ZIP 压缩包和视频中的目标物体。
 
 重要规则：
 - 当用户消息中包含 [附件图片路径: xxx] 时，xxx 就是图片的服务器路径，你应直接使用它调用检测工具
+- 当用户消息中包含 [附件图片路径列表: [...]] 时，必须把列表原样作为 image_paths 调用批量检测工具
+- 当用户消息中包含 [附件ZIP路径: xxx] 时，必须使用 xxx 调用 ZIP 检测工具
 - 当用户消息中包含 [附件视频路径: xxx] 时，xxx 就是视频的服务器路径，你应直接使用它调用视频检测工具
 - 不要要求用户再次提供路径，直接使用附件中给出的路径
 - 对于单张图片，调用 detect_single_image 工具
@@ -302,6 +353,7 @@ class DetectionAgent:
         self,
         message: str,
         image_path: str = None,
+        attachments: list[dict] = None,
         user_id: int = None,
         scene_id: int = None,
     ) -> dict:
@@ -311,15 +363,14 @@ class DetectionAgent:
         Args:
             message: 用户文本消息
             image_path: 附带的图片路径（可选）
+            attachments: 结构化附件列表（单图/多图/ZIP/视频，可选）
             user_id: 当前登录用户 ID，用于检测记录归属
             scene_id: 检测场景 ID（可选）
 
         Returns:
             Agent 响应字典
         """
-        # 如果有图片附件，将路径信息追加到消息中
-        if image_path:
-            message = f"{message}\n[附件图片路径: {image_path}]"
+        message = _append_attachment_context(message, attachments, image_path)
 
         # 注入请求级上下文，供工具读取
         token_user = _current_user_id.set(user_id)
@@ -345,6 +396,7 @@ class DetectionAgent:
         self,
         message: str,
         image_path: str = None,
+        attachments: list[dict] = None,
         user_id: int = None,
         scene_id: int = None,
     ) -> AsyncGenerator:
@@ -356,14 +408,14 @@ class DetectionAgent:
         Args:
             message: 用户文本消息
             image_path: 附带的图片路径（可选）
+            attachments: 结构化附件列表（单图/多图/ZIP/视频，可选）
             user_id: 当前登录用户 ID，用于检测记录归属
             scene_id: 检测场景 ID（可选）
 
         Yields:
             SSE 事件数据字典
         """
-        if image_path:
-            message = f"{message}\n[附件图片路径: {image_path}]"
+        message = _append_attachment_context(message, attachments, image_path)
 
         # 注入请求级上下文，供工具读取
         token_user = _current_user_id.set(user_id)
