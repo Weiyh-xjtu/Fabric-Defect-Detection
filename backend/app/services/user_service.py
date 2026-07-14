@@ -6,7 +6,12 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    create_refresh_token,
+    hash_password,
+    verify_password,
+)
 from app.entity.db_models import User
 
 
@@ -78,6 +83,11 @@ class UserService:
     def create_access_token_for_user(user: User) -> str:
         """为用户生成 JWT Token"""
         return create_access_token(data={"sub": str(user.id)})
+
+    @staticmethod
+    def create_refresh_token_for_user(user: User) -> str:
+        """为用户生成用于滑动续期的 Refresh Token。"""
+        return create_refresh_token(data={"sub": str(user.id)})
 
     @staticmethod
     def get_user_roles(db: Session, user: User) -> list[str]:

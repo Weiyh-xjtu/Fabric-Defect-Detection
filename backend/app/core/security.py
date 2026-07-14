@@ -5,9 +5,10 @@
 """
 
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 import bcrypt
-from jose import jwt
+from jose import JWTError, jwt
 
 from app.config.settings import settings
 
@@ -42,8 +43,16 @@ def create_access_token(data: dict) -> str:
         JWT Token 字符串
     """
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    issued_at = datetime.utcnow()
+    expire = issued_at + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": issued_at,
+            "jti": str(uuid4()),
+            "type": "access",
+        }
+    )
     encoded_jwt = jwt.encode(
         to_encode,
         settings.JWT_SECRET_KEY,
@@ -65,8 +74,45 @@ def decode_access_token(token: str) -> dict:
     Raises:
         JWTError: Token 无效或已过期
     """
-    return jwt.decode(
+    payload = jwt.decode(
         token,
         settings.JWT_SECRET_KEY,
         algorithms=[settings.JWT_ALGORITHM],
     )
+    if payload.get("type", "access") != "access":
+        raise JWTError("Token 类型无效")
+    return payload
+
+
+def create_refresh_token(data: dict) -> str:
+    """生成用于滑动续期的 Refresh Token。"""
+    to_encode = data.copy()
+    issued_at = datetime.utcnow()
+    expire = issued_at + timedelta(
+        minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES
+    )
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": issued_at,
+            "jti": str(uuid4()),
+            "type": "refresh",
+        }
+    )
+    return jwt.encode(
+        to_encode,
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+
+
+def decode_refresh_token(token: str) -> dict:
+    """解析 Refresh Token，并拒绝 Access Token 混用。"""
+    payload = jwt.decode(
+        token,
+        settings.JWT_SECRET_KEY,
+        algorithms=[settings.JWT_ALGORITHM],
+    )
+    if payload.get("type") != "refresh":
+        raise JWTError("Token 类型无效")
+    return payload

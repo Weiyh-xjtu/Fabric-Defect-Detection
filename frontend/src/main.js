@@ -39,7 +39,7 @@ window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, (event) => {
   userStore.logout()
 
   if (event.detail?.notify !== false && !isAuthPage) {
-    ElMessage.error('登录已过期，请重新登录')
+    ElMessage.error('长时间未操作，登录已超时，请重新登录')
   }
 
   if (event.detail?.redirect !== false && !isAuthPage) {

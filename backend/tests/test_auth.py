@@ -13,6 +13,8 @@
 
 import pytest
 
+from app.config.settings import settings
+
 
 class TestRegister:
     """用户注册测试"""
@@ -117,6 +119,8 @@ class TestLogin:
         assert "access_token" in data
         assert data["token_type"] == "bearer"
         assert data["user"]["username"] == "login_user"
+        assert settings.REFRESH_COOKIE_NAME in client.cookies
+        assert "HttpOnly" in response.headers["set-cookie"]
 
     def test_login_wrong_password(self, client):
         """密码错误"""
@@ -149,6 +153,93 @@ class TestLogin:
             },
         )
         assert response.status_code == 401
+
+
+class TestRefreshSession:
+    """滑动登录会话测试。"""
+
+    def test_refresh_rotates_tokens(self, client):
+        """有效 Refresh Cookie 可以换取新的 Access Token。"""
+        client.post(
+            "/api/auth/register",
+            json={
+                "username": "refresh_user",
+                "email": "refresh@example.com",
+                "password": "123456",
+            },
+        )
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": "refresh_user", "password": "123456"},
+        )
+        old_access_token = login_response.json()["access_token"]
+        old_refresh_token = client.cookies.get(settings.REFRESH_COOKIE_NAME)
+
+        refresh_response = client.post("/api/auth/refresh")
+
+        assert refresh_response.status_code == 200
+        assert refresh_response.json()["access_token"] != old_access_token
+        assert client.cookies.get(settings.REFRESH_COOKIE_NAME) != old_refresh_token
+
+    def test_refresh_without_cookie_returns_401(self, client):
+        """缺少 Refresh Cookie 时不能续期。"""
+        client.cookies.clear()
+
+        response = client.post("/api/auth/refresh")
+
+        assert response.status_code == 401
+
+    def test_access_and_refresh_tokens_cannot_be_mixed(self, client):
+        """Access Token 与 Refresh Token 不能互相替代。"""
+        client.post(
+            "/api/auth/register",
+            json={
+                "username": "token_type_user",
+                "email": "token_type@example.com",
+                "password": "123456",
+            },
+        )
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": "token_type_user", "password": "123456"},
+        )
+        access_token = login_response.json()["access_token"]
+        refresh_token = client.cookies.get(settings.REFRESH_COOKIE_NAME)
+
+        me_response = client.get(
+            "/api/auth/me",
+            headers={"Authorization": f"Bearer {refresh_token}"},
+        )
+        client.cookies.clear()
+        client.cookies.set(
+            settings.REFRESH_COOKIE_NAME,
+            access_token,
+            path="/api/auth",
+        )
+        refresh_response = client.post("/api/auth/refresh")
+
+        assert me_response.status_code == 401
+        assert refresh_response.status_code == 401
+
+    def test_logout_clears_refresh_cookie(self, client):
+        """主动退出会删除 Refresh Cookie。"""
+        client.post(
+            "/api/auth/register",
+            json={
+                "username": "logout_user",
+                "email": "logout@example.com",
+                "password": "123456",
+            },
+        )
+        client.post(
+            "/api/auth/login",
+            json={"username": "logout_user", "password": "123456"},
+        )
+
+        response = client.post("/api/auth/logout")
+
+        assert response.status_code == 204
+        assert settings.REFRESH_COOKIE_NAME not in client.cookies
 
 
 class TestGetCurrentUser:

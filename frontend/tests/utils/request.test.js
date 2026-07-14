@@ -7,7 +7,8 @@
  *   - 响应拦截器正确处理错误
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 
@@ -25,11 +26,16 @@ describe('Axios 请求封装', () => {
     expect(request).toBeDefined()
     expect(request.defaults.baseURL).toBe('/api')
     expect(request.defaults.timeout).toBe(30000)
+    expect(request.defaults.withCredentials).toBe(true)
   })
 
   it('不应全局固定 Content-Type，以支持 FormData 自动生成 boundary', async () => {
     const { default: request } = await import('@/utils/request')
     expect(request.defaults.headers['Content-Type']).toBeUndefined()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('登录失败时应该显示后端返回的凭据错误，而不是登录过期', async () => {
@@ -72,6 +78,49 @@ describe('Axios 请求封装', () => {
         '请求失败',
       ),
     ).toBe('邮箱格式错误')
+  })
+
+  it('受保护请求遇到 401 时应该自动续期并重试一次', async () => {
+    const { persistAuthSession } = await import('@/utils/authSession')
+    const { useUserStore } = await import('@/stores/user')
+    const { default: request } = await import('@/utils/request')
+    const user = { id: 1, username: 'tester', roles: [] }
+    persistAuthSession('old-access-token', user)
+    const userStore = useUserStore()
+    userStore.token = 'old-access-token'
+    userStore.user = user
+    const refreshSpy = vi.spyOn(axios, 'post').mockResolvedValue({
+      data: {
+        access_token: 'new-access-token',
+        token_type: 'bearer',
+        user,
+      },
+    })
+    const rejected = request.interceptors.response.handlers[0].rejected
+    const config = {
+      url: '/training/status/1',
+      method: 'get',
+      headers: {},
+      adapter: async (retryConfig) => ({
+        data: { status: 'running' },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config: retryConfig,
+        request: {},
+      }),
+    }
+    const error = {
+      config,
+      response: { status: 401, data: { message: '无效的认证凭据' } },
+    }
+
+    const result = await rejected(error)
+
+    expect(refreshSpy).toHaveBeenCalledOnce()
+    expect(userStore.token).toBe('new-access-token')
+    expect(result).toEqual({ status: 'running' })
+    expect(config._retry).toBe(true)
   })
 })
 
