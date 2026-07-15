@@ -7,8 +7,15 @@ class ConversationMemory:
     prefix = "chat:session:"
     attachment_prefix = "chat:attachments:"
 
-    def __init__(self, ttl: int = 86400, max_messages: int = 20):
-        self.ttl, self.max_messages = ttl, max_messages
+    def __init__(
+        self,
+        ttl: int = 86400,
+        max_messages: int = 20,
+        max_attachment_rounds: int = 10,
+    ):
+        self.ttl = ttl
+        self.max_messages = max_messages
+        self.max_attachment_rounds = max_attachment_rounds
 
     def _key(self, session_id: str, user_id: int | str | None = None) -> str:
         if user_id is None:
@@ -50,22 +57,7 @@ class ConversationMemory:
         redis_client.delete(self._key(str(session_id), user_id))
         redis_client.delete(self._attachment_key(str(session_id), user_id))
 
-    def save_attachments(
-        self,
-        session_id: str | int | None,
-        attachments: list[dict],
-        user_id: int | str | None = None,
-    ) -> None:
-        """保存会话最近一次检测附件，供“再检测一次”恢复。"""
-        if not session_id or not attachments:
-            return
-        redis_client.set(
-            self._attachment_key(str(session_id), user_id),
-            json.dumps(attachments, ensure_ascii=False),
-            self.ttl,
-        )
-
-    def load_attachments(
+    def _load_attachment_rounds(
         self,
         session_id: str | int | None,
         user_id: int | str | None = None,
@@ -76,10 +68,81 @@ class ConversationMemory:
         if not value:
             return []
         try:
-            attachments = json.loads(value)
-            return attachments if isinstance(attachments, list) else []
+            stored = json.loads(value)
         except (TypeError, ValueError):
             return []
+        if not isinstance(stored, list) or not stored:
+            return []
+        if all(isinstance(item, dict) and "attachments" in item for item in stored):
+            return stored
+        # 兼容旧版直接保存附件列表的数据。
+        if all(isinstance(item, dict) and item.get("path") for item in stored):
+            return [{"attachments": stored}]
+        return []
+
+    def save_attachments(
+        self,
+        session_id: str | int | None,
+        attachments: list[dict],
+        user_id: int | str | None = None,
+    ) -> None:
+        """按检测轮次保存附件，供最近一次或全部图片复检。"""
+        if not session_id or not attachments:
+            return
+        rounds = self._load_attachment_rounds(session_id, user_id)
+        normalized = [dict(item) for item in attachments if isinstance(item, dict) and item.get("path")]
+        if not normalized:
+            return
+        if rounds and rounds[-1].get("attachments") == normalized:
+            return
+        rounds.append({"attachments": normalized})
+        rounds = rounds[-self.max_attachment_rounds:]
+        redis_client.set(
+            self._attachment_key(str(session_id), user_id),
+            json.dumps(rounds, ensure_ascii=False),
+            self.ttl,
+        )
+
+    def load_attachment_history(
+        self,
+        session_id: str | int | None,
+        user_id: int | str | None = None,
+    ) -> list[list[dict]]:
+        """按时间顺序返回会话中的检测附件轮次。"""
+        return [
+            round_item.get("attachments", [])
+            for round_item in self._load_attachment_rounds(session_id, user_id)
+            if round_item.get("attachments")
+        ]
+
+    def load_attachments(
+        self,
+        session_id: str | int | None,
+        user_id: int | str | None = None,
+    ) -> list[dict]:
+        """返回最近一轮检测附件，兼容原有调用方。"""
+        history = self.load_attachment_history(session_id, user_id)
+        return history[-1] if history else []
+
+    def load_all_attachments(
+        self,
+        session_id: str | int | None,
+        user_id: int | str | None = None,
+        attachment_type: str | None = None,
+    ) -> list[dict]:
+        """返回会话内所有仍记录的附件，按路径去重。"""
+        result = []
+        seen_paths = set()
+        for attachments in self.load_attachment_history(session_id, user_id):
+            for item in attachments:
+                path = item.get("path") if isinstance(item, dict) else None
+                if not path or path in seen_paths:
+                    continue
+                if attachment_type and item.get("type") != attachment_type:
+                    continue
+                seen_paths.add(path)
+                result.append(item)
+        return result
 
 
 conversation_memory = ConversationMemory()

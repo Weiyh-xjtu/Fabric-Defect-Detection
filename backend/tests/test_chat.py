@@ -11,14 +11,18 @@ from app.api.auth import get_current_user
 from app.agent.detection_agent import (
     DETECTION_TOOLS,
     _current_attachment_names,
+    _current_session_id,
+    _current_user_id,
     _finalize_tool_result,
     _last_full_tool_result,
     _append_attachment_context,
     _strip_base64_for_llm,
     detect_batch_images,
+    list_session_attachments,
     query_system_roles,
     query_system_users,
 )
+from app.agent.memory import conversation_memory
 from app.services.detection_service import detection_service
 from main import app
 
@@ -225,3 +229,46 @@ def test_batch_tool_forwards_chat_attachment_original_names(monkeypatch):
         _current_attachment_names.reset(token)
 
     assert captured["original_filenames"] == ["fabric-a.jpg", "fabric-b.jpg"]
+
+
+def test_list_session_attachments_filters_type_and_merges_names(tmp_path):
+    """附件查询工具应支持类型过滤，并把历史文件名并入请求级映射。"""
+    session_id = "pytest-list-attachments"
+    user_id = 24680
+    video = {"type": "video", "path": str(tmp_path / "uuid_line.mp4"), "filename": "line.mp4"}
+    image = {"type": "image", "path": str(tmp_path / "uuid_fabric.jpg"), "filename": "fabric.jpg"}
+    for item in (video, image):
+        with open(item["path"], "wb") as file:
+            file.write(b"data")
+    conversation_memory.clear(session_id, user_id)
+    conversation_memory.save_attachments(session_id, [video], user_id)
+    conversation_memory.save_attachments(session_id, [image], user_id)
+    name_map = {}
+    token_session = _current_session_id.set(session_id)
+    token_user = _current_user_id.set(user_id)
+    token_names = _current_attachment_names.set(name_map)
+    try:
+        listing = json.loads(
+            list_session_attachments.invoke({"attachment_type": "image"})
+        )
+    finally:
+        _current_session_id.reset(token_session)
+        _current_user_id.reset(token_user)
+        _current_attachment_names.reset(token_names)
+        conversation_memory.clear(session_id, user_id)
+
+    assert listing["total_rounds"] == 1
+    # 类型过滤后仍保留原始轮次编号，方便 LLM 按“第N轮”对应。
+    assert listing["rounds"][0]["round"] == 2
+    listed = listing["rounds"][0]["attachments"][0]
+    assert listed["type"] == "image"
+    assert listed["file_exists"] is True
+    # 历史附件的原始文件名并入请求级映射，复检落库时仍显示浏览器文件名。
+    assert name_map[image["path"]] == "fabric.jpg"
+    assert video["path"] not in name_map
+
+
+def test_list_session_attachments_requires_session_context():
+    """无会话上下文时应返回明确错误而不是空列表。"""
+    listing = json.loads(list_session_attachments.invoke({}))
+    assert "无法查询历史附件" in listing["error"]

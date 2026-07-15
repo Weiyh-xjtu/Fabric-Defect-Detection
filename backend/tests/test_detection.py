@@ -1,5 +1,6 @@
 """Detection API regression tests."""
 
+import json
 import os
 import zipfile
 from types import SimpleNamespace
@@ -14,7 +15,22 @@ from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask,
 import app.services.detection_service as detection_service_module
 from app.services.detection_service import detection_service
 from app.agent.memory import conversation_memory
-from app.agent.detection_agent import _resolve_conversation_attachments
+from app.agent.detection_agent import (
+    _current_session_id,
+    _current_user_id,
+    list_session_attachments,
+)
+
+
+def list_attachments_for(session_id, user_id) -> dict:
+    """模拟 Agent 请求上下文，调用会话附件查询工具并解析结果。"""
+    token_session = _current_session_id.set(session_id)
+    token_user = _current_user_id.set(user_id)
+    try:
+        return json.loads(list_session_attachments.invoke({}))
+    finally:
+        _current_session_id.reset(token_session)
+        _current_user_id.reset(token_user)
 
 
 class FakeDetectionResult:
@@ -165,7 +181,7 @@ def test_quick_single_saves_attachment_for_chat_session(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """快捷检测附件应能被同会话中的“再检测一次”恢复。"""
+    """快捷检测附件应能被同会话 Agent 的附件查询工具看到。"""
     client.post(
         "/api/auth/register",
         json={"username": "quick_memory_user", "email": "quick_memory@example.com", "password": "123456"},
@@ -175,6 +191,8 @@ def test_quick_single_saves_attachment_for_chat_session(
         json={"username": "quick_memory_user", "password": "123456"},
     )
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    me = client.get("/api/auth/me", headers=headers)
+    user_id = me.json()["id"]
     session_id = "quick-detection-session"
     monkeypatch.setattr(
         detection_service,
@@ -189,8 +207,8 @@ def test_quick_single_saves_attachment_for_chat_session(
         headers=headers,
     )
 
-    attachments = conversation_memory.load_attachments(session_id)
-    history = conversation_memory.load(session_id)
+    attachments = conversation_memory.load_attachments(session_id, user_id)
+    history = conversation_memory.load(session_id, user_id)
     try:
         assert response.status_code == 200
         assert attachments[0]["type"] == "image"
@@ -200,15 +218,42 @@ def test_quick_single_saves_attachment_for_chat_session(
         assert "快捷检测" in history[-2]["content"]
         assert history[-1]["role"] == "assistant"
         assert "total_objects" in history[-1]["content"]
-        restored, _ = _resolve_conversation_attachments(
-            "再检测一次", [], None, session_id
-        )
-        assert restored == attachments
+        listing = list_attachments_for(session_id, user_id)
+        assert listing["total_rounds"] == 1
+        listed = listing["rounds"][-1]["attachments"][0]
+        assert listed["path"] == attachments[0]["path"]
+        assert listed["filename"] == "fabric.jpg"
+        assert listed["file_exists"] is True
     finally:
         for attachment in attachments:
             if os.path.isfile(attachment["path"]):
                 os.unlink(attachment["path"])
-        conversation_memory.clear(session_id)
+        conversation_memory.clear(session_id, user_id)
+
+
+def test_agent_lists_attachment_rounds_with_missing_files(tmp_path):
+    """附件查询工具应按轮次列出全部图片并标记已失效文件。"""
+    session_id = "all-image-rounds"
+    user_id = 987654
+    first = {"type": "image", "path": str(tmp_path / "round-a.jpg"), "filename": "round-a.jpg"}
+    second = {"type": "image", "path": str(tmp_path / "round-b.jpg"), "filename": "round-b.jpg"}
+    with open(first["path"], "wb") as file:
+        file.write(b"image")
+    # second 不落盘，模拟历史附件文件已被清理。
+    try:
+        conversation_memory.clear(session_id, user_id)
+        conversation_memory.save_attachments(session_id, [first], user_id)
+        conversation_memory.save_attachments(session_id, [second], user_id)
+        listing = list_attachments_for(session_id, user_id)
+        assert listing["total_rounds"] == 2
+        assert [item["round"] for item in listing["rounds"]] == [1, 2]
+        assert listing["rounds"][0]["attachments"][0]["path"] == first["path"]
+        assert listing["rounds"][0]["attachments"][0]["file_exists"] is True
+        assert listing["rounds"][1]["attachments"][0]["file_exists"] is False
+        assert listing["available_files"] == 1
+        assert listing["missing_files"] == 1
+    finally:
+        conversation_memory.clear(session_id, user_id)
 
 
 def test_batch_history_persists_original_upload_filename(

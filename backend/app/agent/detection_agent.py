@@ -53,6 +53,9 @@ _current_user_id: contextvars.ContextVar = contextvars.ContextVar(
 _current_scene_id: contextvars.ContextVar = contextvars.ContextVar(
     "current_scene_id", default=None
 )
+_current_session_id: contextvars.ContextVar = contextvars.ContextVar(
+    "current_session_id", default=None
+)
 _current_attachment_names: contextvars.ContextVar = contextvars.ContextVar(
     "current_attachment_names", default=None
 )
@@ -184,30 +187,17 @@ def _build_attachment_name_map(
     return name_map
 
 
-def _is_repeat_detection_request(message: str) -> bool:
-    """识别明确要求复用上一轮检测输入的表达。"""
-    normalized = "".join(message.lower().split())
-    return any(
-        phrase in normalized
-        for phrase in (
-            "再检测一次",
-            "重新检测",
-            "再检一次",
-            "重复检测",
-            "再跑一次",
-            "再识别一次",
-        )
-    )
-
-
-def _resolve_conversation_attachments(
-    message: str,
+def _register_current_attachments(
     attachments: list[dict] | None,
     image_path: str | None,
     session_id: str | int | None,
     user_id: int | str | None = None,
-) -> tuple[list[dict], str | None]:
-    """优先使用本轮附件；复检请求则恢复会话最近的仍存在附件。"""
+) -> list[dict]:
+    """规范化本轮附件并写入会话附件记忆，供 Agent 复检时查询。
+
+    历史附件不再由后端关键词规则恢复：Agent 会在需要时主动调用
+    list_session_attachments 工具，自行决定复用哪些路径。
+    """
     current = list(attachments or [])
     if image_path and not current:
         current = [
@@ -219,17 +209,83 @@ def _resolve_conversation_attachments(
         ]
     if current:
         conversation_memory.save_attachments(session_id, current, user_id)
-        return current, None
-    if not _is_repeat_detection_request(message):
-        return [], image_path
-    remembered = [
-        item
-        for item in conversation_memory.load_attachments(session_id, user_id)
-        if isinstance(item, dict) and item.get("path") and os.path.isfile(item["path"])
-    ]
-    if remembered:
-        logger.info("从会话 %s 恢复 %d 个检测附件", session_id, len(remembered))
-    return remembered, None
+    return current
+
+
+@tool
+def list_session_attachments(attachment_type: str = "") -> str:
+    """
+    查询当前会话中用户发送过的全部检测附件（图片/ZIP/视频），按轮次从旧到新返回。
+
+    当用户要求重新检测、复检，或提到“上面/之前发的图片”“第N张图”“那个视频”等
+    历史附件、而本轮消息没有附件路径提示时，先调用本工具获取真实路径，
+    再把选中的 path 传给对应检测工具。
+
+    Args:
+        attachment_type: 可选类型过滤：image、zip 或 video，留空返回全部类型
+
+    Returns:
+        JSON 字符串。rounds 中 round 数字越大表示发送时间越新；
+        file_exists 为 false 的文件已失效，不能再用于检测。
+    """
+    session_id = _current_session_id.get()
+    if session_id is None:
+        return json.dumps(
+            {"error": "当前对话没有会话上下文，无法查询历史附件"},
+            ensure_ascii=False,
+        )
+    normalized_type = (attachment_type or "").strip().lower()
+    if normalized_type not in {"", "image", "zip", "video"}:
+        return json.dumps(
+            {
+                "error": f"暂不支持附件类型 {attachment_type!r}",
+                "supported_types": ["image", "zip", "video"],
+            },
+            ensure_ascii=False,
+        )
+
+    user_id = _current_user_id.get()
+    name_map = _current_attachment_names.get()
+    rounds = []
+    existing_paths = set()
+    missing_paths = set()
+    for index, attachments in enumerate(
+        conversation_memory.load_attachment_history(session_id, user_id), start=1
+    ):
+        items = []
+        for item in attachments:
+            path = item.get("path") if isinstance(item, dict) else None
+            item_type = item.get("type", "image") if isinstance(item, dict) else None
+            if not path or (normalized_type and item_type != normalized_type):
+                continue
+            filename = item.get("filename") or os.path.basename(path)
+            file_exists = os.path.isfile(path)
+            (existing_paths if file_exists else missing_paths).add(path)
+            # 合入请求级文件名映射（就地修改，线程内可见），
+            # 让复检落库时仍能显示浏览器原始文件名。
+            if isinstance(name_map, dict):
+                name_map.setdefault(path, filename)
+            items.append(
+                {
+                    "type": item_type,
+                    "path": path,
+                    "filename": filename,
+                    "file_exists": file_exists,
+                }
+            )
+        if items:
+            rounds.append({"round": index, "attachments": items})
+    return json.dumps(
+        {
+            "session_id": str(session_id),
+            "total_rounds": len(rounds),
+            "available_files": len(existing_paths),
+            "missing_files": len(missing_paths),
+            "rounds": rounds,
+            "note": "round 越大表示发送时间越新；file_exists=false 的文件已失效，不能再检测",
+        },
+        ensure_ascii=False,
+    )
 
 
 @tool
@@ -406,34 +462,110 @@ def query_system_roles() -> str:
         db.close()
 
 @tool
-def query_detection_statistics(days: int = 7) -> str:
-    """查询当前用户近期检测任务、图像、目标、成功率和平均推理耗时。"""
+def query_detection_statistics(
+    days: int = 7,
+    task_type: str = "all",
+    today: bool = False,
+) -> str:
+    """查询当前用户检测任务统计。
+
+    Args:
+        days: 最近天数，1-365；当 today=true 时忽略该参数。
+        task_type: all、single、batch 或 video。batch 同时包含历史 zip/folder 类型。
+        today: 是否严格按今天 00:00 至当前时间统计。
+
+    Returns:
+        JSON 字符串，包含筛选条件、任务数、状态分布、图片数、目标数、
+        平均推理耗时和各任务类型数量。摄像头等无法统计的类型会返回 error，
+        调用方应如实说明当前无法查询，不能用全部任务统计代替。
+    """
     if _current_user_id.get() is None:
         return json.dumps({"error": "需要登录后才能查询统计"}, ensure_ascii=False)
+
+    normalized_type = (task_type or "all").strip().lower()
+    task_type_filters = {
+        "all": None,
+        "single": ("single",),
+        "batch": ("batch", "zip", "folder"),
+        "video": ("video",),
+    }
+    if normalized_type in {"camera", "realtime", "实时", "摄像头"}:
+        return json.dumps(
+            {
+                "error": "当前实时摄像头检测不会创建检测任务记录，无法统计执行次数",
+                "supported_task_types": ["single", "batch", "video"],
+            },
+            ensure_ascii=False,
+        )
+    if normalized_type not in task_type_filters:
+        return json.dumps(
+            {
+                "error": f"暂不支持按任务类型 {task_type!r} 查询",
+                "supported_task_types": ["all", "single", "batch", "video"],
+            },
+            ensure_ascii=False,
+        )
+
     days = max(1, min(days, 365))
-    since = datetime.now() - timedelta(days=days)
+    now = datetime.now()
+    since = datetime.combine(now.date(), datetime.min.time()) if today else now - timedelta(days=days)
     db = SessionLocal()
     try:
-        base = db.query(DetectionTask).filter(
+        time_base = db.query(DetectionTask).filter(
             DetectionTask.user_id == _current_user_id.get(),
             DetectionTask.created_at >= since,
+            DetectionTask.created_at <= now,
         )
+        type_rows = time_base.with_entities(
+            DetectionTask.task_type,
+            func.count(DetectionTask.id),
+        ).group_by(DetectionTask.task_type).all()
+
+        base = time_base
+        selected_types = task_type_filters[normalized_type]
+        if selected_types:
+            base = base.filter(DetectionTask.task_type.in_(selected_types))
+
         total_tasks = base.count()
-        completed = base.filter(DetectionTask.status == "completed").count()
+        status_rows = base.with_entities(
+            DetectionTask.status,
+            func.count(DetectionTask.id),
+        ).group_by(DetectionTask.status).all()
+        status_counts = {str(status): int(count) for status, count in status_rows}
+        completed = status_counts.get("completed", 0)
         totals = base.with_entities(
             func.coalesce(func.sum(DetectionTask.total_images), 0),
             func.coalesce(func.sum(DetectionTask.total_objects), 0),
             func.coalesce(func.avg(DetectionTask.total_inference_time), 0),
         ).one()
+
+        type_counts = {"single": 0, "batch": 0, "video": 0, "other": 0}
+        for stored_type, count in type_rows:
+            if stored_type == "single":
+                key = "single"
+            elif stored_type in {"batch", "zip", "folder"}:
+                key = "batch"
+            elif stored_type == "video":
+                key = "video"
+            else:
+                key = "other"
+            type_counts[key] += int(count)
+
         return json.dumps(
             {
-                "days": days,
+                "period": "today" if today else "recent_days",
+                "days": 1 if today else days,
+                "from": since.isoformat(timespec="seconds"),
+                "to": now.isoformat(timespec="seconds"),
+                "task_type": normalized_type,
                 "total_tasks": total_tasks,
                 "completed_tasks": completed,
+                "status_counts": status_counts,
                 "success_rate": round(completed / total_tasks * 100, 2) if total_tasks else 0,
                 "total_images": int(totals[0] or 0),
                 "total_objects": int(totals[1] or 0),
                 "average_inference_time_ms": round(float(totals[2] or 0), 2),
+                "task_type_counts": type_counts,
             },
             ensure_ascii=False,
         )
@@ -502,6 +634,7 @@ def search_knowledge(query: str, top_k: int = 3) -> str:
 
 # 工具列表（绑定到 Agent）
 DETECTION_TOOLS = [
+    list_session_attachments,
     detect_single_image,
     detect_batch_images,
     detect_zip_images_file,
@@ -572,6 +705,10 @@ class DetectionAgent:
 - 当用户消息中包含 [附件ZIP路径: xxx] 时，必须使用 xxx 调用 ZIP 检测工具
 - 当用户消息中包含 [附件视频路径: xxx] 时，xxx 就是视频的服务器路径，你应直接使用它调用视频检测工具
 - 不要要求用户再次提供路径，直接使用附件中给出的路径
+- 当用户要求重新检测、复检，或提到“上面/之前发的图片”“所有图片”“第N张图”“那个视频”等历史附件，而本轮消息没有附件路径提示时，必须先调用 list_session_attachments 查询会话附件记录，再根据用户描述挑选对应 path 调用检测工具
+- 挑选历史附件时按 round 从新到旧、路径去重。例如“重新检测上面5张图片”就是收集最近发送的 5 张不同图片；“重新检测所有图片”就是收集全部图片
+- 只能使用附件提示或 list_session_attachments 返回的 path，禁止编造或修改路径；file_exists 为 false 的文件已失效，不要用它检测，并在回复中说明
+- 会话附件记录为空或全部失效时，明确请用户重新上传，不要执行检测
 - 对于单张图片，调用 detect_single_image 工具
 - 对于多张图片或 ZIP 文件，调用 detect_batch_images 或 detect_zip_images_file 工具
 - 对于视频文件，调用 detect_video_file 工具
@@ -582,7 +719,7 @@ class DetectionAgent:
 
 工作流程：
 1. 理解用户意图
-2. 如果有附件路径，直接调用对应检测工具
+2. 如果本轮有附件路径，直接调用对应检测工具；如果用户指的是历史附件，先调用 list_session_attachments 再检测
 3. 如果是用户、角色或权限问题，调用对应查询工具
 4. 调用工具获取结果
 5. 用自然语言总结结果
@@ -615,7 +752,7 @@ class DetectionAgent:
             agent=agent,
             tools=self.tools,
             verbose=True,  # 开发阶段开启，可查看 Agent 思考过程
-            max_iterations=5,  # 限制循环次数，防止无限循环
+            max_iterations=8,  # 限制循环次数，防止无限循环；需容纳“查会话附件 → 检测 → 总结”多步流程
             return_intermediate_steps=True,  # 返回中间步骤（Tool 调用记录）
         )
 
@@ -639,20 +776,22 @@ class DetectionAgent:
             attachments: 结构化附件列表（单图/多图/ZIP/视频，可选）
             user_id: 当前登录用户 ID，用于检测记录归属
             scene_id: 检测场景 ID（可选）
+            session_id: 会话 ID，用于对话与附件记忆（可选）
 
         Returns:
             Agent 响应字典
         """
-        attachments, image_path = _resolve_conversation_attachments(
-            message, attachments, image_path, session_id, user_id
+        attachments = _register_current_attachments(
+            attachments, image_path, session_id, user_id
         )
-        message = _append_attachment_context(message, attachments, image_path)
+        message = _append_attachment_context(message, attachments)
 
         # 注入请求级上下文，供工具读取
         token_user = _current_user_id.set(user_id)
         token_scene = _current_scene_id.set(scene_id)
+        token_session = _current_session_id.set(session_id)
         token_names = _current_attachment_names.set(
-            _build_attachment_name_map(attachments, image_path)
+            _build_attachment_name_map(attachments)
         )
         try:
             history = conversation_memory.load(session_id, user_id)
@@ -673,6 +812,7 @@ class DetectionAgent:
         finally:
             _current_user_id.reset(token_user)
             _current_scene_id.reset(token_scene)
+            _current_session_id.reset(token_session)
             _current_attachment_names.reset(token_names)
 
     async def chat_stream(
@@ -695,20 +835,22 @@ class DetectionAgent:
             attachments: 结构化附件列表（单图/多图/ZIP/视频，可选）
             user_id: 当前登录用户 ID，用于检测记录归属
             scene_id: 检测场景 ID（可选）
+            session_id: 会话 ID，用于对话与附件记忆（可选）
 
         Yields:
             SSE 事件数据字典
         """
-        attachments, image_path = _resolve_conversation_attachments(
-            message, attachments, image_path, session_id, user_id
+        attachments = _register_current_attachments(
+            attachments, image_path, session_id, user_id
         )
-        message = _append_attachment_context(message, attachments, image_path)
+        message = _append_attachment_context(message, attachments)
 
         # 注入请求级上下文，供工具读取
         token_user = _current_user_id.set(user_id)
         token_scene = _current_scene_id.set(scene_id)
+        token_session = _current_session_id.set(session_id)
         token_names = _current_attachment_names.set(
-            _build_attachment_name_map(attachments, image_path)
+            _build_attachment_name_map(attachments)
         )
         result_holder = {"result": None}
         token_full = _last_full_tool_result.set(result_holder)
@@ -792,6 +934,7 @@ class DetectionAgent:
         finally:
             _current_user_id.reset(token_user)
             _current_scene_id.reset(token_scene)
+            _current_session_id.reset(token_session)
             _current_attachment_names.reset(token_names)
             _last_full_tool_result.reset(token_full)
 

@@ -63,6 +63,7 @@ def _slim_detection_context(value):
 
 def _remember_quick_detection(
     session_id: str | None,
+    user_id: int,
     label: str,
     attachments: list[dict],
     result: dict,
@@ -70,18 +71,20 @@ def _remember_quick_detection(
     """把跳过 LLM 的快捷检测同步为可供 Agent 使用的完整对话上下文。"""
     if not session_id:
         return
-    conversation_memory.save_attachments(session_id, attachments)
+    conversation_memory.save_attachments(session_id, attachments, user_id)
     paths = [item.get("path") for item in attachments if item.get("path")]
     conversation_memory.append(
         session_id,
         "user",
         f"[快捷检测] {label}\n[检测附件路径: {json.dumps(paths, ensure_ascii=False)}]",
+        user_id,
     )
     conversation_memory.append(
         session_id,
         "assistant",
         "快捷检测已完成，结构化检测结果如下：\n"
         + json.dumps(_slim_detection_context(result), ensure_ascii=False),
+        user_id,
     )
 
 
@@ -115,6 +118,7 @@ async def detect_single_api(
         result["filename"] = file.filename
         _remember_quick_detection(
             session_id,
+            current_user.id,
             f"单图 {file.filename}",
             [{"type": "image", "path": tmp_path, "filename": file.filename}],
             result,
@@ -159,7 +163,7 @@ async def detect_batch_api(
             original_filenames=original_filenames,
         )
         quick_attachments = [{"type": "image", "path": path, "filename": filename} for path, filename in zip(temp_paths, original_filenames)]
-        _remember_quick_detection(session_id, f"批量图片 {len(quick_attachments)} 张", quick_attachments, result)
+        _remember_quick_detection(session_id, current_user.id, f"批量图片 {len(quick_attachments)} 张", quick_attachments, result)
         return result
     finally:
         for path in temp_paths if not session_id else []:
@@ -198,6 +202,7 @@ async def detect_zip_api(
         )
         _remember_quick_detection(
             session_id,
+            current_user.id,
             f"ZIP {file.filename}",
             [{"type": "zip", "path": tmp_path, "filename": file.filename}],
             result,
@@ -290,17 +295,18 @@ async def detect_video_api(
         len(content) / (1024 * 1024),
         current_user.username,
     )
+    user_id = current_user.id
     video_attachments = [{"type": "video", "path": tmp_path, "filename": file.filename}]
-    conversation_memory.save_attachments(session_id, video_attachments)
+    conversation_memory.save_attachments(session_id, video_attachments, user_id)
     if session_id:
         conversation_memory.append(
             session_id,
             "user",
             f"[快捷检测] 视频 {file.filename}\n[检测附件路径: {json.dumps([tmp_path], ensure_ascii=False)}]",
+            user_id,
         )
 
     # ── 先创建检测任务记录 ──
-    user_id = current_user.id
     db = SessionLocal()
     try:
         task = DetectionTask(
@@ -359,6 +365,7 @@ async def detect_video_api(
                         "assistant",
                         "快捷视频检测已完成，结构化检测结果如下：\n"
                         + json.dumps(_slim_detection_context(result), ensure_ascii=False),
+                        user_id,
                     )
         except Exception as e:
             logger.error("视频后台检测异常: %s", str(e), exc_info=True)
