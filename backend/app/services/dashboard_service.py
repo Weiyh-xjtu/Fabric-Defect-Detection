@@ -205,18 +205,21 @@ class DashboardService:
         type_names = {
             "single": "单图检测",
             "batch": "批量检测",
-            "zip": "ZIP 检测",
-            "folder": "文件夹检测",
+            "zip": "批量检测",
+            "folder": "批量检测",
             "video": "视频检测",
             "camera": "摄像头检测",
         }
+        merged_counts: dict[str, int] = {}
+        for row in rows:
+            display_name = type_names.get(row.task_type, row.task_type)
+            merged_counts[display_name] = (
+                merged_counts.get(display_name, 0) + int(row.count)
+            )
         return {
             "distribution": [
-                {
-                    "name": type_names.get(row.task_type, row.task_type),
-                    "value": int(row.count),
-                }
-                for row in rows
+                {"name": name, "value": value}
+                for name, value in merged_counts.items()
             ],
             "period_days": days,
         }

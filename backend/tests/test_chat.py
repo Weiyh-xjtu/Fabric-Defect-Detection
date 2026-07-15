@@ -10,13 +10,16 @@ from app.api import chat as chat_api
 from app.api.auth import get_current_user
 from app.agent.detection_agent import (
     DETECTION_TOOLS,
+    _current_attachment_names,
     _finalize_tool_result,
     _last_full_tool_result,
     _append_attachment_context,
     _strip_base64_for_llm,
+    detect_batch_images,
     query_system_roles,
     query_system_users,
 )
+from app.services.detection_service import detection_service
 from main import app
 
 
@@ -200,3 +203,25 @@ def test_agent_registers_user_and_role_query_tools():
     assert "query_system_roles" in tool_names
     assert "需要登录" in query_system_users.invoke({})
     assert "需要登录" in query_system_roles.invoke({})
+
+
+def test_batch_tool_forwards_chat_attachment_original_names(monkeypatch):
+    """对话附件转为服务器路径后，批量工具仍应透传浏览器原始文件名。"""
+    captured = {}
+
+    def fake_detect_batch(image_paths, **kwargs):
+        captured["image_paths"] = image_paths
+        captured.update(kwargs)
+        return {"task_id": 1, "total_images": len(image_paths)}
+
+    monkeypatch.setattr(detection_service, "detect_batch", fake_detect_batch)
+    paths = ["C:/uploads/uuid_a.jpg", "C:/uploads/uuid_b.jpg"]
+    token = _current_attachment_names.set(
+        {paths[0]: "fabric-a.jpg", paths[1]: "fabric-b.jpg"}
+    )
+    try:
+        detect_batch_images.invoke({"image_paths": paths})
+    finally:
+        _current_attachment_names.reset(token)
+
+    assert captured["original_filenames"] == ["fabric-a.jpg", "fabric-b.jpg"]

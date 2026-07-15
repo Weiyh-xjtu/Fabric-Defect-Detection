@@ -19,6 +19,7 @@
 import contextvars
 import copy
 import json
+import os
 from typing import AsyncGenerator
 
 from langchain.agents import AgentExecutor, create_openai_tools_agent
@@ -46,6 +47,9 @@ _current_user_id: contextvars.ContextVar = contextvars.ContextVar(
 )
 _current_scene_id: contextvars.ContextVar = contextvars.ContextVar(
     "current_scene_id", default=None
+)
+_current_attachment_names: contextvars.ContextVar = contextvars.ContextVar(
+    "current_attachment_names", default=None
 )
 
 # 暂存最近一次工具调用的「完整」检测结果 JSON（含 base64 标注图），
@@ -160,6 +164,21 @@ def _append_attachment_context(
     return f"{message}\n" + "\n".join(context_lines)
 
 
+def _build_attachment_name_map(
+    attachments: list[dict] = None,
+    image_path: str = None,
+) -> dict[str, str]:
+    """构建服务器附件路径到浏览器原始文件名的请求级映射。"""
+    name_map = {
+        item["path"]: item.get("filename") or os.path.basename(item["path"])
+        for item in (attachments or [])
+        if item.get("path")
+    }
+    if image_path and image_path not in name_map:
+        name_map[image_path] = os.path.basename(image_path)
+    return name_map
+
+
 @tool
 def detect_single_image(image_path: str, conf: float = 0.25, iou: float = 0.45) -> str:
     """
@@ -179,6 +198,7 @@ def detect_single_image(image_path: str, conf: float = 0.25, iou: float = 0.45) 
         iou=iou,
         scene_id=_current_scene_id.get(),
         user_id=_current_user_id.get(),
+        original_filename=(_current_attachment_names.get() or {}).get(image_path),
     )
     return _finalize_tool_result(result)
 
@@ -200,6 +220,11 @@ def detect_batch_images(image_paths: list[str], conf: float = 0.25) -> str:
         conf=conf,
         scene_id=_current_scene_id.get(),
         user_id=_current_user_id.get(),
+        original_filenames=[
+            (_current_attachment_names.get() or {}).get(path)
+            or os.path.basename(path)
+            for path in image_paths
+        ],
     )
     return _finalize_tool_result(result)
 
@@ -221,6 +246,7 @@ def detect_zip_images_file(zip_path: str, conf: float = 0.25) -> str:
         conf=conf,
         scene_id=_current_scene_id.get(),
         user_id=_current_user_id.get(),
+        original_filename=(_current_attachment_names.get() or {}).get(zip_path),
     )
     return _finalize_tool_result(result)
 
@@ -455,6 +481,9 @@ class DetectionAgent:
         # 注入请求级上下文，供工具读取
         token_user = _current_user_id.set(user_id)
         token_scene = _current_scene_id.set(scene_id)
+        token_names = _current_attachment_names.set(
+            _build_attachment_name_map(attachments, image_path)
+        )
         try:
             result = await self.executor.ainvoke({"input": message})
 
@@ -471,6 +500,7 @@ class DetectionAgent:
         finally:
             _current_user_id.reset(token_user)
             _current_scene_id.reset(token_scene)
+            _current_attachment_names.reset(token_names)
 
     async def chat_stream(
         self,
@@ -500,6 +530,9 @@ class DetectionAgent:
         # 注入请求级上下文，供工具读取
         token_user = _current_user_id.set(user_id)
         token_scene = _current_scene_id.set(scene_id)
+        token_names = _current_attachment_names.set(
+            _build_attachment_name_map(attachments, image_path)
+        )
         result_holder = {"result": None}
         token_full = _last_full_tool_result.set(result_holder)
         try:
@@ -575,6 +608,7 @@ class DetectionAgent:
         finally:
             _current_user_id.reset(token_user)
             _current_scene_id.reset(token_scene)
+            _current_attachment_names.reset(token_names)
             _last_full_tool_result.reset(token_full)
 
 

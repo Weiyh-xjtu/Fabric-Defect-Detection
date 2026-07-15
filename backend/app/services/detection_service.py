@@ -210,6 +210,7 @@ class DetectionService:
         iou: float = 0.45,
         scene_id: int = None,
         user_id: int = None,
+        original_filename: str = None,
     ) -> dict:
         """
         单图检测
@@ -220,6 +221,7 @@ class DetectionService:
             iou: NMS IoU 阈值
             scene_id: 检测场景 ID
             user_id: 操作用户 ID
+            original_filename: 上传时的原始文件名；未提供时使用路径 basename
 
         Returns:
             检测结果字典：
@@ -305,7 +307,9 @@ class DetectionService:
                         task_type="single",
                         detections=detections,
                         annotated_image=buffer.tobytes(),
-                        original_filename=os.path.basename(image_path),
+                        original_filename=(
+                            original_filename or os.path.basename(image_path)
+                        ),
                         inference_time=float(result.speed.get("inference", 0)),
                         conf=conf,
                         iou=iou,
@@ -344,6 +348,7 @@ class DetectionService:
         conf: float = 0.25,
         scene_id: int = None,
         user_id: int = None,
+        original_filenames: list[str] = None,
     ) -> dict:
         """
         批量检测多张图片
@@ -353,6 +358,7 @@ class DetectionService:
             conf: 置信度阈值
             scene_id: 检测场景 ID
             user_id: 操作用户 ID
+            original_filenames: 与 image_paths 对应的原始文件名或相对路径
 
         Returns:
             批量检测结果字典
@@ -369,6 +375,11 @@ class DetectionService:
             class_counts = {}
 
             for i, image_path in enumerate(image_paths):
+                original_name = (
+                    original_filenames[i]
+                    if original_filenames and i < len(original_filenames)
+                    else os.path.basename(image_path)
+                )
                 results = model.predict(
                     source=image_path,
                     conf=conf,
@@ -388,7 +399,7 @@ class DetectionService:
                     ".jpg", annotated_img, [cv2.IMWRITE_JPEG_QUALITY, 85]
                 )
                 annotated_images.append({
-                    "image_path": os.path.basename(image_path),
+                    "image_path": original_name,
                     "annotated_image_base64": base64.b64encode(buffer).decode("utf-8"),
                 })
 
@@ -400,7 +411,7 @@ class DetectionService:
                         x1, y1, x2, y2 = box.xyxy[0].tolist()
 
                         det = {
-                            "image_path": image_path,
+                            "image_path": original_name,
                             "class_name": cls_name,
                             "class_id": cls_id,
                             "confidence": round(confidence, 4),
@@ -489,6 +500,7 @@ class DetectionService:
         conf: float = 0.25,
         scene_id: int = None,
         user_id: int = None,
+        original_filename: str = None,
     ) -> dict:
         """
         解压 ZIP 文件并批量检测其中所有图片
@@ -498,6 +510,7 @@ class DetectionService:
             conf: 置信度阈值
             scene_id: 检测场景 ID
             user_id: 操作用户 ID
+            original_filename: 上传时的 ZIP 原始文件名
 
         Returns:
             ZIP 检测结果字典
@@ -519,6 +532,8 @@ class DetectionService:
                     if ext in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
                         image_files.append(os.path.join(root, fname))
 
+            image_files.sort()
+
             if not image_files:
                 return {"error": "ZIP 文件中没有找到图片"}
 
@@ -530,10 +545,16 @@ class DetectionService:
                 conf=conf,
                 scene_id=scene_id,
                 user_id=user_id,
+                original_filenames=[
+                    os.path.relpath(path, temp_dir).replace(os.sep, "/")
+                    for path in image_files
+                ],
             )
 
             batch_result["source"] = "zip"
-            batch_result["zip_filename"] = os.path.basename(zip_path)
+            batch_result["zip_filename"] = (
+                original_filename or os.path.basename(zip_path)
+            )
             batch_result["total_images_in_zip"] = len(image_files)
 
             return batch_result
