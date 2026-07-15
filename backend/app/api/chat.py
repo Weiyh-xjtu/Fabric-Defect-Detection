@@ -11,15 +11,20 @@ import json
 import os
 import tempfile
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
 from app.agent.multi_agent import multi_agent as detection_agent
 from app.api.auth import get_current_user
 from app.core.logger import get_logger
+from app.database.session import SessionLocal, get_db
+from app.entity.db_models import ChatMessage, ChatSession
+from app.agent.memory import conversation_memory
 
 logger = get_logger(__name__)
 
@@ -94,6 +99,71 @@ def _cleanup_attachments(attachments: list[dict]) -> None:
             os.unlink(attachment["path"])
         except OSError:
             pass
+
+
+def _get_or_create_session(db: Session, user_id: int, session_uuid: str, title: str | None = None) -> ChatSession:
+    session = db.query(ChatSession).filter(
+        ChatSession.user_id == user_id,
+        ChatSession.session_uuid == session_uuid,
+    ).first()
+    if session:
+        return session
+    session = ChatSession(
+        user_id=user_id,
+        session_uuid=session_uuid,
+        title=(title or "新对话")[:200],
+        status="active",
+        message_count=0,
+    )
+    db.add(session)
+    db.flush()
+    return session
+
+
+@router.get("/sessions", summary="获取当前用户会话列表")
+def list_sessions(current_user=Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+    sessions = db.query(ChatSession).filter(
+        ChatSession.user_id == current_user.id,
+        ChatSession.status == "active",
+    ).order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc()).all()
+    return [
+        {
+            "id": item.id,
+            "session_uuid": item.session_uuid,
+            "title": item.title,
+            "message_count": item.message_count,
+            "last_message_at": item.last_message_at,
+            "created_at": item.created_at,
+        }
+        for item in sessions
+    ]
+
+
+@router.get("/sessions/{session_uuid}", summary="获取会话历史")
+def get_session_history(session_uuid: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id, ChatSession.session_uuid == session_uuid).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {
+        "session": {"session_uuid": session.session_uuid, "title": session.title, "message_count": session.message_count},
+        "messages": [
+            {"role": item.role, "content": item.content, "agent_used": item.agent_used, "tool_calls": item.tool_calls, "tool_result": item.tool_result, "created_at": item.created_at}
+            for item in session.messages
+        ],
+    }
+
+
+@router.delete("/sessions/{session_uuid}", summary="删除会话")
+def delete_session(session_uuid: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id, ChatSession.session_uuid == session_uuid).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    attachments = conversation_memory.load_attachments(session_uuid)
+    _cleanup_attachments(attachments)
+    conversation_memory.clear(session_uuid)
+    db.delete(session)
+    db.commit()
+    return {"message": "会话已删除"}
 
 
 @router.post("/upload", summary="上传聊天检测附件")
@@ -201,7 +271,8 @@ async def chat_stream(
             }
         )
     attachments = _normalize_attachments(raw_attachments)
-    session_id = body.get("session_id")
+    requested_session_id = body.get("session_id")
+    session_id = str(requested_session_id or uuid.uuid4())
 
     if not message and not attachments:
         raise HTTPException(status_code=400, detail="消息内容不能为空")
@@ -217,7 +288,19 @@ async def chat_stream(
 
     # ── SSE 流式响应 ──
     async def event_generator():
+        db = SessionLocal()
+        db_session = None
+        assistant_chunks = []
+        tool_calls = []
+        tool_results = []
+        agent_used = None
         try:
+            db_session = _get_or_create_session(db, current_user.id, session_id, message)
+            db.add(ChatMessage(session_id=db_session.id, role="user", content=message))
+            db_session.message_count = int(db_session.message_count or 0) + 1
+            db_session.last_message_at = datetime.now()
+            db.commit()
+            yield f"data: {json.dumps({'type': 'session', 'session_id': session_id}, ensure_ascii=False)}\n\n"
             # 使用 Agent 流式处理（透传当前用户，用于检测记录归属）
             # 注：scene_id 不传，由检测服务自动选取默认场景；
             # session_id 是会话 ID，与检测场景无关，不可混用。
@@ -227,12 +310,34 @@ async def chat_stream(
                 user_id=current_user.id,
                 session_id=session_id,
             ):
+                if event.get("type") == "text_chunk":
+                    assistant_chunks.append(str(event.get("content", "")))
+                elif event.get("type") == "tool_call":
+                    tool_calls.append({"tool": event.get("tool"), "input": event.get("input")})
+                elif event.get("type") == "tool_result":
+                    tool_results.append({"tool": event.get("tool"), "result": str(event.get("result", ""))[:10000]})
+                elif event.get("type") == "agent_route":
+                    agent_used = event.get("agent")
                 # 将事件序列化为 SSE 格式
                 event_data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {event_data}\n\n"
 
             # 流结束标志
             yield "data: [DONE]\n\n"
+
+            assistant_content = "".join(assistant_chunks).strip()
+            if assistant_content or tool_results:
+                db.add(ChatMessage(
+                    session_id=db_session.id,
+                    role="assistant",
+                    content=assistant_content or "工具调用已完成",
+                    agent_used=agent_used,
+                    tool_calls=tool_calls or None,
+                    tool_result=json.dumps(tool_results, ensure_ascii=False) if tool_results else None,
+                ))
+                db_session.message_count = int(db_session.message_count or 0) + 1
+                db_session.last_message_at = datetime.now()
+                db.commit()
 
         except Exception as e:
             logger.error("SSE 流异常: %s", str(e), exc_info=True)
@@ -242,9 +347,10 @@ async def chat_stream(
             )
             yield f"data: {error_data}\n\n"
         finally:
+            db.close()
             # 有会话的附件路径会进入对话记忆，需保留到会话过期，才能支持
             # “再检测一次”。无会话的旧客户端仍在本轮结束后立即清理。
-            if not session_id:
+            if not requested_session_id:
                 _cleanup_attachments(attachments)
 
     return StreamingResponse(

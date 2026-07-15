@@ -47,12 +47,19 @@
             v-if="msg.detectionResult"
             :result="msg.detectionResult"
           />
+          <el-button
+            v-if="msg.retryData"
+            size="small"
+            type="primary"
+            plain
+            @click="retryMessage(msg)"
+          >重新发送</el-button>
         </div>
 
         <!-- 工具调用提示 -->
         <div v-if="msg.toolCall" class="tool-call-info">
-          <el-tag size="small" type="info">
-            🔧 调用工具: {{ msg.toolCall.tool }}
+          <el-tag size="small" :type="msg.toolCall.status === 'done' ? 'success' : 'info'">
+            🔧 {{ msg.toolCall.status === 'done' ? '工具完成' : '调用工具' }}: {{ msg.toolCall.tool }}
           </el-tag>
         </div>
       </div>
@@ -284,10 +291,15 @@ async function sendMessage() {
         fullContent += data.content;
         assistantMessage.content = fullContent;
         scrollToBottom();
+      } else if (data.type === "session") {
+        agentStore.currentSessionId = data.session_id;
+      } else if (data.type === "agent_route") {
+        assistantMessage.agent = data.agent;
       } else if (data.type === "tool_call") {
         // 工具调用中，更新最后一条 AI 消息的工具信息
         assistantMessage.toolCall = { tool: data.tool, input: data.input };
       } else if (data.type === "tool_result") {
+        if (assistantMessage.toolCall) assistantMessage.toolCall.status = "done";
         // 工具调用返回结果
         console.log("[工具结果] tool:", data.tool, "result长度:", data.result?.length);
         try {
@@ -324,6 +336,7 @@ async function sendMessage() {
       assistantMessage.content = `抱歉，处理出错了：${err.message}`;
       assistantMessage.loading = false;
       assistantMessage.error = true;
+      assistantMessage.retryData = { message: effectiveMessage, files: filesToSend };
       agentStore.setLoading(false);
       ElMessage.error("对话请求失败，请重试");
     },
@@ -359,6 +372,15 @@ function handleFileSelect(event) {
   }
   selectedFiles.value = files;
   ElMessage.info(`已选择 ${files.length} 个附件`);
+}
+
+function retryMessage(message) {
+  const retryData = message.retryData;
+  if (!retryData || agentStore.isLoading) return;
+  message.retryData = null;
+  inputText.value = retryData.message;
+  selectedFiles.value = [...(retryData.files || [])];
+  sendMessage();
 }
 
 function removeSelectedFile(index) {

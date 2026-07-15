@@ -6,6 +6,8 @@ from app.agent.multi_agent import multi_agent
 from app.agent.detection_agent import _resolve_conversation_attachments
 from app.storage.redis_client import redis_client
 from app.rag.retriever import KnowledgeRetriever
+from app.rag.document_loader import load_documents, split_documents
+from app.agent.detection_agent import DETECTION_TOOLS
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("message", "expected"), [
@@ -58,3 +60,14 @@ def test_repeat_detection_restores_structured_attachments(tmp_path):
     assert restored == original
     assert legacy_path is None
     memory.clear(session)
+
+def test_day11_tool_count_and_groups():
+    names = {item.name for item in DETECTION_TOOLS}
+    assert len(names) >= 9
+    assert {"query_detection_statistics", "query_detection_trends", "search_knowledge"} <= names
+
+def test_document_loader_splits_markdown(tmp_path):
+    (tmp_path / "knowledge.md").write_text("# A\n" + "内容" * 30, encoding="utf-8")
+    chunks = split_documents(load_documents(tmp_path), chunk_size=20, overlap=5)
+    assert len(chunks) > 1
+    assert chunks[0]["metadata"]["source"] == "knowledge.md"
