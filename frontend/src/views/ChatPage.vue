@@ -266,9 +266,7 @@ async function sendMessage() {
   }
 
   // 发起 SSE 流式请求
-  if (!agentStore.currentSessionId) {
-    agentStore.currentSessionId = crypto.randomUUID();
-  }
+  ensureChatSession();
   const requestBody = {
     message: effectiveMessage,
     session_id: agentStore.currentSessionId,
@@ -460,6 +458,7 @@ async function handleQuickDetect(type) {
       // 构造 FormData 并调用 API
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("session_id", ensureChatSession());
 
       try {
         const result = await detectSingle(formData);
@@ -486,6 +485,7 @@ async function handleQuickDetect(type) {
 
       const isZip = files.some((f) => f.name.endsWith(".zip"));
       const formData = new FormData();
+      formData.append("session_id", ensureChatSession());
 
       if (isZip && files.length === 1) {
         // 单个 ZIP 文件
@@ -554,6 +554,13 @@ const VIDEO_POLL_TIMEOUT = 10 * 60 * 1000;
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function ensureChatSession() {
+  if (!agentStore.currentSessionId) {
+    agentStore.currentSessionId = crypto.randomUUID();
+  }
+  return agentStore.currentSessionId;
 }
 
 /** 轮询视频检测进度，完成后将结果写回对应消息 */
@@ -630,6 +637,7 @@ async function handleVideoDetect() {
     // 上传视频
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("session_id", ensureChatSession());
 
     try {
       const uploadResult = await detectVideo(formData);

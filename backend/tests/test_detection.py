@@ -13,6 +13,8 @@ from app.api.detection import _resolve_camera_device, _validate_ip_camera_url
 from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask, User
 import app.services.detection_service as detection_service_module
 from app.services.detection_service import detection_service
+from app.agent.memory import conversation_memory
+from app.agent.detection_agent import _resolve_conversation_attachments
 
 
 class FakeDetectionResult:
@@ -157,6 +159,56 @@ def test_batch_api_forwards_original_upload_names(
     assert response.status_code == 200
     assert captured["original_filenames"] == ["fabric-a.jpg", "fabric-b.png"]
     assert all("fabric-" not in path for path in captured["image_paths"])
+
+
+def test_quick_single_saves_attachment_for_chat_session(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """快捷检测附件应能被同会话中的“再检测一次”恢复。"""
+    client.post(
+        "/api/auth/register",
+        json={"username": "quick_memory_user", "email": "quick_memory@example.com", "password": "123456"},
+    )
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "quick_memory_user", "password": "123456"},
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    session_id = "quick-detection-session"
+    monkeypatch.setattr(
+        detection_service,
+        "detect_single",
+        lambda **_kwargs: {"task_id": 1, "total_objects": 0},
+    )
+
+    response = client.post(
+        "/api/detection/single",
+        files={"file": ("fabric.jpg", b"image", "image/jpeg")},
+        data={"session_id": session_id},
+        headers=headers,
+    )
+
+    attachments = conversation_memory.load_attachments(session_id)
+    history = conversation_memory.load(session_id)
+    try:
+        assert response.status_code == 200
+        assert attachments[0]["type"] == "image"
+        assert attachments[0]["filename"] == "fabric.jpg"
+        assert os.path.isfile(attachments[0]["path"])
+        assert history[-2]["role"] == "user"
+        assert "快捷检测" in history[-2]["content"]
+        assert history[-1]["role"] == "assistant"
+        assert "total_objects" in history[-1]["content"]
+        restored, _ = _resolve_conversation_attachments(
+            "再检测一次", [], None, session_id
+        )
+        assert restored == attachments
+    finally:
+        for attachment in attachments:
+            if os.path.isfile(attachment["path"]):
+                os.unlink(attachment["path"])
+        conversation_memory.clear(session_id)
 
 
 def test_batch_history_persists_original_upload_filename(
