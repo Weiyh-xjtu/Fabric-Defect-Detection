@@ -3,10 +3,35 @@
     <div class="page-header">
       <div>
         <h2>摄像头实时检测</h2>
-        <p>通过 WebSocket 逐帧检测并显示标注结果</p>
+        <p>支持本机摄像头和 Wi-Fi 手机摄像头，逐帧检测并显示标注结果</p>
       </div>
       <el-tag :type="statusTagType" size="large">{{ statusText }}</el-tag>
     </div>
+
+    <el-card class="camera-source-card" shadow="never">
+      <div class="source-row">
+        <span class="control-label">摄像头来源：</span>
+        <el-radio-group
+          v-model="cameraSource"
+          :disabled="isRunning || isConnecting"
+        >
+          <el-radio-button value="browser">本机摄像头</el-radio-button>
+          <el-radio-button value="ip_webcam">Wi-Fi 手机摄像头</el-radio-button>
+        </el-radio-group>
+
+        <el-input
+          v-if="cameraSource === 'ip_webcam'"
+          v-model="ipCameraUrl"
+          :disabled="isRunning || isConnecting"
+          class="ip-camera-input"
+          placeholder="例如：http://192.168.1.23:8080/video"
+          clearable
+        />
+      </div>
+      <div v-if="cameraSource === 'ip_webcam'" class="source-help">
+        请先在手机 IP Webcam 中启动服务器，并填写手机显示地址后追加 /video。
+      </div>
+    </el-card>
 
     <div class="main-content">
       <section class="preview-panel">
@@ -26,7 +51,7 @@
           ></canvas>
 
           <div v-if="!isRunning" class="placeholder">
-            <span>{{ isConnecting ? "正在初始化模型..." : "点击下方按钮开启摄像头" }}</span>
+            <span>{{ isConnecting ? "正在初始化模型..." : placeholderText }}</span>
           </div>
         </div>
 
@@ -119,7 +144,7 @@
         size="large"
         @click="startCamera"
       >
-        开启摄像头
+        {{ startButtonText }}
       </el-button>
       <el-button v-else type="danger" size="large" @click="stopCamera()">
         {{ isConnecting ? "取消连接" : "停止检测" }}
@@ -163,6 +188,8 @@ const isRunning = ref(false);
 const isConnecting = ref(false);
 const detectMode = ref("cpu");
 const confThreshold = ref(0.25);
+const cameraSource = ref("browser");
+const ipCameraUrl = ref("");
 
 const currentFps = ref(0);
 const frameCount = ref(0);
@@ -189,6 +216,16 @@ const statusTagType = computed(() => {
   if (isRunning.value) return "success";
   return "info";
 });
+
+const startButtonText = computed(() =>
+  cameraSource.value === "ip_webcam" ? "连接手机摄像头" : "开启本机摄像头",
+);
+
+const placeholderText = computed(() =>
+  cameraSource.value === "ip_webcam"
+    ? "输入手机 IP Webcam 地址后开始检测"
+    : "点击下方按钮开启本机摄像头",
+);
 
 const classDistribution = computed(() => {
   const distribution = {};
@@ -228,10 +265,18 @@ function scheduleNextFrame() {
   if (nextFrameRequest !== null) {
     cancelAnimationFrame(nextFrameRequest);
   }
-  nextFrameRequest = requestAnimationFrame(sendSingleFrame);
+  nextFrameRequest = requestAnimationFrame(sendNextFrameRequest);
 }
 
 async function startCamera() {
+  if (cameraSource.value === "ip_webcam") {
+    await startIpWebcam();
+    return;
+  }
+  await startBrowserCamera();
+}
+
+async function startBrowserCamera() {
   if (!navigator.mediaDevices?.getUserMedia) {
     ElMessage.error("当前浏览器不支持摄像头访问");
     return;
@@ -257,10 +302,38 @@ async function startCamera() {
     canvasHeight.value = videoRef.value.videoHeight || 480;
     connectWebSocket();
   } catch (error) {
-    console.error("[摄像头开启失败]", error);
+    console.error("[本机摄像头开启失败]", error);
     releaseMediaStream();
     isConnecting.value = false;
-    ElMessage.error(`摄像头开启失败: ${error.message || error}`);
+    ElMessage.error(`本机摄像头开启失败: ${error.message || error}`);
+  }
+}
+
+async function startIpWebcam() {
+  const cameraUrl = ipCameraUrl.value.trim();
+  if (!cameraUrl) {
+    ElMessage.warning("请填写手机 IP Webcam 地址");
+    return;
+  }
+
+  try {
+    new URL(cameraUrl);
+  } catch {
+    ElMessage.warning("手机摄像头地址格式不正确");
+    return;
+  }
+
+  try {
+    isConnecting.value = true;
+    resetStats();
+    releaseMediaStream();
+    canvasWidth.value = 640;
+    canvasHeight.value = 480;
+    connectWebSocket();
+  } catch (error) {
+    console.error("[手机摄像头连接失败]", error);
+    isConnecting.value = false;
+    ElMessage.error(`手机摄像头连接失败: ${error.message || error}`);
   }
 }
 
@@ -272,13 +345,16 @@ function connectWebSocket() {
   ws = socket;
 
   socket.onopen = () => {
-    socket.send(
-      JSON.stringify({
-        type: "config",
-        mode: detectMode.value,
-        conf: confThreshold.value,
-      }),
-    );
+    const config = {
+      type: "config",
+      source: cameraSource.value,
+      mode: detectMode.value,
+      conf: confThreshold.value,
+    };
+    if (cameraSource.value === "ip_webcam") {
+      config.camera_url = ipCameraUrl.value.trim();
+    }
+    socket.send(JSON.stringify(config));
   };
 
   socket.onmessage = (event) => {
@@ -290,7 +366,8 @@ function connectWebSocket() {
       if (data.type === "config_ok") {
         isConnecting.value = false;
         isRunning.value = true;
-        ElMessage.success(`摄像头已开启（${data.mode.toUpperCase()} 模式）`);
+        const sourceLabel = data.source === "ip_webcam" ? "手机摄像头" : "本机摄像头";
+        ElMessage.success(`${sourceLabel}已开启（${data.mode.toUpperCase()} 模式）`);
         scheduleNextFrame();
         return;
       }
@@ -345,8 +422,21 @@ function handleSocketFailure(message, socket) {
   ElMessage.error(message);
 }
 
-function sendSingleFrame() {
+function sendNextFrameRequest() {
   nextFrameRequest = null;
+  if (cameraSource.value === "ip_webcam") {
+    requestIpWebcamFrame();
+    return;
+  }
+  sendBrowserFrame();
+}
+
+function requestIpWebcamFrame() {
+  if (!isRunning.value || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: "pull_frame" }));
+}
+
+function sendBrowserFrame() {
   if (!isRunning.value || !ws || ws.readyState !== WebSocket.OPEN) return;
 
   const video = videoRef.value;
@@ -463,6 +553,27 @@ onBeforeUnmount(() => stopCamera(false));
     color: #909399;
     font-size: 13px;
   }
+}
+
+.camera-source-card {
+  margin-bottom: 16px;
+}
+
+.source-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.ip-camera-input {
+  width: min(460px, 100%);
+}
+
+.source-help {
+  margin-top: 8px;
+  color: #909399;
+  font-size: 13px;
 }
 
 .main-content {
