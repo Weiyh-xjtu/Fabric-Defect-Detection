@@ -23,4 +23,10 @@ def knowledge_stats(_current_user=Depends(get_current_user)) -> dict:
 
 @router.post("/search")
 def search_knowledge(request: SearchRequest, _current_user=Depends(get_current_user)) -> dict:
-    return {"query": request.query, "results": knowledge_retriever.search(request.query, request.top_k)}
+    retrieval = knowledge_retriever.retrieve(request.query, request.top_k)
+    return {
+        "query": request.query,
+        "mode": retrieval["mode"],
+        "fallback_reason": retrieval["fallback_reason"],
+        "results": retrieval["results"],
+    }

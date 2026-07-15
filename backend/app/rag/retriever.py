@@ -10,9 +10,12 @@ from pathlib import Path
 from threading import Lock
 
 from app.config.settings import BACKEND_DIR, settings
+from app.core.logger import get_logger
 from app.rag.document_loader import load_documents, split_documents
 from app.rag.embedding import embedding_service
 from app.vectorstore.pgvector_client import pgvector_client
+
+logger = get_logger(__name__)
 
 
 class KnowledgeRetriever:
@@ -53,14 +56,27 @@ class KnowledgeRetriever:
         chinese = [lowered[i:i + 2] for i in range(len(lowered) - 1) if "\u4e00" <= lowered[i] <= "\u9fff"]
         return set(latin + chinese)
 
-    def search(self, query: str, top_k: int | None = None) -> list[dict]:
+    def retrieve(self, query: str, top_k: int | None = None) -> dict:
+        """检索并返回结果与实际使用的检索模式，供上层如实反馈。
+
+        Returns:
+            {"mode": "pgvector" | "lexical_fallback", "fallback_reason": str | None,
+             "results": [{"content", "source", "score"}, ...]}
+        """
         top_k = top_k or settings.RAG_TOP_K
-        if self.knowledge_dir == BACKEND_DIR / "knowledge_base" and pgvector_client.count() > 0:
+        fallback_reason = None
+        if self.knowledge_dir == BACKEND_DIR / "knowledge_base":
             try:
-                return pgvector_client.search(embedding_service.embed_query(query), top_k)
-            except Exception:
-                # Embedding/pgvector 暂时不可用时自动退回本地检索。
-                pass
+                if pgvector_client.count() > 0:
+                    results = pgvector_client.search(
+                        embedding_service.embed_query(query), top_k
+                    )
+                    return {"mode": "pgvector", "fallback_reason": None, "results": results}
+                fallback_reason = "向量索引为空，尚未执行知识库索引构建"
+            except Exception as exc:
+                # Embedding/pgvector 暂时不可用时自动退回本地检索，但必须留痕。
+                fallback_reason = f"{type(exc).__name__}: {exc}"
+                logger.warning("向量检索失败，降级为本地词法检索: %s", exc)
         self._load_if_changed()
         query_tokens = self._tokens(query)
         ranked = []
@@ -71,7 +87,18 @@ class KnowledgeRetriever:
             if overlap or exact_bonus:
                 ranked.append((overlap + exact_bonus, chunk))
         ranked.sort(key=lambda item: item[0], reverse=True)
-        return [{**chunk, "score": score} for score, chunk in ranked[:max(1, min(top_k, 10))]]
+        return {
+            "mode": "lexical_fallback",
+            "fallback_reason": fallback_reason,
+            "results": [
+                {**chunk, "score": score}
+                for score, chunk in ranked[:max(1, min(top_k, 10))]
+            ],
+        }
+
+    def search(self, query: str, top_k: int | None = None) -> list[dict]:
+        """兼容旧调用方：只返回结果列表。"""
+        return self.retrieve(query, top_k)["results"]
 
     def stats(self) -> dict:
         self._load_if_changed()

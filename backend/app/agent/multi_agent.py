@@ -63,7 +63,12 @@ class MultiAgentOrchestrator:
             ),
             "qa": DetectionAgent(
                 [search_knowledge],
-                system_prompt=QA_PROMPT + " 领域问题必须先调用 search_knowledge，并根据来源片段回答；检索不到时明确说明。",
+                system_prompt=(
+                    QA_PROMPT
+                    + " 领域问题必须先调用 search_knowledge，并根据来源片段回答；检索不到时明确说明。"
+                    "回答末尾用「来源：」列出引用的来源文件名；"
+                    "如果工具返回 retrieval_mode=lexical_fallback，须说明本次为本地词法检索（向量检索暂不可用）。"
+                ),
                 name="qa",
             ),
         }

@@ -16,7 +16,8 @@ class EmbeddingService:
             return settings.OPENAI_API_KEY, settings.OPENAI_BASE_URL, settings.EMBEDDING_MODEL
         raise RuntimeError("未配置可用的 QWEN_API_KEY 或 OPENAI_API_KEY")
 
-    def embed_texts(self, texts: list[str], batch_size: int = 20) -> list[list[float]]:
+    def embed_texts(self, texts: list[str], batch_size: int = 10) -> list[list[float]]:
+        """批量生成文本向量。DashScope text-embedding-v3 单次最多接受 10 条输入。"""
         if not texts:
             return []
         api_key, base_url, model = self._configuration()

@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import HumanMessage
@@ -9,12 +10,14 @@ from app.agent.detection_agent import (
     _current_session_id,
     _current_user_id,
     list_session_attachments,
+    search_knowledge,
 )
 from app.storage.redis_client import redis_client
-from app.rag.retriever import KnowledgeRetriever
+from app.rag.retriever import KnowledgeRetriever, knowledge_retriever
 from app.rag.document_loader import load_documents, split_documents
 from app.agent.detection_agent import DETECTION_TOOLS
 from app.rag.embedding import embedding_service
+from app.vectorstore.pgvector_client import pgvector_client
 from app.config.settings import settings
 from app.agent.supervisor import SupervisorAgent
 
@@ -94,6 +97,89 @@ def test_retriever_reads_existing_knowledge_base(tmp_path):
     assert results
     assert results[0]["source"] == "custom.md"
     assert "重点复检" in results[0]["content"]
+
+
+def test_retrieve_reports_pgvector_mode(monkeypatch):
+    """向量索引可用时应走 pgvector 检索并如实标注模式。"""
+    monkeypatch.setattr(pgvector_client, "count", lambda: 17)
+    monkeypatch.setattr(embedding_service, "embed_query", lambda _query: [0.1, 0.2])
+    monkeypatch.setattr(
+        pgvector_client,
+        "search",
+        lambda _embedding, top_k: [
+            {"content": "破洞处理", "source": "fabric_defects.md", "score": 0.87}
+        ],
+    )
+    retrieval = knowledge_retriever.retrieve("破洞", 3)
+    assert retrieval["mode"] == "pgvector"
+    assert retrieval["fallback_reason"] is None
+    assert retrieval["results"][0]["source"] == "fabric_defects.md"
+
+
+def test_retrieve_falls_back_with_reason_when_embedding_fails(monkeypatch):
+    """embedding 故障时降级为词法检索，且必须携带降级原因。"""
+    monkeypatch.setattr(pgvector_client, "count", lambda: 17)
+
+    def _boom(_query):
+        raise RuntimeError("embedding offline")
+
+    monkeypatch.setattr(embedding_service, "embed_query", _boom)
+    retrieval = knowledge_retriever.retrieve("破洞缺陷", 3)
+    assert retrieval["mode"] == "lexical_fallback"
+    assert "RuntimeError" in retrieval["fallback_reason"]
+
+
+def test_retrieve_reports_empty_vector_index(monkeypatch):
+    """向量索引未构建时应说明原因，而不是静默词法检索。"""
+    monkeypatch.setattr(pgvector_client, "count", lambda: 0)
+    retrieval = knowledge_retriever.retrieve("破洞缺陷", 3)
+    assert retrieval["mode"] == "lexical_fallback"
+    assert "向量索引为空" in retrieval["fallback_reason"]
+
+
+def test_search_knowledge_tool_reports_mode_and_sources(monkeypatch):
+    """检索工具需返回检索模式和去重后的来源文件列表。"""
+    monkeypatch.setattr(
+        knowledge_retriever,
+        "retrieve",
+        lambda query, top_k=3: {
+            "mode": "pgvector",
+            "fallback_reason": None,
+            "results": [
+                {"content": "破洞", "source": "fabric_defects.md", "score": 0.9},
+                {"content": "评估", "source": "model_evaluation.md", "score": 0.5},
+                {"content": "补充", "source": "fabric_defects.md", "score": 0.4},
+            ],
+        },
+    )
+    payload = json.loads(search_knowledge.invoke({"query": "破洞怎么处理"}))
+    assert payload["retrieval_mode"] == "pgvector"
+    assert payload["sources"] == ["fabric_defects.md", "model_evaluation.md"]
+    assert len(payload["results"]) == 3
+
+
+def test_embed_texts_batches_within_dashscope_limit(monkeypatch):
+    """DashScope embedding 单批不能超过 10 条，否则 build 会 400。"""
+    monkeypatch.setattr(settings, "EMBEDDING_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "EMBEDDING_BASE_URL", "https://embedding.example/v1")
+    calls = []
+
+    class _FakeEmbeddings:
+        def create(self, model, input):
+            calls.append(len(input))
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(embedding=[0.0] * settings.EMBEDDING_DIM)
+                    for _ in input
+                ]
+            )
+
+    monkeypatch.setattr(
+        embedding_service, "_client", SimpleNamespace(embeddings=_FakeEmbeddings())
+    )
+    embeddings = embedding_service.embed_texts([f"chunk-{i}" for i in range(23)])
+    assert len(embeddings) == 23
+    assert calls == [10, 10, 3]
 
 def test_agent_lists_legacy_session_attachments_for_repeat_detection(tmp_path):
     """无 user_id 的旧版会话也能通过附件查询工具拿到历史附件。"""

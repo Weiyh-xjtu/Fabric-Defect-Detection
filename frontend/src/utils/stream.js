@@ -98,6 +98,7 @@ export const TOOL_NAME_MAP = {
   detect_batch_images: "批量检测",
   detect_zip_images_file: "ZIP 检测",
   detect_video_file: "视频检测",
+  list_session_attachments: "会话附件查询",
   search_knowledge: "知识库检索",
   query_detection_statistics: "统计查询",
   query_detection_trends: "趋势查询",
