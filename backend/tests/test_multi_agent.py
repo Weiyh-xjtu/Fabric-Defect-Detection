@@ -16,6 +16,8 @@ from app.config.settings import settings
     ("请检测这张图片", "detection"),
     ("最近检测数量趋势", "analysis"),
     ("什么是 IoU", "qa"),
+    ("今日进行了哪些类别的检测任务", "analysis"),
+    ("本周哪类缺陷最多", "analysis"),
 ])
 async def test_supervisor_routes_to_specialists(message, expected):
     assert await multi_agent.route(message) == expected

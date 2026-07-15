@@ -11,7 +11,12 @@ class SupervisorAgent:
 
     def route(self, state: dict) -> dict:
         text = str((state.get("messages") or [{"content": ""}])[-1].content if hasattr((state.get("messages") or [None])[-1], "content") else (state.get("messages") or [{"content": ""}])[-1].get("content", "")).lower()
-        if any(k in text for k in ("统计", "多少次", "趋势", "分析", "数量", "用户", "角色", "权限", "管理员")):
+        analysis_keywords = (
+            "统计", "多少次", "趋势", "分析", "数量", "用户", "角色", "权限", "管理员",
+            "今日", "今天", "昨日", "昨天", "本周", "本月", "类别", "类型",
+            "任务记录", "检测记录", "历史记录", "缺陷分布", "哪类", "哪些类",
+        )
+        if any(k in text for k in analysis_keywords):
             choice = "analysis"
         elif any(k in text for k in ("检测", "图片", "视频", "zip", "批量")):
             choice = "detection"
