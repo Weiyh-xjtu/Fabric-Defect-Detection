@@ -64,6 +64,7 @@ async def detect_single_api(
             conf=conf,
             scene_id=scene_id,
             user_id=current_user.id,
+            original_filename=os.path.basename(file.filename or tmp_path),
         )
         result["filename"] = file.filename
         return result
@@ -82,6 +83,7 @@ async def detect_batch_api(
     快捷批量检测
     """
     temp_paths = []
+    original_filenames = []
     try:
         for file in files:
             suffix = os.path.splitext(file.filename)[1] or ".jpg"
@@ -89,12 +91,16 @@ async def detect_batch_api(
                 content = await file.read()
                 tmp.write(content)
                 temp_paths.append(tmp.name)
+                original_filenames.append(
+                    os.path.basename(file.filename or tmp.name)
+                )
 
         result = detection_service.detect_batch(
             image_paths=temp_paths,
             conf=conf,
             scene_id=scene_id,
             user_id=current_user.id,
+            original_filenames=original_filenames,
         )
         return result
     finally:
@@ -127,6 +133,7 @@ async def detect_zip_api(
             conf=conf,
             scene_id=scene_id,
             user_id=current_user.id,
+            original_filename=os.path.basename(file.filename or tmp_path),
         )
         return result
     finally:

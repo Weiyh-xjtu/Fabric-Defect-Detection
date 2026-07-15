@@ -156,10 +156,7 @@ import { onMounted, reactive, ref } from 'vue'
 const typeOptions = [
   { label: '单图检测', value: 'single' },
   { label: '批量检测', value: 'batch' },
-  { label: 'ZIP 检测', value: 'zip' },
-  { label: '文件夹检测', value: 'folder' },
   { label: '视频检测', value: 'video' },
-  { label: '摄像头检测', value: 'camera' },
 ]
 const statusOptions = [
   { label: '待处理', value: 'pending' },
@@ -167,6 +164,14 @@ const statusOptions = [
   { label: '已完成', value: 'completed' },
   { label: '失败', value: 'failed' },
 ]
+const typeNameMap = {
+  single: '单图检测',
+  batch: '批量检测',
+  zip: '批量检测',
+  folder: '批量检测',
+  video: '视频检测',
+  camera: '摄像头检测',
+}
 const filters = reactive({ task_type: '', status: '', scene_id: null, keyword: '' })
 const dateRange = ref(null)
 const scenes = ref([])
@@ -183,7 +188,7 @@ const detailLoading = ref(false)
 const detail = ref(null)
 
 function typeName(value) {
-  return typeOptions.find((item) => item.value === value)?.label || value || '-'
+  return typeNameMap[value] || value || '-'
 }
 
 function statusName(value) {
