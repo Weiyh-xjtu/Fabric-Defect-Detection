@@ -9,10 +9,10 @@ import pytest
 import torch
 from sqlalchemy.orm import sessionmaker
 
-from app.api.detection import _resolve_camera_device
+from app.api.detection import _resolve_camera_device, _validate_ip_camera_url
 from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask, User
-from app.services.detection_service import detection_service
 import app.services.detection_service as detection_service_module
+from app.services.detection_service import detection_service
 
 
 class FakeDetectionResult:
@@ -214,3 +214,27 @@ def test_zip_history_remains_batch_and_uses_archive_relative_path(
     assert task.task_type == "batch"
     assert result["zip_filename"] == "fabric-batch.zip"
     assert saved_result.image_path == "roll-a/defect-01.jpg"
+
+
+def test_ip_camera_url_accepts_private_lan_http_url() -> None:
+    assert (
+        _validate_ip_camera_url(" http://192.168.1.23:8080/video ")
+        == "http://192.168.1.23:8080/video"
+    )
+
+
+@pytest.mark.parametrize(
+    "camera_url",
+    [
+        "",
+        "file:///etc/passwd",
+        "http://127.0.0.1:8080/video",
+        "http://localhost:8080/video",
+        "http://169.254.169.254/latest/meta-data",
+        "http://8.8.8.8:8080/video",
+        "http://user:pass@192.168.1.23:8080/video",
+    ],
+)
+def test_ip_camera_url_rejects_unsafe_urls(camera_url: str) -> None:
+    with pytest.raises(ValueError):
+        _validate_ip_camera_url(camera_url)

@@ -10,10 +10,12 @@
 
 import asyncio
 import base64
+import ipaddress
 import os
 import tempfile
 import threading
 import time
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -46,6 +48,7 @@ router = APIRouter(prefix="/api/detection", tags=["快捷检测"])
 async def detect_single_api(
     file: UploadFile = File(..., description="检测图片"),
     conf: float = Form(0.25, description="置信度阈值"),
+    iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None, description="场景 ID"),
     current_user=Depends(get_current_user),
 ):
@@ -62,6 +65,7 @@ async def detect_single_api(
         result = detection_service.detect_single(
             image_path=tmp_path,
             conf=conf,
+            iou=iou,
             scene_id=scene_id,
             user_id=current_user.id,
             original_filename=os.path.basename(file.filename or tmp_path),
@@ -76,6 +80,7 @@ async def detect_single_api(
 async def detect_batch_api(
     files: list[UploadFile] = File(..., description="多张图片"),
     conf: float = Form(0.25),
+    iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None),
     current_user=Depends(get_current_user),
 ):
@@ -98,6 +103,7 @@ async def detect_batch_api(
         result = detection_service.detect_batch(
             image_paths=temp_paths,
             conf=conf,
+            iou=iou,
             scene_id=scene_id,
             user_id=current_user.id,
             original_filenames=original_filenames,
@@ -115,6 +121,7 @@ async def detect_batch_api(
 async def detect_zip_api(
     file: UploadFile = File(..., description="ZIP 压缩包"),
     conf: float = Form(0.25),
+    iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None),
     current_user=Depends(get_current_user),
 ):
@@ -131,6 +138,7 @@ async def detect_zip_api(
         result = detection_service.detect_zip(
             zip_path=tmp_path,
             conf=conf,
+            iou=iou,
             scene_id=scene_id,
             user_id=current_user.id,
             original_filename=os.path.basename(file.filename or tmp_path),
@@ -176,6 +184,7 @@ from app.storage.redis_client import redis_client
 async def detect_video_api(
     file: UploadFile = File(..., description="视频文件（mp4/avi/mov）"),
     conf: float = Form(0.25, ge=0.1, le=0.9, description="置信度阈值"),
+    iou: float = Form(0.45, ge=0, le=1, description="NMS IoU 阈值"),
     frame_sample_rate: int = Form(
         5, ge=1, description="帧采样间隔（每 N 帧取 1 帧）"
     ),
@@ -231,6 +240,7 @@ async def detect_video_api(
             task_type="video",
             status="processing",
             conf_threshold=conf,
+            iou_threshold=iou,
         )
         db.add(task)
         db.flush()
@@ -252,6 +262,7 @@ async def detect_video_api(
             result = detection_service.detect_video(
                 video_path=tmp_path,
                 conf=conf,
+                iou=iou,
                 frame_sample_rate=frame_sample_rate,
                 max_frames=max_frames,
                 scene_id=scene_id,
@@ -372,6 +383,113 @@ def _resolve_camera_device(mode: str) -> torch.device:
     raise ValueError(f"不支持的检测模式: {mode}")
 
 
+def _validate_ip_camera_url(camera_url: str) -> str:
+    """Validate an Android IP Webcam URL before the backend opens it."""
+    if not isinstance(camera_url, str):
+        raise ValueError("手机摄像头地址必须是字符串")
+
+    normalized_url = camera_url.strip()
+    if not normalized_url:
+        raise ValueError("请填写手机摄像头地址")
+    if len(normalized_url) > 2048:
+        raise ValueError("手机摄像头地址过长")
+
+    parsed = urlparse(normalized_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("手机摄像头地址仅支持 http 或 https")
+    if not parsed.hostname:
+        raise ValueError("手机摄像头地址缺少主机 IP")
+    if parsed.username or parsed.password:
+        raise ValueError("手机摄像头地址不能包含用户名或密码")
+    if parsed.fragment:
+        raise ValueError("手机摄像头地址不能包含 # 片段")
+
+    try:
+        host_ip = ipaddress.ip_address(parsed.hostname)
+    except ValueError as exc:
+        raise ValueError("请填写手机显示的局域网 IP 地址，例如 http://192.168.1.23:8080/video") from exc
+
+    if not host_ip.is_private:
+        raise ValueError("手机摄像头地址必须是局域网私有 IP")
+    if host_ip.is_loopback or host_ip.is_link_local or host_ip.is_multicast:
+        raise ValueError("手机摄像头地址不能是本机、链路本地或组播地址")
+    if host_ip.is_unspecified or host_ip.is_reserved:
+        raise ValueError("手机摄像头地址不是可用的局域网 IP")
+
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("手机摄像头端口无效") from exc
+
+    return normalized_url
+
+
+def _open_ip_camera_capture(camera_url: str):
+    cap = cv2.VideoCapture()
+    for prop_name, value in (
+        ("CAP_PROP_OPEN_TIMEOUT_MSEC", 5000),
+        ("CAP_PROP_READ_TIMEOUT_MSEC", 5000),
+        ("CAP_PROP_BUFFERSIZE", 1),
+    ):
+        prop = getattr(cv2, prop_name, None)
+        if prop is not None:
+            cap.set(prop, value)
+    cap.open(camera_url)
+    return cap
+
+
+def _detect_camera_frame(
+    *,
+    model,
+    frame: np.ndarray,
+    mode: str,
+    conf: float,
+    iou: float,
+    inference_device: torch.device,
+) -> tuple[str, list[dict], float]:
+    imgsz = 416 if mode == "cpu" else 640
+
+    results = model.predict(
+        source=frame,
+        conf=conf,
+        iou=iou,
+        imgsz=imgsz,
+        device=inference_device,
+        save=False,
+        verbose=False,
+        half=False,
+    )
+    result = results[0]
+    inference_time = float(result.speed.get("inference", 0))
+
+    annotated_img = result.plot()
+    _, buffer = cv2.imencode(".jpg", annotated_img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    annotated_b64 = base64.b64encode(buffer).decode("utf-8")
+
+    detections = []
+    if result.boxes is not None and len(result.boxes) > 0:
+        for box in result.boxes:
+            cls_id = int(box.cls[0])
+            cls_name = model.names.get(cls_id, f"class_{cls_id}")
+            confidence = float(box.conf[0])
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            detections.append(
+                {
+                    "class_name": cls_name,
+                    "class_id": cls_id,
+                    "confidence": round(confidence, 4),
+                    "bbox": [
+                        round(x1, 1),
+                        round(y1, 1),
+                        round(x2, 1),
+                        round(y2, 1),
+                    ],
+                }
+            )
+
+    return annotated_b64, detections, inference_time
+
+
 @router.websocket("/camera")
 async def camera_detection_ws(websocket: WebSocket):
     """
@@ -379,53 +497,97 @@ async def camera_detection_ws(websocket: WebSocket):
 
     通信协议：
       前端发送：
-        - {"type": "config", "mode": "cpu/gpu", "conf": 0.25}  初始化配置
-        - {"type": "frame", "data": "<base64>"}                 发送帧
-        - {"type": "close"}                                     关闭连接
+        - {"type": "config", "source": "browser", "mode": "cpu/gpu", "conf": 0.25}
+        - {"type": "config", "source": "ip_webcam", "camera_url": "http://192.168.1.23:8080/video", ...}
+        - {"type": "frame", "data": "<base64>"}  本机摄像头发送帧
+        - {"type": "pull_frame"}                  手机摄像头请求后端拉取一帧
+        - {"type": "close"}                       关闭连接
 
       后端返回：
-        - {"type": "result", "annotated_frame": "<base64>", ...}  标注帧 + 统计
-        - {"type": "error", "message": "..."}                     错误信息
+        - {"type": "config_ok", "source": "...", "mode": "..."}
+        - {"type": "result", "annotated_frame": "<base64>", ...}
+        - {"type": "error", "message": "..."}
     """
     await websocket.accept()
     connection_id = id(websocket)
     logger.info("摄像头 WebSocket 连接建立: connection_id=%d", connection_id)
 
-    # ── 默认配置 ──
-    mode = "cpu"  # cpu 或 gpu
+    mode = "cpu"
     conf = 0.25
     iou = 0.45
     scene_id = None
+    source = "browser"
     model = None
     inference_device = torch.device("cpu")
+    ip_camera_capture = None
 
-    # ── 帧处理状态 ──
-    last_frame_time = 0
     frame_count = 0
     fps_start_time = time.time()
     fps_frame_count = 0
     current_fps = 0.0
 
+    async def send_detection_result(frame: np.ndarray):
+        nonlocal current_fps, fps_frame_count, fps_start_time, frame_count
+
+        annotated_b64, detections, inference_time = await asyncio.to_thread(
+            _detect_camera_frame,
+            model=model,
+            frame=frame,
+            mode=mode,
+            conf=conf,
+            iou=iou,
+            inference_device=inference_device,
+        )
+
+        fps_frame_count += 1
+        elapsed = time.time() - fps_start_time
+        if elapsed >= 1.0:
+            current_fps = fps_frame_count / elapsed
+            fps_frame_count = 0
+            fps_start_time = time.time()
+
+        frame_count += 1
+
+        await websocket.send_json(
+            {
+                "type": "result",
+                "annotated_frame": annotated_b64,
+                "detections": detections,
+                "object_count": len(detections),
+                "inference_time": round(inference_time, 2),
+                "fps": round(current_fps, 1),
+                "frame_count": frame_count,
+            }
+        )
+
     try:
         while True:
-            # 接收前端消息
             data = await websocket.receive_json()
             msg_type = data.get("type")
 
-            # ── 处理配置消息 ──
             if msg_type == "config":
                 mode = data.get("mode", "cpu")
                 conf = data.get("conf", 0.25)
                 iou = data.get("iou", 0.45)
                 scene_id = data.get("scene_id")
+                source = data.get("source", "browser")
+
+                if ip_camera_capture is not None:
+                    await asyncio.to_thread(ip_camera_capture.release)
+                    ip_camera_capture = None
+
+                if source not in {"browser", "ip_webcam"}:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": f"不支持的摄像头来源: {source}",
+                        }
+                    )
+                    continue
 
                 try:
-                    # 使用 torch.device 避免 Ultralytics 在运行时改写
-                    # 进程级 CUDA_VISIBLE_DEVICES，导致 CPU 后无法切换 GPU。
                     inference_device = _resolve_camera_device(mode)
-                    model = await asyncio.to_thread(
-                        detection_service._get_model, scene_id
-                    )
+                    model = await asyncio.to_thread(detection_service._get_model, scene_id)
 
                     dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
                     await asyncio.to_thread(
@@ -438,7 +600,7 @@ async def camera_detection_ws(websocket: WebSocket):
                         save=False,
                         verbose=False,
                     )
-                    logger.info("摄像头模型预热完成, 模式: %s", mode)
+                    logger.info("摄像头模型预热完成, 来源: %s, 模式: %s", source, mode)
                 except Exception as e:
                     logger.error("模型加载失败: %s", str(e))
                     await websocket.send_json(
@@ -449,21 +611,64 @@ async def camera_detection_ws(websocket: WebSocket):
                     )
                     continue
 
-                await websocket.send_json(
-                    {
-                        "type": "config_ok",
-                        "mode": mode,
-                        "message": f"配置成功，模式: {mode}",
-                    }
-                )
+                config_response = {
+                    "type": "config_ok",
+                    "source": source,
+                    "mode": mode,
+                    "message": f"配置成功，模式: {mode}",
+                }
 
-            # ── 处理帧数据 ──
+                if source == "ip_webcam":
+                    try:
+                        camera_url = _validate_ip_camera_url(data.get("camera_url", ""))
+                        ip_camera_capture = await asyncio.to_thread(
+                            _open_ip_camera_capture, camera_url
+                        )
+                        if not ip_camera_capture.isOpened():
+                            raise RuntimeError("无法打开手机摄像头视频流")
+
+                        ok, frame = await asyncio.to_thread(ip_camera_capture.read)
+                        if not ok or frame is None:
+                            raise RuntimeError("无法读取手机摄像头画面")
+
+                        height, width = frame.shape[:2]
+                        config_response.update(
+                            {
+                                "width": width,
+                                "height": height,
+                                "message": f"手机摄像头连接成功，模式: {mode}",
+                            }
+                        )
+                        logger.info("手机摄像头连接成功: %s", camera_url)
+                    except Exception as e:
+                        if ip_camera_capture is not None:
+                            await asyncio.to_thread(ip_camera_capture.release)
+                            ip_camera_capture = None
+                        logger.error("手机摄像头连接失败: %s", str(e))
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": f"手机摄像头连接失败: {str(e)}",
+                            }
+                        )
+                        continue
+
+                await websocket.send_json(config_response)
+
             elif msg_type == "frame":
                 if model is None:
                     await websocket.send_json(
                         {
                             "type": "error",
                             "message": "请先发送 config 消息初始化模型",
+                        }
+                    )
+                    continue
+                if source != "browser":
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "当前不是本机摄像头模式，请发送 pull_frame",
                         }
                     )
                     continue
@@ -476,74 +681,9 @@ async def camera_detection_ws(websocket: WebSocket):
                     img_bytes = base64.b64decode(frame_b64)
                     nparr = np.frombuffer(img_bytes, np.uint8)
                     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
                     if frame is None:
                         continue
-
-                    imgsz = 416 if mode == "cpu" else 640
-
-                    results = await asyncio.to_thread(
-                        model.predict,
-                        source=frame,
-                        conf=conf,
-                        iou=iou,
-                        imgsz=imgsz,
-                        device=inference_device,
-                        save=False,
-                        verbose=False,
-                        half=False,
-                    )
-                    result = results[0]
-                    inference_time = float(result.speed.get("inference", 0))
-
-                    annotated_img = result.plot()
-                    _, buffer = cv2.imencode(
-                        ".jpg", annotated_img, [cv2.IMWRITE_JPEG_QUALITY, 70]
-                    )
-                    annotated_b64 = base64.b64encode(buffer).decode("utf-8")
-
-                    detections = []
-                    if result.boxes is not None and len(result.boxes) > 0:
-                        for box in result.boxes:
-                            cls_id = int(box.cls[0])
-                            cls_name = model.names.get(cls_id, f"class_{cls_id}")
-                            confidence = float(box.conf[0])
-                            x1, y1, x2, y2 = box.xyxy[0].tolist()
-                            detections.append(
-                                {
-                                    "class_name": cls_name,
-                                    "class_id": cls_id,
-                                    "confidence": round(confidence, 4),
-                                    "bbox": [
-                                        round(x1, 1),
-                                        round(y1, 1),
-                                        round(x2, 1),
-                                        round(y2, 1),
-                                    ],
-                                }
-                            )
-
-                    fps_frame_count += 1
-                    elapsed = time.time() - fps_start_time
-                    if elapsed >= 1.0:
-                        current_fps = fps_frame_count / elapsed
-                        fps_frame_count = 0
-                        fps_start_time = time.time()
-
-                    frame_count += 1
-
-                    await websocket.send_json(
-                        {
-                            "type": "result",
-                            "annotated_frame": annotated_b64,
-                            "detections": detections,
-                            "object_count": len(detections),
-                            "inference_time": round(inference_time, 2),
-                            "fps": round(current_fps, 1),
-                            "frame_count": frame_count,
-                        }
-                    )
-
+                    await send_detection_result(frame)
                 except Exception as e:
                     logger.error("摄像头帧处理异常: %s", str(e))
                     await websocket.send_json(
@@ -553,7 +693,44 @@ async def camera_detection_ws(websocket: WebSocket):
                         }
                     )
 
-            # ── 处理关闭消息 ──
+            elif msg_type == "pull_frame":
+                if model is None:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "请先发送 config 消息初始化模型",
+                        }
+                    )
+                    continue
+                if source != "ip_webcam" or ip_camera_capture is None:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "请先连接手机摄像头",
+                        }
+                    )
+                    continue
+
+                try:
+                    ok, frame = await asyncio.to_thread(ip_camera_capture.read)
+                    if not ok or frame is None:
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": "无法从手机摄像头读取画面，请检查手机是否仍在同一 Wi-Fi 并保持 IP Webcam 开启",
+                            }
+                        )
+                        continue
+                    await send_detection_result(frame)
+                except Exception as e:
+                    logger.error("手机摄像头帧处理异常: %s", str(e))
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": f"手机摄像头帧处理失败: {str(e)}",
+                        }
+                    )
+
             elif msg_type == "close":
                 logger.info(
                     "摄像头 WebSocket 主动关闭: connection_id=%d", connection_id
@@ -565,7 +742,8 @@ async def camera_detection_ws(websocket: WebSocket):
     except Exception as e:
         logger.error("摄像头 WebSocket 异常: %s", str(e), exc_info=True)
     finally:
-        # 清理资源
+        if ip_camera_capture is not None:
+            await asyncio.to_thread(ip_camera_capture.release)
         _camera_frame_buffer.pop(connection_id, None)
         logger.info(
             "摄像头 WebSocket 关闭, 共处理 %d 帧: connection_id=%d",
