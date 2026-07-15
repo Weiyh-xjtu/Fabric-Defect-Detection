@@ -100,6 +100,8 @@ class Settings(BaseSettings):
     # ── RAG / Embedding 配置 ──────────────────────────
     EMBEDDING_MODEL: str = "text-embedding-v3"
     EMBEDDING_DIM: int = 1024
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = ""
     RAG_CHUNK_SIZE: int = 500
     RAG_CHUNK_OVERLAP: int = 50
     RAG_TOP_K: int = 3

@@ -7,6 +7,9 @@ class EmbeddingService:
         self._client = None
 
     def _configuration(self) -> tuple[str, str, str]:
+        # Embedding 使用独立凭据时，优先于聊天模型凭据。
+        if settings.EMBEDDING_API_KEY and settings.EMBEDDING_BASE_URL:
+            return settings.EMBEDDING_API_KEY, settings.EMBEDDING_BASE_URL, settings.EMBEDDING_MODEL
         if settings.QWEN_API_KEY and settings.QWEN_API_KEY != "sk-your-qwen-api-key":
             return settings.QWEN_API_KEY, settings.QWEN_BASE_URL, settings.EMBEDDING_MODEL
         if settings.OPENAI_API_KEY and settings.OPENAI_API_KEY != "sk-your-api-key-here":
