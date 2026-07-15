@@ -8,6 +8,8 @@ from app.storage.redis_client import redis_client
 from app.rag.retriever import KnowledgeRetriever
 from app.rag.document_loader import load_documents, split_documents
 from app.agent.detection_agent import DETECTION_TOOLS
+from app.rag.embedding import embedding_service
+from app.config.settings import settings
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("message", "expected"), [
@@ -71,3 +73,10 @@ def test_document_loader_splits_markdown(tmp_path):
     chunks = split_documents(load_documents(tmp_path), chunk_size=20, overlap=5)
     assert len(chunks) > 1
     assert chunks[0]["metadata"]["source"] == "knowledge.md"
+
+def test_embedding_uses_dedicated_credentials(monkeypatch):
+    monkeypatch.setattr(settings, "EMBEDDING_API_KEY", "embedding-key")
+    monkeypatch.setattr(settings, "EMBEDDING_BASE_URL", "https://embedding.example/v1")
+    monkeypatch.setattr(settings, "QWEN_API_KEY", "chat-qwen-key")
+    key, url, _model = embedding_service._configuration()
+    assert (key, url) == ("embedding-key", "https://embedding.example/v1")
