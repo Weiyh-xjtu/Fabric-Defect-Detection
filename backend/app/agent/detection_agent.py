@@ -3,7 +3,7 @@
 
 职责：
   -. 创建 LangChain ReAct Agent
-  - 绑定检测相关工具（单图/批量/ZIP）
+  - 绑定检测工具及用户/角色只读查询工具
   - 处理 SSE 流式输出 Agent 的思考过程和结果
 
 架构：
@@ -28,7 +28,9 @@ from langchain_openai import ChatOpenAI
 
 from app.config.settings import settings
 from app.core.logger import get_logger
+from app.database.session import SessionLocal
 from app.services.detection_service import detection_service
+from app.services.user_service import user_service
 
 logger = get_logger(__name__)
 
@@ -247,12 +249,79 @@ def detect_video_file(
     return _finalize_tool_result(result)
 
 
+@tool
+def query_system_users(
+    keyword: str = "",
+    role: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> str:
+    """
+    查询系统用户列表，可按用户名/邮箱关键词和角色标识筛选。
+
+    Args:
+        keyword: 可选的用户名或邮箱关键词
+        role: 可选的角色标识，例如 admin、operator、viewer
+        page: 页码，默认 1
+        page_size: 每页数量，默认 20，最大 100
+
+    Returns:
+        JSON 字符串，只包含非敏感用户资料和角色
+    """
+    if _current_user_id.get() is None:
+        return json.dumps({"error": "需要登录后才能查询用户"}, ensure_ascii=False)
+
+    db = SessionLocal()
+    try:
+        result = user_service.list_users(
+            db,
+            page=max(1, page),
+            page_size=min(max(1, page_size), 100),
+            keyword=keyword or None,
+        )
+        if role:
+            role_name = role.strip().lower()
+            result["items"] = [
+                item
+                for item in result["items"]
+                if role_name in {name.lower() for name in item["roles"]}
+            ]
+            result["filtered_count"] = len(result["items"])
+            result["role_filter"] = role_name
+        return json.dumps(result, ensure_ascii=False)
+    finally:
+        db.close()
+
+
+@tool
+def query_system_roles() -> str:
+    """
+    查询系统角色及其权限编码，用于回答角色、管理员和权限相关问题。
+
+    Returns:
+        JSON 字符串，包含角色名称、显示名、描述和权限编码列表
+    """
+    if _current_user_id.get() is None:
+        return json.dumps({"error": "需要登录后才能查询角色"}, ensure_ascii=False)
+
+    db = SessionLocal()
+    try:
+        return json.dumps(
+            {"roles": user_service.list_roles(db)},
+            ensure_ascii=False,
+        )
+    finally:
+        db.close()
+
+
 # 工具列表（绑定到 Agent）
 DETECTION_TOOLS = [
     detect_single_image,
     detect_batch_images,
     detect_zip_images_file,
-    detect_video_file,          # 【新增】
+    detect_video_file,
+    query_system_users,
+    query_system_roles,
 ]
 
 # ══════════════════════════════════════════════════════════════
@@ -304,7 +373,7 @@ class DetectionAgent:
         self.llm = create_llm()
 
         # OpenAI Tools Agent 系统提示词
-        system_prompt = """你是一个专业的目标检测助手。你可以帮用户检测图片、ZIP 压缩包和视频中的目标物体。
+        system_prompt = """你是一个专业的目标检测平台助手。你可以执行图片、ZIP 压缩包和视频检测，也可以查询系统用户、角色和权限。
 
 重要规则：
 - 当用户消息中包含 [附件图片路径: xxx] 时，xxx 就是图片的服务器路径，你应直接使用它调用检测工具
@@ -315,12 +384,17 @@ class DetectionAgent:
 - 对于单张图片，调用 detect_single_image 工具
 - 对于多张图片或 ZIP 文件，调用 detect_batch_images 或 detect_zip_images_file 工具
 - 对于视频文件，调用 detect_video_file 工具
+- 用户询问“有哪些用户”、用户数量或某个用户时，调用 query_system_users 工具
+- 用户询问管理员时，调用 query_system_users，并将 role 设置为 admin
+- 用户询问系统角色或权限时，调用 query_system_roles 工具
+- 用户与角色工具只返回非敏感资料；绝不能索取、推测或输出密码、Token 等凭据
 
 工作流程：
 1. 理解用户意图
 2. 如果有附件路径，直接调用对应检测工具
-3. 调用工具获取检测结果
-4. 用自然语言总结检测结果
+3. 如果是用户、角色或权限问题，调用对应查询工具
+4. 调用工具获取结果
+5. 用自然语言总结结果
 
 回复格式要求：
 - 先报告检测到的目标总数

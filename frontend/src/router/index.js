@@ -59,6 +59,12 @@ const routes = [
         component: () => import('@/views/DashboardPage.vue'),
         meta: { title: '数据看板', icon: 'DataAnalysis' },
       },
+      {
+        path: 'settings',
+        name: 'Settings',
+        component: () => import('@/views/SettingsPage.vue'),
+        meta: { title: '系统设置', icon: 'Setting' },
+      },
     ],
   },
 

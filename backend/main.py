@@ -10,8 +10,11 @@ from app.api.auth import router as auth_router
 from app.api.health import router as health_router
 from app.api.training import router as training_router  # 【新增】导入训练路由
 from app.api.chat import router as chat_router
+from app.api.dashboard import router as dashboard_router
 from app.api.detection import router as detection_router
+from app.api.history import router as history_router
 from app.middleware.rate_limiter import RateLimiterMiddleware
+from app.api.user import router as user_router
 
 def init_minio():
     """初始化 MinIO 存储桶"""
@@ -91,7 +94,9 @@ app.include_router(health_router)
 app.include_router(training_router)  # 【新增】注册训练路由
 app.include_router(chat_router)  # Day 8 新增
 app.include_router(detection_router) # Day 8 新增
-
+app.include_router(dashboard_router)   # 【Day10 新增】
+app.include_router(history_router)     # 【Day10 新增】
+app.include_router(user_router)        # 【Day10 新增】
 
 @app.get("/")
 def root():

@@ -1,6 +1,364 @@
 <template>
-  <div class="page-container">
-    <h2>数据看板</h2>
-    <p>Day 10 实现 ECharts 数据可视化看板</p>
+  <div v-loading="loading" class="dashboard-page">
+    <div class="page-header">
+      <div>
+        <h2>数据看板</h2>
+        <p>汇总当前账号的检测任务与目标分布</p>
+      </div>
+      <el-radio-group v-model="periodDays" @change="loadAllData">
+        <el-radio-button :value="7">近 7 天</el-radio-button>
+        <el-radio-button :value="30">近 30 天</el-radio-button>
+        <el-radio-button :value="90">近 90 天</el-radio-button>
+      </el-radio-group>
+    </div>
+
+    <el-row :gutter="16" class="stat-cards">
+      <el-col
+        v-for="card in statCards"
+        :key="card.key"
+        :xs="24"
+        :sm="12"
+        :lg="6"
+      >
+        <el-card shadow="hover" class="stat-card">
+          <div class="stat-icon" :style="{ background: card.background }">
+            <el-icon :size="28" :color="card.color">
+              <component :is="card.icon" />
+            </el-icon>
+          </div>
+          <div class="stat-info">
+            <div class="stat-value">
+              {{ card.format(stats[card.key]) }}<span v-if="card.unit" class="unit">{{ card.unit }}</span>
+            </div>
+            <div class="stat-label">{{ card.label }}</div>
+            <div
+              class="stat-growth"
+              :class="growthClass(card.growthKey, card.inverse)"
+            >
+              {{ formatGrowth(stats.growth?.[card.growthKey]) }}
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" class="chart-row">
+      <el-col :xs="24" :xl="16">
+        <el-card shadow="hover">
+          <template #header>每日检测趋势</template>
+          <div ref="trendChartRef" class="chart-container" />
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :xl="8">
+        <el-card shadow="hover">
+          <template #header>类别分布</template>
+          <div ref="classChartRef" class="chart-container" />
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" class="chart-row">
+      <el-col :xs="24" :xl="12">
+        <el-card shadow="hover">
+          <template #header>场景分布</template>
+          <div ref="sceneChartRef" class="chart-container" />
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :xl="12">
+        <el-card shadow="hover">
+          <template #header>任务类型分布</template>
+          <div ref="typeChartRef" class="chart-container" />
+        </el-card>
+      </el-col>
+    </el-row>
   </div>
 </template>
+
+<script setup>
+import {
+  getClassDistribution,
+  getSceneDistribution,
+  getStatistics,
+  getTrend,
+  getTypeDistribution,
+} from '@/api/dashboard'
+import { Aim, Document, PictureFilled, Timer } from '@element-plus/icons-vue'
+import * as echarts from 'echarts'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+
+const periodDays = ref(30)
+const loading = ref(false)
+const stats = ref({
+  total_tasks: 0,
+  total_images: 0,
+  total_objects: 0,
+  avg_inference_time: 0,
+  growth: {},
+})
+
+const trendChartRef = ref(null)
+const classChartRef = ref(null)
+const sceneChartRef = ref(null)
+const typeChartRef = ref(null)
+let trendChart = null
+let classChart = null
+let sceneChart = null
+let typeChart = null
+
+const statCards = computed(() => [
+  {
+    key: 'total_tasks',
+    growthKey: 'tasks',
+    label: '检测任务',
+    icon: Document,
+    color: '#409eff',
+    background: '#ecf5ff',
+    format: formatNumber,
+  },
+  {
+    key: 'total_images',
+    growthKey: 'images',
+    label: '处理图片',
+    icon: PictureFilled,
+    color: '#67c23a',
+    background: '#f0f9eb',
+    format: formatNumber,
+  },
+  {
+    key: 'total_objects',
+    growthKey: 'objects',
+    label: '检测目标',
+    icon: Aim,
+    color: '#e6a23c',
+    background: '#fdf6ec',
+    format: formatNumber,
+  },
+  {
+    key: 'avg_inference_time',
+    growthKey: 'inference_time',
+    label: '平均耗时',
+    icon: Timer,
+    color: '#f56c6c',
+    background: '#fef0f0',
+    format: (value) => Number(value || 0).toFixed(2),
+    unit: 'ms',
+    inverse: true,
+  },
+])
+
+function formatNumber(value) {
+  const number = Number(value || 0)
+  if (number >= 10000) return `${(number / 10000).toFixed(1)}w`
+  if (number >= 1000) return `${(number / 1000).toFixed(1)}k`
+  return String(number)
+}
+
+function formatGrowth(value) {
+  if (value === undefined || value === null) return '暂无环比'
+  if (value > 0) return `+${value}%`
+  if (value < 0) return `${value}%`
+  return '持平'
+}
+
+function growthClass(key, inverse = false) {
+  const value = stats.value.growth?.[key]
+  if (!value) return 'growth-flat'
+  if (inverse) return value < 0 ? 'growth-up' : 'growth-down'
+  return value > 0 ? 'growth-up' : 'growth-down'
+}
+
+function emptyGraphic(isEmpty) {
+  return isEmpty
+    ? [{
+        type: 'text',
+        left: 'center',
+        top: 'middle',
+        style: { text: '暂无数据', fill: '#909399', fontSize: 14 },
+      }]
+    : []
+}
+
+async function loadAllData() {
+  loading.value = true
+  try {
+    const days = periodDays.value
+    const [statistics, trend, classDist, sceneDist, typeDist] = await Promise.all([
+      getStatistics(days),
+      getTrend(days),
+      getClassDistribution(days),
+      getSceneDistribution(days),
+      getTypeDistribution(days),
+    ])
+    stats.value = statistics
+    renderTrendChart(trend.trend || [])
+    renderClassChart(classDist.distribution || [])
+    renderSceneChart(sceneDist.distribution || [])
+    renderTypeChart(typeDist.distribution || [])
+  } catch (error) {
+    console.error('[看板数据加载失败]', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+function renderTrendChart(trend) {
+  trendChart ||= echarts.init(trendChartRef.value)
+  trendChart.setOption({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { data: ['检测任务', '检测目标'], bottom: 0 },
+    grid: { left: 50, right: 50, top: 24, bottom: 44 },
+    xAxis: {
+      type: 'category',
+      data: trend.map((item) => item.date.slice(5)),
+      axisLabel: { fontSize: 11 },
+    },
+    yAxis: [
+      { type: 'value', name: '任务数', minInterval: 1 },
+      { type: 'value', name: '目标数', minInterval: 1 },
+    ],
+    series: [
+      {
+        name: '检测任务',
+        type: 'line',
+        smooth: true,
+        data: trend.map((item) => item.task_count),
+        itemStyle: { color: '#409eff' },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(64,158,255,0.3)' },
+            { offset: 1, color: 'rgba(64,158,255,0.02)' },
+          ]),
+        },
+      },
+      {
+        name: '检测目标',
+        type: 'line',
+        smooth: true,
+        yAxisIndex: 1,
+        data: trend.map((item) => item.object_count),
+        itemStyle: { color: '#67c23a' },
+      },
+    ],
+  }, true)
+}
+
+function renderClassChart(distribution) {
+  classChart ||= echarts.init(classChartRef.value)
+  classChart.setOption({
+    graphic: emptyGraphic(distribution.length === 0),
+    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+    legend: { type: 'scroll', orient: 'vertical', right: 8, top: 20, bottom: 20 },
+    series: [{
+      type: 'pie',
+      radius: '65%',
+      center: ['38%', '50%'],
+      data: distribution,
+      label: { formatter: '{b}\n{d}%' },
+    }],
+  }, true)
+}
+
+function renderSceneChart(distribution) {
+  sceneChart ||= echarts.init(sceneChartRef.value)
+  sceneChart.setOption({
+    graphic: emptyGraphic(distribution.length === 0),
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    grid: { left: 90, right: 36, top: 20, bottom: 30 },
+    xAxis: { type: 'value', minInterval: 1 },
+    yAxis: { type: 'category', data: distribution.map((item) => item.name) },
+    series: [{
+      type: 'bar',
+      data: distribution.map((item) => item.value),
+      barMaxWidth: 32,
+      label: { show: true, position: 'right' },
+      itemStyle: {
+        borderRadius: [0, 4, 4, 0],
+        color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+          { offset: 0, color: '#409eff' },
+          { offset: 1, color: '#79bbff' },
+        ]),
+      },
+    }],
+  }, true)
+}
+
+function renderTypeChart(distribution) {
+  typeChart ||= echarts.init(typeChartRef.value)
+  typeChart.setOption({
+    graphic: emptyGraphic(distribution.length === 0),
+    color: ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9b59b6'],
+    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+    legend: { bottom: 0, type: 'scroll' },
+    series: [{
+      type: 'pie',
+      radius: ['40%', '65%'],
+      center: ['50%', '45%'],
+      data: distribution,
+      label: { formatter: '{b}\n{d}%' },
+    }],
+  }, true)
+}
+
+function handleResize() {
+  trendChart?.resize()
+  classChart?.resize()
+  sceneChart?.resize()
+  typeChart?.resize()
+}
+
+onMounted(() => {
+  loadAllData()
+  window.addEventListener('resize', handleResize)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleResize)
+  trendChart?.dispose()
+  classChart?.dispose()
+  sceneChart?.dispose()
+  typeChart?.dispose()
+})
+</script>
+
+<style lang="scss" scoped>
+.dashboard-page { min-height: 100%; }
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+  h2 { margin: 0 0 4px; }
+  p { margin: 0; color: $text-secondary; font-size: 14px; }
+}
+.stat-cards { row-gap: 16px; margin-bottom: 16px; }
+.stat-card :deep(.el-card__body) {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 104px;
+  padding: 20px;
+}
+.stat-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+}
+.stat-info { min-width: 0; }
+.stat-value { color: $text-primary; font-size: 28px; font-weight: 700; line-height: 1.2; }
+.unit { margin-left: 3px; color: $text-secondary; font-size: 13px; font-weight: 400; }
+.stat-label { margin-top: 3px; color: $text-secondary; font-size: 13px; }
+.stat-growth { margin-top: 4px; font-size: 12px; }
+.growth-up { color: #67c23a; &::before { content: '↑ '; } }
+.growth-down { color: #f56c6c; &::before { content: '↓ '; } }
+.growth-flat { color: $text-secondary; }
+.chart-row { row-gap: 16px; margin-bottom: 16px; }
+.chart-container { width: 100%; height: 320px; }
+@media (max-width: 768px) {
+  .page-header { align-items: flex-start; flex-direction: column; }
+}
+</style>
