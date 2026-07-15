@@ -9,10 +9,13 @@ import pytest
 from app.api import chat as chat_api
 from app.api.auth import get_current_user
 from app.agent.detection_agent import (
+    DETECTION_TOOLS,
     _finalize_tool_result,
     _last_full_tool_result,
     _append_attachment_context,
     _strip_base64_for_llm,
+    query_system_roles,
+    query_system_users,
 )
 from main import app
 
@@ -187,3 +190,13 @@ async def test_full_tool_result_survives_tool_thread_context():
         )
     finally:
         _last_full_tool_result.reset(token)
+
+
+def test_agent_registers_user_and_role_query_tools():
+    """Day 10 用户与权限查询工具已绑定，且未登录上下文不能调用。"""
+    tool_names = {item.name for item in DETECTION_TOOLS}
+
+    assert "query_system_users" in tool_names
+    assert "query_system_roles" in tool_names
+    assert "需要登录" in query_system_users.invoke({})
+    assert "需要登录" in query_system_roles.invoke({})
