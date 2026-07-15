@@ -105,7 +105,7 @@ class DetectionService:
             db.close()
 
         # 最终回退：预训练模型
-        return "yolo11n.pt"
+        return "../bestali.pt"
 
     @staticmethod
     def _get_model(scene_id: int = None) -> YOLO:
@@ -346,6 +346,7 @@ class DetectionService:
         self,
         image_paths: list[str],
         conf: float = 0.25,
+        iou: float = 0.45,
         scene_id: int = None,
         user_id: int = None,
         original_filenames: list[str] = None,
@@ -356,6 +357,7 @@ class DetectionService:
         Args:
             image_paths: 图片文件路径列表
             conf: 置信度阈值
+            iou: NMS IoU 阈值
             scene_id: 检测场景 ID
             user_id: 操作用户 ID
             original_filenames: 与 image_paths 对应的原始文件名或相对路径
@@ -383,7 +385,7 @@ class DetectionService:
                 results = model.predict(
                     source=image_path,
                     conf=conf,
-                    iou=0.45,
+                    iou=iou,
                     imgsz=640,
                     device="cpu",
                     save=False,
@@ -446,6 +448,7 @@ class DetectionService:
                         status="processing",
                         total_images=len(image_paths),
                         conf_threshold=conf,
+                        iou_threshold=iou,
                     )
                     db.add(task)
                     db.flush()
@@ -498,6 +501,7 @@ class DetectionService:
         self,
         zip_path: str,
         conf: float = 0.25,
+        iou: float = 0.45,
         scene_id: int = None,
         user_id: int = None,
         original_filename: str = None,
@@ -508,6 +512,7 @@ class DetectionService:
         Args:
             zip_path: ZIP 文件路径
             conf: 置信度阈值
+            iou: NMS IoU 阈值
             scene_id: 检测场景 ID
             user_id: 操作用户 ID
             original_filename: 上传时的 ZIP 原始文件名
@@ -543,6 +548,7 @@ class DetectionService:
             batch_result = self.detect_batch(
                 image_paths=image_files,
                 conf=conf,
+                iou=iou,
                 scene_id=scene_id,
                 user_id=user_id,
                 original_filenames=[

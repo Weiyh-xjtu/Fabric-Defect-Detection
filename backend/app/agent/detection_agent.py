@@ -204,13 +204,16 @@ def detect_single_image(image_path: str, conf: float = 0.25, iou: float = 0.45) 
 
 
 @tool
-def detect_batch_images(image_paths: list[str], conf: float = 0.25) -> str:
+def detect_batch_images(
+    image_paths: list[str], conf: float = 0.25, iou: float = 0.45
+) -> str:
     """
     批量检测多张图片中的目标物体。
 
     Args:
         image_paths: 图片文件路径列表
         conf: 置信度阈值，默认 0.25
+        iou: NMS IoU 阈值，默认 0.45
 
     Returns:
         JSON 字符串，包含每张图片的检测结果汇总
@@ -218,6 +221,7 @@ def detect_batch_images(image_paths: list[str], conf: float = 0.25) -> str:
     result = detection_service.detect_batch(
         image_paths,
         conf=conf,
+        iou=iou,
         scene_id=_current_scene_id.get(),
         user_id=_current_user_id.get(),
         original_filenames=[
@@ -230,13 +234,16 @@ def detect_batch_images(image_paths: list[str], conf: float = 0.25) -> str:
 
 
 @tool
-def detect_zip_images_file(zip_path: str, conf: float = 0.25) -> str:
+def detect_zip_images_file(
+    zip_path: str, conf: float = 0.25, iou: float = 0.45
+) -> str:
     """
     解压 ZIP 文件并批量检测其中所有图片的目标物体。
 
     Args:
         zip_path: ZIP 文件路径
         conf: 置信度阈值，默认 0.25
+        iou: NMS IoU 阈值，默认 0.45
 
     Returns:
         JSON 字符串，包含 ZIP 内所有图片的检测结果汇总
@@ -244,6 +251,7 @@ def detect_zip_images_file(zip_path: str, conf: float = 0.25) -> str:
     result = detection_service.detect_zip(
         zip_path,
         conf=conf,
+        iou=iou,
         scene_id=_current_scene_id.get(),
         user_id=_current_user_id.get(),
         original_filename=(_current_attachment_names.get() or {}).get(zip_path),
@@ -252,7 +260,10 @@ def detect_zip_images_file(zip_path: str, conf: float = 0.25) -> str:
 
 @tool
 def detect_video_file(
-    video_path: str, conf: float = 0.25, frame_sample_rate: int = 5
+    video_path: str,
+    conf: float = 0.25,
+    iou: float = 0.45,
+    frame_sample_rate: int = 5,
 ) -> str:
     """
     检测视频文件中的目标物体。对视频进行帧采样后逐帧检测。
@@ -260,6 +271,7 @@ def detect_video_file(
     Args:
         video_path: 视频文件路径（mp4/avi/mov 等）
         conf: 置信度阈值，默认 0.25
+        iou: NMS IoU 阈值，默认 0.45
         frame_sample_rate: 帧采样间隔，每 N 帧取 1 帧，默认 5
 
     Returns:
@@ -268,6 +280,7 @@ def detect_video_file(
     result = detection_service.detect_video(
         video_path,
         conf=conf,
+        iou=iou,
         frame_sample_rate=frame_sample_rate,
         scene_id=_current_scene_id.get(),
         user_id=_current_user_id.get(),

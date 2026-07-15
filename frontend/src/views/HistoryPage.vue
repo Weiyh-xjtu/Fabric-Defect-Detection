@@ -103,7 +103,7 @@
             <el-descriptions-item label="场景">{{ detail.task.scene_name || '-' }}</el-descriptions-item>
             <el-descriptions-item label="图像 / 目标">{{ detail.task.total_images }} / {{ detail.task.total_objects }}</el-descriptions-item>
             <el-descriptions-item label="总耗时">{{ formatDuration(detail.task.total_inference_time) }}</el-descriptions-item>
-            <el-descriptions-item label="置信度 / IoU">{{ detail.task.conf_threshold ?? '-' }} / {{ detail.task.iou_threshold ?? '-' }}</el-descriptions-item>
+            <el-descriptions-item label="置信度阈值 / NMS IoU阈值">{{ formatThreshold(detail.task.conf_threshold) }} / {{ formatThreshold(detail.task.iou_threshold) }}</el-descriptions-item>
             <el-descriptions-item label="创建时间">{{ formatDate(detail.task.created_at) }}</el-descriptions-item>
             <el-descriptions-item label="完成时间" :span="2">{{ formatDate(detail.task.completed_at) }}</el-descriptions-item>
             <el-descriptions-item v-if="detail.task.error_message" label="错误信息" :span="2">{{ detail.task.error_message }}</el-descriptions-item>
@@ -209,6 +209,10 @@ function formatDuration(value) {
 
 function formatConfidence(value) {
   return `${(Number(value || 0) * 100).toFixed(1)}%`
+}
+
+function formatThreshold(value) {
+  return value === null || value === undefined ? '-' : Number(value).toFixed(2)
 }
 
 function formatBbox(value) {
