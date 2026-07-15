@@ -8,6 +8,7 @@ from app.agent.detection_agent import (
     detect_single_image,
     detect_video_file,
     detect_zip_images_file,
+    list_session_attachments,
     query_detection_statistics,
     query_detection_trends,
     query_system_roles,
@@ -37,7 +38,13 @@ class MultiAgentOrchestrator:
         )
         self.specialists = {
             "detection": DetectionAgent(
-                [detect_single_image, detect_batch_images, detect_zip_images_file, detect_video_file],
+                [
+                    list_session_attachments,
+                    detect_single_image,
+                    detect_batch_images,
+                    detect_zip_images_file,
+                    detect_video_file,
+                ],
                 name="detection",
             ),
             "analysis": DetectionAgent(
@@ -45,9 +52,12 @@ class MultiAgentOrchestrator:
                 system_prompt=(
                     ANALYSIS_PROMPT
                     + " 必须调用工具获取真实数据，禁止编造统计数字。"
-                    "询问今日/今天时使用 days=1；询问类别、类型、分布或哪类最多时，"
-                    "调用 query_detection_trends，并基于 class_distribution 回答。"
-                    "没有数据时明确回答对应时间范围内暂无检测记录，不要要求上传附件。"
+                    "询问今日/今天时调用 query_detection_statistics 并设置 today=true。"
+                    "询问批量、单图或视频检测次数时，分别设置 task_type=batch、single 或 video；"
+                    "询问每日趋势、缺陷类别分布或哪类缺陷最多时调用 query_detection_trends。"
+                    "只能根据工具实际返回的字段回答；如果工具返回 error，或用户要求的统计维度"
+                    "不在工具结果中，必须明确说明当前无法查询该数据，禁止用总任务数等无关统计代替。"
+                    "没有数据时明确回答对应筛选条件下暂无检测记录，不要要求上传附件。"
                 ),
                 name="analysis",
             ),

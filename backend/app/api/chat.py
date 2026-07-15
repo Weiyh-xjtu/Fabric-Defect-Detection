@@ -158,7 +158,7 @@ def delete_session(session_uuid: str, current_user=Depends(get_current_user), db
     session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id, ChatSession.session_uuid == session_uuid).first()
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
-    attachments = conversation_memory.load_attachments(session_uuid, current_user.id)
+    attachments = conversation_memory.load_all_attachments(session_uuid, current_user.id)
     _cleanup_attachments(attachments)
     conversation_memory.clear(session_uuid, current_user.id)
     db.delete(session)

@@ -1,9 +1,15 @@
+import json
+
 import pytest
 from langchain_core.messages import HumanMessage
 from app.agent.graph import build_agent_graph
 from app.agent.memory import ConversationMemory
 from app.agent.multi_agent import MultiAgentOrchestrator
-from app.agent.detection_agent import _resolve_conversation_attachments
+from app.agent.detection_agent import (
+    _current_session_id,
+    _current_user_id,
+    list_session_attachments,
+)
 from app.storage.redis_client import redis_client
 from app.rag.retriever import KnowledgeRetriever
 from app.rag.document_loader import load_documents, split_documents
@@ -89,7 +95,8 @@ def test_retriever_reads_existing_knowledge_base(tmp_path):
     assert results[0]["source"] == "custom.md"
     assert "重点复检" in results[0]["content"]
 
-def test_repeat_detection_restores_structured_attachments(tmp_path):
+def test_agent_lists_legacy_session_attachments_for_repeat_detection(tmp_path):
+    """无 user_id 的旧版会话也能通过附件查询工具拿到历史附件。"""
     image = tmp_path / "fabric.jpg"
     image.write_bytes(b"image")
     session = "pytest-repeat-detection"
@@ -97,12 +104,25 @@ def test_repeat_detection_restores_structured_attachments(tmp_path):
     memory.clear(session)
     original = [{"type": "image", "path": str(image), "filename": "fabric.jpg"}]
     memory.save_attachments(session, original)
-    restored, legacy_path = _resolve_conversation_attachments(
-        "再检测一次", [], None, session
-    )
-    assert restored == original
-    assert legacy_path is None
+    token_session = _current_session_id.set(session)
+    token_user = _current_user_id.set(None)
+    try:
+        listing = json.loads(list_session_attachments.invoke({}))
+    finally:
+        _current_session_id.reset(token_session)
+        _current_user_id.reset(token_user)
+    assert listing["total_rounds"] == 1
+    listed = listing["rounds"][0]["attachments"][0]
+    assert listed["path"] == str(image)
+    assert listed["filename"] == "fabric.jpg"
+    assert listed["file_exists"] is True
     memory.clear(session)
+
+
+def test_detection_specialist_binds_session_attachment_tool():
+    """detection 专家必须绑定会话附件查询工具，才能复检历史图片。"""
+    names = {item.name for item in multi_agent.specialists["detection"].tools}
+    assert "list_session_attachments" in names
 
 def test_day11_tool_count_and_groups():
     names = {item.name for item in DETECTION_TOOLS}
