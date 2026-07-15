@@ -10,6 +10,7 @@
 
 import asyncio
 import base64
+import json
 import ipaddress
 import os
 import tempfile
@@ -38,10 +39,50 @@ from app.core.logger import get_logger
 from app.database.session import SessionLocal
 from app.entity.db_models import DetectionTask
 from app.services.detection_service import detection_service
+from app.agent.memory import conversation_memory
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/detection", tags=["快捷检测"])
+CHAT_UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "rsod_uploads")
+os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
+
+
+def _slim_detection_context(value):
+    """移除标注图等大字段，保留供后续问答使用的检测统计。"""
+    if isinstance(value, dict):
+        return {
+            key: _slim_detection_context(item)
+            for key, item in value.items()
+            if key not in {"annotated_image_base64", "annotated_video_url"}
+        }
+    if isinstance(value, list):
+        return [_slim_detection_context(item) for item in value]
+    return value
+
+
+def _remember_quick_detection(
+    session_id: str | None,
+    label: str,
+    attachments: list[dict],
+    result: dict,
+) -> None:
+    """把跳过 LLM 的快捷检测同步为可供 Agent 使用的完整对话上下文。"""
+    if not session_id:
+        return
+    conversation_memory.save_attachments(session_id, attachments)
+    paths = [item.get("path") for item in attachments if item.get("path")]
+    conversation_memory.append(
+        session_id,
+        "user",
+        f"[快捷检测] {label}\n[检测附件路径: {json.dumps(paths, ensure_ascii=False)}]",
+    )
+    conversation_memory.append(
+        session_id,
+        "assistant",
+        "快捷检测已完成，结构化检测结果如下：\n"
+        + json.dumps(_slim_detection_context(result), ensure_ascii=False),
+    )
 
 
 @router.post("/single", summary="单图检测")
@@ -50,13 +91,14 @@ async def detect_single_api(
     conf: float = Form(0.25, description="置信度阈值"),
     iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None, description="场景 ID"),
+    session_id: str = Form(None, description="聊天会话 ID"),
     current_user=Depends(get_current_user),
 ):
     """
     快捷单图检测（跳过 LLM，直接调用 YOLO）
     """
     suffix = os.path.splitext(file.filename)[1] or ".jpg"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=CHAT_UPLOAD_DIR if session_id else None) as tmp:
         content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
@@ -71,9 +113,16 @@ async def detect_single_api(
             original_filename=os.path.basename(file.filename or tmp_path),
         )
         result["filename"] = file.filename
+        _remember_quick_detection(
+            session_id,
+            f"单图 {file.filename}",
+            [{"type": "image", "path": tmp_path, "filename": file.filename}],
+            result,
+        )
         return result
     finally:
-        os.unlink(tmp_path)
+        if not session_id:
+            os.unlink(tmp_path)
 
 
 @router.post("/batch", summary="批量检测")
@@ -82,6 +131,7 @@ async def detect_batch_api(
     conf: float = Form(0.25),
     iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None),
+    session_id: str = Form(None, description="聊天会话 ID"),
     current_user=Depends(get_current_user),
 ):
     """
@@ -92,7 +142,7 @@ async def detect_batch_api(
     try:
         for file in files:
             suffix = os.path.splitext(file.filename)[1] or ".jpg"
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=CHAT_UPLOAD_DIR if session_id else None) as tmp:
                 content = await file.read()
                 tmp.write(content)
                 temp_paths.append(tmp.name)
@@ -108,9 +158,11 @@ async def detect_batch_api(
             user_id=current_user.id,
             original_filenames=original_filenames,
         )
+        quick_attachments = [{"type": "image", "path": path, "filename": filename} for path, filename in zip(temp_paths, original_filenames)]
+        _remember_quick_detection(session_id, f"批量图片 {len(quick_attachments)} 张", quick_attachments, result)
         return result
     finally:
-        for path in temp_paths:
+        for path in temp_paths if not session_id else []:
             try:
                 os.unlink(path)
             except Exception:
@@ -123,13 +175,14 @@ async def detect_zip_api(
     conf: float = Form(0.25),
     iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None),
+    session_id: str = Form(None, description="聊天会话 ID"),
     current_user=Depends(get_current_user),
 ):
     """
     快捷 ZIP 检测：解压 ZIP 并批量检测其中所有图片
     """
     suffix = os.path.splitext(file.filename)[1] or ".zip"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=CHAT_UPLOAD_DIR if session_id else None) as tmp:
         content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
@@ -143,9 +196,16 @@ async def detect_zip_api(
             user_id=current_user.id,
             original_filename=os.path.basename(file.filename or tmp_path),
         )
+        _remember_quick_detection(
+            session_id,
+            f"ZIP {file.filename}",
+            [{"type": "zip", "path": tmp_path, "filename": file.filename}],
+            result,
+        )
         return result
     finally:
-        os.unlink(tmp_path)
+        if not session_id:
+            os.unlink(tmp_path)
 
 
 @router.get("/status/{task_id}", summary="查询检测任务状态")
@@ -190,6 +250,7 @@ async def detect_video_api(
     ),
     max_frames: int = Form(50, ge=1, le=500, description="最多处理的关键帧数量"),
     scene_id: int = Form(None, description="场景 ID"),
+    session_id: str = Form(None, description="聊天会话 ID"),
     current_user=Depends(get_current_user),
 ):
     """
@@ -219,7 +280,7 @@ async def detect_video_api(
         )
 
     # ── 保存视频到临时文件 ──
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=CHAT_UPLOAD_DIR if session_id else None) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -229,6 +290,14 @@ async def detect_video_api(
         len(content) / (1024 * 1024),
         current_user.username,
     )
+    video_attachments = [{"type": "video", "path": tmp_path, "filename": file.filename}]
+    conversation_memory.save_attachments(session_id, video_attachments)
+    if session_id:
+        conversation_memory.append(
+            session_id,
+            "user",
+            f"[快捷检测] 视频 {file.filename}\n[检测附件路径: {json.dumps([tmp_path], ensure_ascii=False)}]",
+        )
 
     # ── 先创建检测任务记录 ──
     user_id = current_user.id
@@ -284,6 +353,13 @@ async def detect_video_api(
                     f"发现 {result['total_objects']} 个目标",
                     "result": result,
                 }, expire=3600)
+                if session_id:
+                    conversation_memory.append(
+                        session_id,
+                        "assistant",
+                        "快捷视频检测已完成，结构化检测结果如下：\n"
+                        + json.dumps(_slim_detection_context(result), ensure_ascii=False),
+                    )
         except Exception as e:
             logger.error("视频后台检测异常: %s", str(e), exc_info=True)
             redis_client.set_json(f"video_task:{task_id}", {
@@ -292,10 +368,11 @@ async def detect_video_api(
                 "message": f"视频检测异常: {str(e)}",
             }, expire=3600)
         finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+            if not session_id:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
     thread = threading.Thread(target=run_video_detection, daemon=True)
     thread.start()
