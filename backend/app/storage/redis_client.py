@@ -40,6 +40,7 @@ class RedisClient:
     def _connect(self):
         """初始化 Redis 连接池"""
         self._memory_cache = {}
+        self._memory_expiry = {}
         self._memory_rate_limits = {}
         try:
             self._pool = redis.ConnectionPool(
@@ -87,6 +88,10 @@ class RedisClient:
             if self._use_redis:
                 return self._client.set(key, value, ex=expire)
             self._memory_cache[key] = value
+            if expire:
+                self._memory_expiry[key] = time.monotonic() + expire
+            else:
+                self._memory_expiry.pop(key, None)
             return True
         return self._retry_on_fail(
             set_value
@@ -94,21 +99,29 @@ class RedisClient:
 
     def get(self, key: str) -> Optional[str]:
         """获取键值"""
-        return self._retry_on_fail(
-            lambda: self._client.get(key) if self._use_redis else self._memory_cache.get(key)
-        )
+        def get_value():
+            if self._use_redis:
+                return self._client.get(key)
+            expires_at = self._memory_expiry.get(key)
+            if expires_at is not None and time.monotonic() >= expires_at:
+                self._memory_cache.pop(key, None)
+                self._memory_expiry.pop(key, None)
+                return None
+            return self._memory_cache.get(key)
+        return self._retry_on_fail(get_value)
 
     def delete(self, key: str) -> Any:
         """删除键"""
-        return self._retry_on_fail(
-            lambda: self._client.delete(key) if self._use_redis else self._memory_cache.pop(key, None)
-        )
+        def delete_value():
+            if self._use_redis:
+                return self._client.delete(key)
+            self._memory_expiry.pop(key, None)
+            return self._memory_cache.pop(key, None)
+        return self._retry_on_fail(delete_value)
 
     def exists(self, key: str) -> bool:
         """检查键是否存在"""
-        return self._retry_on_fail(
-            lambda: bool(self._client.exists(key)) if self._use_redis else key in self._memory_cache
-        )
+        return self.get(key) is not None
 
     def increment_with_window(self, key: str, window: int) -> int:
         """在固定时间窗口内原子递增计数，只在首次请求时设置过期时间。"""

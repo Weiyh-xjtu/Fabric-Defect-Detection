@@ -16,9 +16,9 @@ from app.vectorstore.pgvector_client import pgvector_client
 
 
 class KnowledgeRetriever:
-    def __init__(self, knowledge_dir: Path | None = None, chunk_size: int = 700):
+    def __init__(self, knowledge_dir: Path | None = None, chunk_size: int | None = None):
         self.knowledge_dir = knowledge_dir or BACKEND_DIR / "knowledge_base"
-        self.chunk_size = chunk_size
+        self.chunk_size = chunk_size or settings.RAG_CHUNK_SIZE
         self._chunks: list[dict[str, str]] = []
         self._signature: tuple = ()
         self._lock = Lock()
@@ -53,7 +53,8 @@ class KnowledgeRetriever:
         chinese = [lowered[i:i + 2] for i in range(len(lowered) - 1) if "\u4e00" <= lowered[i] <= "\u9fff"]
         return set(latin + chinese)
 
-    def search(self, query: str, top_k: int = 3) -> list[dict]:
+    def search(self, query: str, top_k: int | None = None) -> list[dict]:
+        top_k = top_k or settings.RAG_TOP_K
         if self.knowledge_dir == BACKEND_DIR / "knowledge_base" and pgvector_client.count() > 0:
             try:
                 return pgvector_client.search(embedding_service.embed_query(query), top_k)

@@ -158,9 +158,9 @@ def delete_session(session_uuid: str, current_user=Depends(get_current_user), db
     session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id, ChatSession.session_uuid == session_uuid).first()
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
-    attachments = conversation_memory.load_attachments(session_uuid)
+    attachments = conversation_memory.load_attachments(session_uuid, current_user.id)
     _cleanup_attachments(attachments)
-    conversation_memory.clear(session_uuid)
+    conversation_memory.clear(session_uuid, current_user.id)
     db.delete(session)
     db.commit()
     return {"message": "会话已删除"}
@@ -296,11 +296,20 @@ async def chat_stream(
         agent_used = None
         try:
             db_session = _get_or_create_session(db, current_user.id, session_id, message)
+            if not conversation_memory.load(session_id, current_user.id):
+                for previous in db_session.messages[-conversation_memory.max_messages:]:
+                    conversation_memory.append(
+                        session_id,
+                        previous.role,
+                        previous.content,
+                        current_user.id,
+                    )
             db.add(ChatMessage(session_id=db_session.id, role="user", content=message))
             db_session.message_count = int(db_session.message_count or 0) + 1
             db_session.last_message_at = datetime.now()
             db.commit()
             yield f"data: {json.dumps({'type': 'session', 'session_id': session_id}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'thinking', 'content': '正在分析您的请求…'}, ensure_ascii=False)}\n\n"
             # 使用 Agent 流式处理（透传当前用户，用于检测记录归属）
             # 注：scene_id 不传，由检测服务自动选取默认场景；
             # session_id 是会话 ID，与检测场景无关，不可混用。
@@ -322,7 +331,8 @@ async def chat_stream(
                 event_data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {event_data}\n\n"
 
-            # 流结束标志
+            # 标准完成事件和兼容旧客户端的流结束标志
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
 
             assistant_content = "".join(assistant_chunks).strip()
@@ -338,7 +348,6 @@ async def chat_stream(
                 db_session.message_count = int(db_session.message_count or 0) + 1
                 db_session.last_message_at = datetime.now()
                 db.commit()
-
         except Exception as e:
             logger.error("SSE 流异常: %s", str(e), exc_info=True)
             error_data = json.dumps(

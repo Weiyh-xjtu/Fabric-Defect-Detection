@@ -205,6 +205,7 @@ def _resolve_conversation_attachments(
     attachments: list[dict] | None,
     image_path: str | None,
     session_id: str | int | None,
+    user_id: int | str | None = None,
 ) -> tuple[list[dict], str | None]:
     """优先使用本轮附件；复检请求则恢复会话最近的仍存在附件。"""
     current = list(attachments or [])
@@ -217,13 +218,13 @@ def _resolve_conversation_attachments(
             }
         ]
     if current:
-        conversation_memory.save_attachments(session_id, current)
+        conversation_memory.save_attachments(session_id, current, user_id)
         return current, None
     if not _is_repeat_detection_request(message):
         return [], image_path
     remembered = [
         item
-        for item in conversation_memory.load_attachments(session_id)
+        for item in conversation_memory.load_attachments(session_id, user_id)
         if isinstance(item, dict) and item.get("path") and os.path.isfile(item["path"])
     ]
     if remembered:
@@ -643,7 +644,7 @@ class DetectionAgent:
             Agent 响应字典
         """
         attachments, image_path = _resolve_conversation_attachments(
-            message, attachments, image_path, session_id
+            message, attachments, image_path, session_id, user_id
         )
         message = _append_attachment_context(message, attachments, image_path)
 
@@ -654,10 +655,10 @@ class DetectionAgent:
             _build_attachment_name_map(attachments, image_path)
         )
         try:
-            history = conversation_memory.load(session_id)
+            history = conversation_memory.load(session_id, user_id)
             result = await self.executor.ainvoke({"input": message, "chat_history": history})
-            conversation_memory.append(session_id, "user", message)
-            conversation_memory.append(session_id, "assistant", result["output"])
+            conversation_memory.append(session_id, "user", message, user_id)
+            conversation_memory.append(session_id, "assistant", result["output"], user_id)
 
             return {
                 "output": result["output"],
@@ -699,7 +700,7 @@ class DetectionAgent:
             SSE 事件数据字典
         """
         attachments, image_path = _resolve_conversation_attachments(
-            message, attachments, image_path, session_id
+            message, attachments, image_path, session_id, user_id
         )
         message = _append_attachment_context(message, attachments, image_path)
 
@@ -713,7 +714,7 @@ class DetectionAgent:
         token_full = _last_full_tool_result.set(result_holder)
         response_chunks = []
         try:
-            history = conversation_memory.load(session_id)
+            history = conversation_memory.load(session_id, user_id)
             async for event in self.executor.astream_events(
                 {"input": message, "chat_history": history},
                 version="v2",
@@ -778,9 +779,9 @@ class DetectionAgent:
                         "result": frontend_result,
                     }
 
-            conversation_memory.append(session_id, "user", message)
+            conversation_memory.append(session_id, "user", message, user_id)
             if response_chunks:
-                conversation_memory.append(session_id, "assistant", "".join(response_chunks))
+                conversation_memory.append(session_id, "assistant", "".join(response_chunks), user_id)
 
         except Exception as e:
             logger.error("Agent 流式执行异常: %s", str(e), exc_info=True)
