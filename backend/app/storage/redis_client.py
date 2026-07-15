@@ -83,8 +83,13 @@ class RedisClient:
 
     def set(self, key: str, value: str, expire: Optional[int] = None) -> Any:
         """设置键值"""
+        def set_value():
+            if self._use_redis:
+                return self._client.set(key, value, ex=expire)
+            self._memory_cache[key] = value
+            return True
         return self._retry_on_fail(
-            lambda: self._client.set(key, value, ex=expire) if self._use_redis else self._memory_cache.setdefault(key, value)
+            set_value
         )
 
     def get(self, key: str) -> Optional[str]:

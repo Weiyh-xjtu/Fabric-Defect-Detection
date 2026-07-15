@@ -266,8 +266,12 @@ async function sendMessage() {
   }
 
   // 发起 SSE 流式请求
+  if (!agentStore.currentSessionId) {
+    agentStore.currentSessionId = crypto.randomUUID();
+  }
   const requestBody = {
     message: effectiveMessage,
+    session_id: agentStore.currentSessionId,
     ...(serverAttachments.length ? { attachments: serverAttachments } : {}),
   };
 

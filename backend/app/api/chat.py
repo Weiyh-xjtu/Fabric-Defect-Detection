@@ -17,7 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.agent.detection_agent import detection_agent
+from app.agent.multi_agent import multi_agent as detection_agent
 from app.api.auth import get_current_user
 from app.core.logger import get_logger
 
@@ -225,6 +225,7 @@ async def chat_stream(
                 message=message,
                 attachments=attachments,
                 user_id=current_user.id,
+                session_id=session_id,
             ):
                 # 将事件序列化为 SSE 格式
                 event_data = json.dumps(event, ensure_ascii=False)
@@ -241,7 +242,10 @@ async def chat_stream(
             )
             yield f"data: {error_data}\n\n"
         finally:
-            _cleanup_attachments(attachments)
+            # 有会话的附件路径会进入对话记忆，需保留到会话过期，才能支持
+            # “再检测一次”。无会话的旧客户端仍在本轮结束后立即清理。
+            if not session_id:
+                _cleanup_attachments(attachments)
 
     return StreamingResponse(
         event_generator(),
