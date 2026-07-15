@@ -20,12 +20,14 @@ import contextvars
 import copy
 import json
 import os
+from datetime import datetime, timedelta
 from typing import AsyncGenerator
 
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from sqlalchemy import func
 
 from app.config.settings import settings
 from app.core.logger import get_logger
@@ -34,6 +36,7 @@ from app.services.detection_service import detection_service
 from app.services.user_service import user_service
 from app.agent.memory import conversation_memory
 from app.rag.retriever import knowledge_retriever
+from app.entity.db_models import DetectionResult, DetectionTask
 
 logger = get_logger(__name__)
 
@@ -403,10 +406,89 @@ def query_system_roles() -> str:
 
 @tool
 def query_detection_statistics(days: int = 7) -> str:
-    """查询近期检测统计摘要。"""
+    """查询当前用户近期检测任务、图像、目标、成功率和平均推理耗时。"""
     if _current_user_id.get() is None:
         return json.dumps({"error": "需要登录后才能查询统计"}, ensure_ascii=False)
-    return json.dumps({"days": max(1, min(days, 365)), "message": "统计数据请在数据看板查看"}, ensure_ascii=False)
+    days = max(1, min(days, 365))
+    since = datetime.now() - timedelta(days=days)
+    db = SessionLocal()
+    try:
+        base = db.query(DetectionTask).filter(
+            DetectionTask.user_id == _current_user_id.get(),
+            DetectionTask.created_at >= since,
+        )
+        total_tasks = base.count()
+        completed = base.filter(DetectionTask.status == "completed").count()
+        totals = base.with_entities(
+            func.coalesce(func.sum(DetectionTask.total_images), 0),
+            func.coalesce(func.sum(DetectionTask.total_objects), 0),
+            func.coalesce(func.avg(DetectionTask.total_inference_time), 0),
+        ).one()
+        return json.dumps(
+            {
+                "days": days,
+                "total_tasks": total_tasks,
+                "completed_tasks": completed,
+                "success_rate": round(completed / total_tasks * 100, 2) if total_tasks else 0,
+                "total_images": int(totals[0] or 0),
+                "total_objects": int(totals[1] or 0),
+                "average_inference_time_ms": round(float(totals[2] or 0), 2),
+            },
+            ensure_ascii=False,
+        )
+    finally:
+        db.close()
+
+
+@tool
+def query_detection_trends(days: int = 7) -> str:
+    """查询当前用户近期每日检测趋势与缺陷类别分布。"""
+    if _current_user_id.get() is None:
+        return json.dumps({"error": "需要登录后才能查询趋势"}, ensure_ascii=False)
+    days = max(1, min(days, 365))
+    since = datetime.now() - timedelta(days=days)
+    db = SessionLocal()
+    try:
+        daily_rows = (
+            db.query(
+                func.date(DetectionTask.created_at).label("date"),
+                func.count(DetectionTask.id),
+                func.coalesce(func.sum(DetectionTask.total_objects), 0),
+            )
+            .filter(
+                DetectionTask.user_id == _current_user_id.get(),
+                DetectionTask.created_at >= since,
+            )
+            .group_by(func.date(DetectionTask.created_at))
+            .order_by(func.date(DetectionTask.created_at))
+            .all()
+        )
+        class_rows = (
+            db.query(DetectionResult.class_name, func.count(DetectionResult.id))
+            .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
+            .filter(
+                DetectionTask.user_id == _current_user_id.get(),
+                DetectionTask.created_at >= since,
+            )
+            .group_by(DetectionResult.class_name)
+            .order_by(func.count(DetectionResult.id).desc())
+            .all()
+        )
+        return json.dumps(
+            {
+                "days": days,
+                "daily": [
+                    {"date": str(row[0]), "tasks": int(row[1]), "objects": int(row[2])}
+                    for row in daily_rows
+                ],
+                "class_distribution": [
+                    {"class_name": row[0], "count": int(row[1])} for row in class_rows
+                ],
+            },
+            ensure_ascii=False,
+        )
+    finally:
+        db.close()
 
 @tool
 def search_knowledge(query: str, top_k: int = 3) -> str:
@@ -426,6 +508,7 @@ DETECTION_TOOLS = [
     query_system_users,
     query_system_roles,
     query_detection_statistics,
+    query_detection_trends,
     search_knowledge,
 ]
 
@@ -473,12 +556,14 @@ def create_llm():
 class DetectionAgent:
     """检测智能体 — 封装 ReAct Agent 创建和对话逻辑"""
 
-    def __init__(self):
+    def __init__(self, tools: list | None = None, system_prompt: str | None = None, name: str = "detection"):
         """初始化 Agent，创建 LLM 和 AgentExecutor"""
         self.llm = create_llm()
+        self.tools = tools or DETECTION_TOOLS
+        self.name = name
 
         # OpenAI Tools Agent 系统提示词
-        system_prompt = """你是一个专业的目标检测平台助手。你可以执行图片、ZIP 压缩包和视频检测，也可以查询系统用户、角色和权限。
+        default_system_prompt = """你是一个专业的目标检测平台助手。你可以执行图片、ZIP 压缩包和视频检测，也可以查询系统用户、角色和权限。
 
 重要规则：
 - 当用户消息中包含 [附件图片路径: xxx] 时，xxx 就是图片的服务器路径，你应直接使用它调用检测工具
@@ -507,6 +592,7 @@ class DetectionAgent:
 - 对于视频检测，还要报告视频时长和处理的帧数
 - 如果有标注图，告知用户可以在结果卡片中查看
 - 简洁专业，不要过度解释"""
+        system_prompt = system_prompt or default_system_prompt
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -520,19 +606,19 @@ class DetectionAgent:
         # 创建 OpenAI Tools Agent（与 ChatPromptTemplate + MessagesPlaceholder 完全兼容）
         agent = create_openai_tools_agent(
             llm=self.llm,
-            tools=DETECTION_TOOLS,
+            tools=self.tools,
             prompt=prompt,
         )
 
         self.executor = AgentExecutor(
             agent=agent,
-            tools=DETECTION_TOOLS,
+            tools=self.tools,
             verbose=True,  # 开发阶段开启，可查看 Agent 思考过程
             max_iterations=5,  # 限制循环次数，防止无限循环
             return_intermediate_steps=True,  # 返回中间步骤（Tool 调用记录）
         )
 
-        logger.info("DetectionAgent 初始化完成，绑定 %d 个工具", len(DETECTION_TOOLS))
+        logger.info("%s Agent 初始化完成，绑定 %d 个工具", self.name, len(self.tools))
 
     async def chat(
         self,

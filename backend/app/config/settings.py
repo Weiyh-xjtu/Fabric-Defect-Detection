@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5:7b"
 
+    # ── RAG / Embedding 配置 ──────────────────────────
+    EMBEDDING_MODEL: str = "text-embedding-v3"
+    EMBEDDING_DIM: int = 1024
+    RAG_CHUNK_SIZE: int = 500
+    RAG_CHUNK_OVERLAP: int = 50
+    RAG_TOP_K: int = 3
+
 
 # 创建全局单例，其他模块直接 import 使用
 settings = Settings()
