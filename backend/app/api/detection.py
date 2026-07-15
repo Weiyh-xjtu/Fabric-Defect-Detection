@@ -48,6 +48,7 @@ router = APIRouter(prefix="/api/detection", tags=["快捷检测"])
 async def detect_single_api(
     file: UploadFile = File(..., description="检测图片"),
     conf: float = Form(0.25, description="置信度阈值"),
+    iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None, description="场景 ID"),
     current_user=Depends(get_current_user),
 ):
@@ -64,6 +65,7 @@ async def detect_single_api(
         result = detection_service.detect_single(
             image_path=tmp_path,
             conf=conf,
+            iou=iou,
             scene_id=scene_id,
             user_id=current_user.id,
             original_filename=os.path.basename(file.filename or tmp_path),
@@ -78,6 +80,7 @@ async def detect_single_api(
 async def detect_batch_api(
     files: list[UploadFile] = File(..., description="多张图片"),
     conf: float = Form(0.25),
+    iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None),
     current_user=Depends(get_current_user),
 ):
@@ -100,6 +103,7 @@ async def detect_batch_api(
         result = detection_service.detect_batch(
             image_paths=temp_paths,
             conf=conf,
+            iou=iou,
             scene_id=scene_id,
             user_id=current_user.id,
             original_filenames=original_filenames,
@@ -117,6 +121,7 @@ async def detect_batch_api(
 async def detect_zip_api(
     file: UploadFile = File(..., description="ZIP 压缩包"),
     conf: float = Form(0.25),
+    iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None),
     current_user=Depends(get_current_user),
 ):
@@ -133,6 +138,7 @@ async def detect_zip_api(
         result = detection_service.detect_zip(
             zip_path=tmp_path,
             conf=conf,
+            iou=iou,
             scene_id=scene_id,
             user_id=current_user.id,
             original_filename=os.path.basename(file.filename or tmp_path),
@@ -178,6 +184,7 @@ from app.storage.redis_client import redis_client
 async def detect_video_api(
     file: UploadFile = File(..., description="视频文件（mp4/avi/mov）"),
     conf: float = Form(0.25, ge=0.1, le=0.9, description="置信度阈值"),
+    iou: float = Form(0.45, ge=0, le=1, description="NMS IoU 阈值"),
     frame_sample_rate: int = Form(
         5, ge=1, description="帧采样间隔（每 N 帧取 1 帧）"
     ),
@@ -233,6 +240,7 @@ async def detect_video_api(
             task_type="video",
             status="processing",
             conf_threshold=conf,
+            iou_threshold=iou,
         )
         db.add(task)
         db.flush()
@@ -254,6 +262,7 @@ async def detect_video_api(
             result = detection_service.detect_video(
                 video_path=tmp_path,
                 conf=conf,
+                iou=iou,
                 frame_sample_rate=frame_sample_rate,
                 max_frames=max_frames,
                 scene_id=scene_id,
