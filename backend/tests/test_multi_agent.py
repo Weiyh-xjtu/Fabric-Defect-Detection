@@ -2,7 +2,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 from app.agent.graph import build_agent_graph
 from app.agent.memory import ConversationMemory
-from app.agent.multi_agent import multi_agent
+from app.agent.multi_agent import MultiAgentOrchestrator
 from app.agent.detection_agent import _resolve_conversation_attachments
 from app.storage.redis_client import redis_client
 from app.rag.retriever import KnowledgeRetriever
@@ -10,6 +10,9 @@ from app.rag.document_loader import load_documents, split_documents
 from app.agent.detection_agent import DETECTION_TOOLS
 from app.rag.embedding import embedding_service
 from app.config.settings import settings
+from app.agent.supervisor import SupervisorAgent
+
+multi_agent = MultiAgentOrchestrator(supervisor_llm=None)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("message", "expected"), [
@@ -21,6 +24,42 @@ from app.config.settings import settings
 ])
 async def test_supervisor_routes_to_specialists(message, expected):
     assert await multi_agent.route(message) == expected
+
+class _FakeRouteLLM:
+    def __init__(self, content: str | None = None, error: Exception | None = None):
+        self.content = content
+        self.error = error
+        self.calls = 0
+
+    def invoke(self, _messages):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return type("Response", (), {"content": self.content})()
+
+
+def test_supervisor_prefers_llm_over_keyword_rule():
+    llm = _FakeRouteLLM("qa")
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route({"messages": [HumanMessage(content="检测这张图片")]})
+    assert result["next_agent"] == "qa"
+    assert llm.calls == 1
+
+
+def test_supervisor_falls_back_when_llm_fails():
+    llm = _FakeRouteLLM(error=RuntimeError("offline"))
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route({"messages": [HumanMessage(content="最近检测数量趋势")]})
+    assert result["next_agent"] == "analysis"
+    assert llm.calls == 1
+
+
+def test_supervisor_falls_back_on_invalid_llm_output():
+    llm = _FakeRouteLLM("我认为可以选择 detection 或 qa")
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route({"messages": [HumanMessage(content="请检测附件")]})
+    assert result["next_agent"] == "detection"
+
 
 def test_graph_executes_selected_node():
     graph = build_agent_graph(
@@ -76,9 +115,23 @@ def test_document_loader_splits_markdown(tmp_path):
     assert len(chunks) > 1
     assert chunks[0]["metadata"]["source"] == "knowledge.md"
 
+
 def test_embedding_uses_dedicated_credentials(monkeypatch):
     monkeypatch.setattr(settings, "EMBEDDING_API_KEY", "embedding-key")
     monkeypatch.setattr(settings, "EMBEDDING_BASE_URL", "https://embedding.example/v1")
     monkeypatch.setattr(settings, "QWEN_API_KEY", "chat-qwen-key")
     key, url, _model = embedding_service._configuration()
     assert (key, url) == ("embedding-key", "https://embedding.example/v1")
+
+
+def test_memory_is_isolated_by_user():
+    memory = ConversationMemory(max_messages=3)
+    session = "same-session-id"
+    memory.clear(session, 1)
+    memory.clear(session, 2)
+    memory.append(session, "user", "用户一的消息", 1)
+    memory.append(session, "user", "用户二的消息", 2)
+    assert memory.load(session, 1)[0]["content"] == "用户一的消息"
+    assert memory.load(session, 2)[0]["content"] == "用户二的消息"
+    memory.clear(session, 1)
+    memory.clear(session, 2)

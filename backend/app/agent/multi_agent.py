@@ -3,6 +3,7 @@ from typing import AsyncGenerator
 from langchain_core.messages import HumanMessage
 from app.agent.detection_agent import (
     DetectionAgent,
+    create_llm,
     detect_batch_images,
     detect_single_image,
     detect_video_file,
@@ -16,13 +17,24 @@ from app.agent.detection_agent import (
 from app.agent.prompts import ANALYSIS_PROMPT, QA_PROMPT
 from app.agent.graph import build_agent_graph
 
+_USE_CONFIGURED_LLM = object()
+
+
 class MultiAgentOrchestrator:
-    def __init__(self):
+    def __init__(self, supervisor_llm=_USE_CONFIGURED_LLM):
         def mark(name):
             return lambda _state: {f"{name}_result": name}
-        # Routing uses deterministic Supervisor rules so it remains available when
-        # the external LLM is temporarily unreachable. Specialists still use the LLM.
-        self.graph = build_agent_graph(None, mark("detection"), mark("analysis"), mark("qa"))
+
+        # 生产运行时优先使用 LLM 路由；显式传入 None 可用于离线测试，
+        # Supervisor 本身仍会在调用失败或输出非法时降级到关键词规则。
+        if supervisor_llm is _USE_CONFIGURED_LLM:
+            supervisor_llm = create_llm()
+        self.graph = build_agent_graph(
+            supervisor_llm,
+            mark("detection"),
+            mark("analysis"),
+            mark("qa"),
+        )
         self.specialists = {
             "detection": DetectionAgent(
                 [detect_single_image, detect_batch_images, detect_zip_images_file, detect_video_file],
