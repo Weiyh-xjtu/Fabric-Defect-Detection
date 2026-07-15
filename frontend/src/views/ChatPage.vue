@@ -33,6 +33,13 @@
           v-else-if="msg.role === 'assistant'"
           class="message-bubble assistant-bubble"
         >
+          <!-- 处理该消息的专家 Agent -->
+          <div v-if="msg.agent" class="agent-route">
+            <el-tag size="small" effect="plain" type="warning">
+              🤖 {{ agentLabel(msg.agent) }}
+            </el-tag>
+          </div>
+
           <div v-if="msg.loading" class="typing-indicator">
             <span></span><span></span><span></span>
           </div>
@@ -41,6 +48,48 @@
             class="message-content markdown-body"
             v-html="renderMarkdown(msg.content)"
           ></div>
+
+          <!-- 工具调用链 -->
+          <div v-if="msg.toolChain?.length" class="tool-chain">
+            <div
+              v-for="(step, i) in msg.toolChain"
+              :key="i"
+              class="tool-chain-step"
+            >
+              <div class="tool-chain-head">
+                <span class="tool-chain-index">{{ i + 1 }}</span>
+                <el-tag
+                  size="small"
+                  :type="step.status === 'done' ? 'success' : step.status === 'error' ? 'danger' : 'info'"
+                >
+                  🔧 {{ toolDisplayName(step.tool) }}
+                </el-tag>
+                <span :class="['tool-chain-status', `status-${step.status}`]">
+                  {{ step.status === 'running' ? '执行中…' : step.status === 'error' ? '失败' : '完成' }}
+                </span>
+                <span v-if="step.summary" class="tool-chain-summary">{{ step.summary }}</span>
+              </div>
+
+              <!-- 知识库检索来源 -->
+              <div v-if="step.knowledge" class="knowledge-sources">
+                <div v-if="step.knowledge.fallback_reason" class="knowledge-fallback">
+                  ⚠ 向量检索暂不可用，本次为本地词法检索
+                </div>
+                <el-collapse class="knowledge-collapse">
+                  <el-collapse-item
+                    v-for="(item, j) in step.knowledge.results"
+                    :key="j"
+                    :title="`📄 ${item.source} · 相关度 ${formatScore(item.score, step.knowledge.retrieval_mode)}`"
+                  >
+                    <div class="knowledge-snippet">{{ item.content }}</div>
+                  </el-collapse-item>
+                </el-collapse>
+                <div v-if="!step.knowledge.results?.length" class="knowledge-empty">
+                  知识库未命中任何片段
+                </div>
+              </div>
+            </div>
+          </div>
 
           <!-- 检测结果卡片 -->
           <DetectionResultCard
@@ -54,13 +103,6 @@
             plain
             @click="retryMessage(msg)"
           >重新发送</el-button>
-        </div>
-
-        <!-- 工具调用提示 -->
-        <div v-if="msg.toolCall" class="tool-call-info">
-          <el-tag size="small" :type="msg.toolCall.status === 'done' ? 'success' : 'info'">
-            🔧 {{ msg.toolCall.status === 'done' ? '工具完成' : '调用工具' }}: {{ msg.toolCall.tool }}
-          </el-tag>
         </div>
       </div>
     </div>
@@ -165,6 +207,12 @@ import { useAgentStore } from "@/stores/agent";
 import { renderMarkdown } from "@/utils/markdown";
 import request from "@/utils/request";
 import { streamChat } from "@/utils/stream";
+import {
+  AGENT_NAME_MAP,
+  beginToolStep,
+  completeToolStep,
+  toolDisplayName,
+} from "@/utils/toolChain";
 import { ElMessage } from "element-plus";
 import { computed, nextTick, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
@@ -284,40 +332,27 @@ async function sendMessage() {
 
   const stop = streamChat("/api/chat/stream", requestBody, {
     onMessage: (data) => {
-      // 调试日志：查看收到的所有 SSE 事件
-      console.log("[SSE事件]", data.type, data.type === "tool_result" ? data : "");
-
       if (data.type === "text_chunk") {
         fullContent += data.content;
         assistantMessage.content = fullContent;
+        assistantMessage.loading = false;
         scrollToBottom();
       } else if (data.type === "session") {
         agentStore.currentSessionId = data.session_id;
       } else if (data.type === "agent_route") {
         assistantMessage.agent = data.agent;
       } else if (data.type === "tool_call") {
-        // 工具调用中，更新最后一条 AI 消息的工具信息
-        assistantMessage.toolCall = { tool: data.tool, input: data.input };
+        // 工具调用开始：追加到该消息的调用链
+        if (!assistantMessage.toolChain) assistantMessage.toolChain = [];
+        beginToolStep(assistantMessage.toolChain, data);
+        scrollToBottom();
       } else if (data.type === "tool_result") {
-        if (assistantMessage.toolCall) assistantMessage.toolCall.status = "done";
-        // 工具调用返回结果
-        console.log("[工具结果] tool:", data.tool, "result长度:", data.result?.length);
-        try {
-          const result = JSON.parse(data.result);
-          console.log("[工具结果解析]", "total_objects:", result.total_objects, "detections:", result.detections?.length);
-          if (result.error) {
-            assistantMessage.content = `检测失败：${result.error}`;
-            assistantMessage.loading = false;
-            assistantMessage.error = true;
-          } else if (Object.prototype.hasOwnProperty.call(result, "total_objects")) {
-            assistantMessage.detectionResult = result;
-            assistantMessage.loading = false;
-            console.log("[检测结果卡片已设置]", assistantMessage.detectionResult);
-          }
-        } catch (e) {
-          console.warn("[工具结果解析失败]", e.message, "原始数据:", data.result?.substring(0, 200));
-          // 非检测结果 JSON，作为普通文本
-          assistantMessage.content += `\n[工具结果: ${data.result?.substring(0, 100)}...]`;
+        // 工具调用结束：更新调用链状态并分发结构化结果
+        if (!assistantMessage.toolChain) assistantMessage.toolChain = [];
+        const info = completeToolStep(assistantMessage.toolChain, data);
+        if (info.detection) {
+          assistantMessage.detectionResult = info.detection;
+          assistantMessage.loading = false;
         }
         scrollToBottom();
       } else if (data.type === "error") {
@@ -329,6 +364,14 @@ async function sendMessage() {
     onDone: () => {
       if (assistantMessage.loading) {
         assistantMessage.loading = false;
+      }
+      // 工具报错且 LLM 未输出任何文字时给出兜底提示，避免空气泡
+      if (
+        !assistantMessage.content &&
+        assistantMessage.toolChain?.some((step) => step.status === "error")
+      ) {
+        assistantMessage.content = "工具调用出现错误，请查看上方调用链详情。";
+        assistantMessage.error = true;
       }
       agentStore.setLoading(false);
     },
@@ -583,6 +626,19 @@ function ensureChatSession() {
     agentStore.currentSessionId = crypto.randomUUID();
   }
   return agentStore.currentSessionId;
+}
+
+/** 专家 Agent 显示名 */
+function agentLabel(agent) {
+  return AGENT_NAME_MAP[agent] || agent;
+}
+
+/** 相关度展示：向量检索为 0-1 相似度，词法检索为整数得分 */
+function formatScore(score, mode) {
+  if (mode === "pgvector") {
+    return `${Math.round(Number(score) * 100)}%`;
+  }
+  return `${score} 分`;
 }
 
 /** 轮询视频检测进度，完成后将结果写回对应消息 */
@@ -874,14 +930,108 @@ onMounted(() => {
   font-size: 13px;
 }
 
-/* ── 工具调用信息 ── */
-.tool-call-info {
-  margin-top: 8px;
-  padding: 4px 8px;
-  background: #f5f5f5;
-  border-radius: 4px;
+/* ── 专家路由与工具调用链 ── */
+.agent-route {
+  margin-bottom: 6px;
+}
+
+.tool-chain {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: #fafafa;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-chain-step {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-chain-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   color: #666;
+}
+
+.tool-chain-index {
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 50%;
+  background: #e8e8e8;
+  color: #666;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.tool-chain-status {
+  flex-shrink: 0;
+
+  &.status-running {
+    color: #409eff;
+  }
+  &.status-done {
+    color: #67c23a;
+  }
+  &.status-error {
+    color: #f56c6c;
+  }
+}
+
+.tool-chain-summary {
+  color: #888;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 知识库检索来源 ── */
+.knowledge-sources {
+  margin-left: 26px;
+  font-size: 12px;
+}
+
+.knowledge-fallback {
+  color: #e6a23c;
+  margin-bottom: 4px;
+}
+
+.knowledge-collapse {
+  border: none;
+
+  :deep(.el-collapse-item__header) {
+    font-size: 12px;
+    height: 32px;
+    line-height: 32px;
+    color: #555;
+  }
+
+  :deep(.el-collapse-item__content) {
+    padding-bottom: 8px;
+  }
+}
+
+.knowledge-snippet {
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: #666;
+  background: #f5f7fa;
+  border-radius: 4px;
+  padding: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.knowledge-empty {
+  color: #999;
 }
 
 @keyframes typing {

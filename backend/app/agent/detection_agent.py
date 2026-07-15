@@ -625,9 +625,24 @@ def query_detection_trends(days: int = 7) -> str:
 
 @tool
 def search_knowledge(query: str, top_k: int = 3) -> str:
-    """从 backend/knowledge_base 的 Markdown/TXT 文档中检索相关片段。"""
+    """从 backend/knowledge_base 的 Markdown/TXT 文档中检索相关片段。
+
+    Returns:
+        JSON 字符串。retrieval_mode 表示实际检索方式（pgvector=向量检索，
+        lexical_fallback=词法降级）；sources 为命中的来源文件列表。
+        回答时必须注明引用了哪些来源文件。
+    """
+    retrieval = knowledge_retriever.retrieve(query, top_k)
     return json.dumps(
-        {"query": query, "results": knowledge_retriever.search(query, top_k)},
+        {
+            "query": query,
+            "retrieval_mode": retrieval["mode"],
+            "fallback_reason": retrieval["fallback_reason"],
+            "sources": sorted(
+                {item["source"] for item in retrieval["results"] if item.get("source")}
+            ),
+            "results": retrieval["results"],
+        },
         ensure_ascii=False,
     )
 
