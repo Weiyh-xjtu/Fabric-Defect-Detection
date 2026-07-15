@@ -32,6 +32,8 @@ from app.core.logger import get_logger
 from app.database.session import SessionLocal
 from app.services.detection_service import detection_service
 from app.services.user_service import user_service
+from app.agent.memory import conversation_memory
+from app.rag.retriever import knowledge_retriever
 
 logger = get_logger(__name__)
 
@@ -177,6 +179,53 @@ def _build_attachment_name_map(
     if image_path and image_path not in name_map:
         name_map[image_path] = os.path.basename(image_path)
     return name_map
+
+
+def _is_repeat_detection_request(message: str) -> bool:
+    """识别明确要求复用上一轮检测输入的表达。"""
+    normalized = "".join(message.lower().split())
+    return any(
+        phrase in normalized
+        for phrase in (
+            "再检测一次",
+            "重新检测",
+            "再检一次",
+            "重复检测",
+            "再跑一次",
+            "再识别一次",
+        )
+    )
+
+
+def _resolve_conversation_attachments(
+    message: str,
+    attachments: list[dict] | None,
+    image_path: str | None,
+    session_id: str | int | None,
+) -> tuple[list[dict], str | None]:
+    """优先使用本轮附件；复检请求则恢复会话最近的仍存在附件。"""
+    current = list(attachments or [])
+    if image_path and not current:
+        current = [
+            {
+                "type": "image",
+                "path": image_path,
+                "filename": os.path.basename(image_path),
+            }
+        ]
+    if current:
+        conversation_memory.save_attachments(session_id, current)
+        return current, None
+    if not _is_repeat_detection_request(message):
+        return [], image_path
+    remembered = [
+        item
+        for item in conversation_memory.load_attachments(session_id)
+        if isinstance(item, dict) and item.get("path") and os.path.isfile(item["path"])
+    ]
+    if remembered:
+        logger.info("从会话 %s 恢复 %d 个检测附件", session_id, len(remembered))
+    return remembered, None
 
 
 @tool
@@ -339,6 +388,21 @@ def query_system_roles() -> str:
     finally:
         db.close()
 
+@tool
+def query_detection_statistics(days: int = 7) -> str:
+    """查询近期检测统计摘要。"""
+    if _current_user_id.get() is None:
+        return json.dumps({"error": "需要登录后才能查询统计"}, ensure_ascii=False)
+    return json.dumps({"days": max(1, min(days, 365)), "message": "统计数据请在数据看板查看"}, ensure_ascii=False)
+
+@tool
+def search_knowledge(query: str, top_k: int = 3) -> str:
+    """从 backend/knowledge_base 的 Markdown/TXT 文档中检索相关片段。"""
+    return json.dumps(
+        {"query": query, "results": knowledge_retriever.search(query, top_k)},
+        ensure_ascii=False,
+    )
+
 
 # 工具列表（绑定到 Agent）
 DETECTION_TOOLS = [
@@ -348,6 +412,8 @@ DETECTION_TOOLS = [
     detect_video_file,
     query_system_users,
     query_system_roles,
+    query_detection_statistics,
+    search_knowledge,
 ]
 
 # ══════════════════════════════════════════════════════════════
@@ -462,6 +528,7 @@ class DetectionAgent:
         attachments: list[dict] = None,
         user_id: int = None,
         scene_id: int = None,
+        session_id: str | int = None,
     ) -> dict:
         """
         处理用户对话消息
@@ -476,6 +543,9 @@ class DetectionAgent:
         Returns:
             Agent 响应字典
         """
+        attachments, image_path = _resolve_conversation_attachments(
+            message, attachments, image_path, session_id
+        )
         message = _append_attachment_context(message, attachments, image_path)
 
         # 注入请求级上下文，供工具读取
@@ -485,7 +555,10 @@ class DetectionAgent:
             _build_attachment_name_map(attachments, image_path)
         )
         try:
-            result = await self.executor.ainvoke({"input": message})
+            history = conversation_memory.load(session_id)
+            result = await self.executor.ainvoke({"input": message, "chat_history": history})
+            conversation_memory.append(session_id, "user", message)
+            conversation_memory.append(session_id, "assistant", result["output"])
 
             return {
                 "output": result["output"],
@@ -509,6 +582,7 @@ class DetectionAgent:
         attachments: list[dict] = None,
         user_id: int = None,
         scene_id: int = None,
+        session_id: str | int = None,
     ) -> AsyncGenerator:
         """
         流式处理对话消息（用于 SSE）
@@ -525,6 +599,9 @@ class DetectionAgent:
         Yields:
             SSE 事件数据字典
         """
+        attachments, image_path = _resolve_conversation_attachments(
+            message, attachments, image_path, session_id
+        )
         message = _append_attachment_context(message, attachments, image_path)
 
         # 注入请求级上下文，供工具读取
@@ -535,9 +612,11 @@ class DetectionAgent:
         )
         result_holder = {"result": None}
         token_full = _last_full_tool_result.set(result_holder)
+        response_chunks = []
         try:
+            history = conversation_memory.load(session_id)
             async for event in self.executor.astream_events(
-                {"input": message},
+                {"input": message, "chat_history": history},
                 version="v2",
             ):
                 event_kind = event["event"]
@@ -546,6 +625,7 @@ class DetectionAgent:
                     # LLM 正在生成回复的文本片段
                     chunk = event["data"]["chunk"]
                     if hasattr(chunk, "content") and chunk.content:
+                        response_chunks.append(chunk.content)
                         yield {
                             "type": "text_chunk",
                             "content": chunk.content,
@@ -598,6 +678,10 @@ class DetectionAgent:
                         "tool": tool_name,
                         "result": frontend_result,
                     }
+
+            conversation_memory.append(session_id, "user", message)
+            if response_chunks:
+                conversation_memory.append(session_id, "assistant", "".join(response_chunks))
 
         except Exception as e:
             logger.error("Agent 流式执行异常: %s", str(e), exc_info=True)

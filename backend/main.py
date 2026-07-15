@@ -15,6 +15,7 @@ from app.api.detection import router as detection_router
 from app.api.history import router as history_router
 from app.middleware.rate_limiter import RateLimiterMiddleware
 from app.api.user import router as user_router
+from app.api.knowledge import router as knowledge_router
 
 def init_minio():
     """初始化 MinIO 存储桶"""
@@ -97,6 +98,7 @@ app.include_router(detection_router) # Day 8 新增
 app.include_router(dashboard_router)   # 【Day10 新增】
 app.include_router(history_router)     # 【Day10 新增】
 app.include_router(user_router)        # 【Day10 新增】
+app.include_router(knowledge_router)   # 【Day11 知识库检索】
 
 @app.get("/")
 def root():
