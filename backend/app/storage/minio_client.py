@@ -89,3 +89,44 @@ class MinIOClient:
             bucket_name=self.bucket_name,
             object_name=object_name,
         )
+
+    def object_name_from_url(self, url: str) -> str | None:
+        """
+        从预签名 URL 反解出永久对象名（object_name）。
+
+        预签名 URL 形如 http://host/bucket/detections/1/a.jpg?X-Amz-...
+        取 bucket 之后、查询串之前的路径部分。用于把易过期的 URL 归一化为
+        可长期存库的对象标识。
+
+        Returns:
+            object_name；无法解析时返回 None。
+        """
+        if not url:
+            return None
+        from urllib.parse import unquote, urlparse
+
+        path = urlparse(url).path.lstrip("/")
+        prefix = f"{self.bucket_name}/"
+        if not path.startswith(prefix):
+            return None
+        object_name = path[len(prefix):]
+        return unquote(object_name) or None
+
+    def presign_from_url_or_name(self, value: str) -> str | None:
+        """
+        输入既可能是 object_name、也可能是历史遗留的预签名 URL，
+        统一换签为一个新的短期访问 URL。对象不存在或换签失败时返回 None。
+        """
+        if not value:
+            return None
+        object_name = (
+            self.object_name_from_url(value)
+            if value.startswith(("http://", "https://"))
+            else value
+        )
+        if not object_name:
+            return None
+        try:
+            return self.get_presigned_url(object_name)
+        except Exception:
+            return None

@@ -155,13 +155,20 @@ const annotatedImageSrc = computed(() => {
   return null;
 });
 
-/** 批量模式：标注图列表 */
+/** 批量模式：标注图列表（优先 MinIO URL，回退 base64） */
 const batchImages = computed(() => {
   if (!isBatch.value) return [];
-  return props.result.annotated_images.map((img) => ({
-    name: img.image_path || "image",
-    src: `data:image/jpeg;base64,${img.annotated_image_base64}`,
-  }));
+  return props.result.annotated_images
+    .map((img) => {
+      let src = null;
+      if (img.annotated_image_url) {
+        src = img.annotated_image_url;
+      } else if (img.annotated_image_base64) {
+        src = `data:image/jpeg;base64,${img.annotated_image_base64}`;
+      }
+      return { name: img.image_path || "image", src };
+    })
+    .filter((img) => img.src);
 });
 
 /** 视频模式：仅展示后端实际返回了缩略图数据的前 6 帧 */
