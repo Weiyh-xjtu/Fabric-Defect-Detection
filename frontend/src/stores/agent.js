@@ -22,7 +22,9 @@ function normalizeHistoryMessage(item) {
     role: item.role,
     content: item.content || '',
   }
-  if (item.role === 'assistant') {
+  if (item.role === 'user') {
+    restoreUserAttachments(message, item.attachments)
+  } else if (item.role === 'assistant') {
     if (item.agent_used) message.agent = item.agent_used
     // 还原工具调用链摘要。
     const chain = buildToolChainFromHistory(item)
@@ -33,6 +35,32 @@ function normalizeHistoryMessage(item) {
     if (detection) message.detectionResult = detection
   }
   return message
+}
+
+/** 把用户消息的 MinIO 原始附件 URL 还原为 ChatPage 现有渲染字段。 */
+function restoreUserAttachments(message, attachments) {
+  const originals = (Array.isArray(attachments) ? attachments : []).filter(
+    (item) => item?.source === 'user' && item.url,
+  )
+  const images = originals.filter((item) => item.type === 'image')
+  if (images.length === 1) {
+    message.image = images[0].filename || 'image'
+    message.imagePreview = images[0].url
+  } else if (images.length > 1) {
+    message.images = images.map((item) => item.url)
+  }
+
+  const video = originals.find((item) => item.type === 'video')
+  if (video) message.videoUrl = video.url
+
+  const files = originals.filter(
+    (item) => !['image', 'video'].includes(item.type),
+  )
+  if (files.length) {
+    message.fileAttachments = files.map(
+      (item) => item.filename || '附件',
+    )
+  }
 }
 
 /** 从数据库的 tool_calls / tool_result 字段重建只读的工具调用链。 */
