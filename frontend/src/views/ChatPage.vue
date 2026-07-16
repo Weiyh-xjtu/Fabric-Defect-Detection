@@ -4,6 +4,27 @@
     <div class="chat-main">
       <!-- ── 消息列表区域 ── -->
       <div class="message-list" ref="messageListRef">
+        <!-- 空会话：居中欢迎屏 -->
+        <div v-if="agentStore.messages.length === 0" class="welcome-screen">
+          <h1 class="welcome-title">你好！我是 RSOD 目标检测智能体助手</h1>
+          <p class="welcome-subtitle">准备好了，随时开始</p>
+          <div class="welcome-hints">
+            <div class="welcome-hint">
+              <span class="hint-icon">🖼️</span>
+              <span>上传一张图片，让我帮你检测目标</span>
+            </div>
+            <div class="welcome-hint">
+              <span class="hint-icon">⚡</span>
+              <span>使用下方的快捷按钮直接触发检测</span>
+            </div>
+            <div class="welcome-hint">
+              <span class="hint-icon">💬</span>
+              <span>用自然语言描述你的需求</span>
+            </div>
+          </div>
+          <p class="welcome-tip">试试发一张图片给我吧！</p>
+        </div>
+
         <div
           v-for="(msg, index) in agentStore.messages"
           :key="index"
@@ -827,19 +848,6 @@ function openCameraDetection() {
   router.push("/detection");
 }
 
-const WELCOME_MESSAGE = {
-  role: "assistant",
-  content:
-    "你好！我是 RSOD 目标检测智能体助手。\n\n你可以：\n- 上传一张图片，让我帮你检测目标\n- 使用下方的快捷按钮直接触发检测\n- 用自然语言描述你的需求\n\n试试发一张图片给我吧！",
-};
-
-/** 会话为空时展示欢迎语。 */
-function showWelcomeIfEmpty() {
-  if (agentStore.messages.length === 0) {
-    agentStore.addMessage({ ...WELCOME_MESSAGE });
-  }
-}
-
 /** 拉取历史会话列表，失败静默（侧栏为空不影响对话）。 */
 async function refreshSessions() {
   try {
@@ -853,7 +861,6 @@ watch(
   () => agentStore.currentSessionId,
   (sessionId) => {
     if (!sessionId && agentStore.messages.length === 0) {
-      showWelcomeIfEmpty();
       nextTick(scrollToBottom);
     }
   },
@@ -871,7 +878,6 @@ onMounted(async () => {
       agentStore.setCurrentSessionId(null);
     }
   }
-  showWelcomeIfEmpty();
   scrollToBottom();
 });
 </script>
@@ -899,6 +905,56 @@ onMounted(async () => {
   flex: 1;
   overflow-y: auto;
   padding: 28px clamp(16px, 6vw, 100px);
+}
+
+/* ── 空会话欢迎屏 ── */
+.welcome-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 320px;
+  text-align: center;
+  color: #303133;
+}
+
+.welcome-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.welcome-subtitle {
+  margin: 10px 0 28px;
+  font-size: 14px;
+  color: #909399;
+}
+
+.welcome-hints {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.welcome-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #606266;
+
+  .hint-icon {
+    font-size: 16px;
+  }
+}
+
+.welcome-tip {
+  margin: 28px 0 0;
+  font-size: 13px;
+  color: #c0c4cc;
 }
 
 .message-item {
