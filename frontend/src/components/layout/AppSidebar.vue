@@ -75,10 +75,12 @@ import {
   Setting,
 } from '@element-plus/icons-vue'
 import { useAgentStore } from '@/stores/agent'
+import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
 const router = useRouter()
 const agentStore = useAgentStore()
+const userStore = useUserStore()
 
 /** 当前激活的菜单项 */
 const activeMenu = computed(() => {
@@ -88,15 +90,20 @@ const activeMenu = computed(() => {
 const isChatRoute = computed(() => route.path.startsWith('/chat'))
 
 /** 侧边栏菜单配置 */
-const menuItems = [
-  { path: '/chat', title: '智能对话', icon: ChatDotRound },
-  { path: '/detection', title: '检测工作台', icon: Camera },
-  { path: '/training', title: '模型训练', icon: Cpu },
-  { path: '/history', title: '历史记录', icon: Clock },
-  { path: '/knowledge', title: '知识库', icon: Collection },
-  { path: '/dashboard', title: '数据看板', icon: DataAnalysis },
+const allMenuItems = [
+  { path: '/chat', title: '智能对话', icon: ChatDotRound, permission: 'chat:use' },
+  { path: '/detection', title: '检测工作台', icon: Camera, permission: 'detection:execute' },
+  { path: '/training', title: '模型训练', icon: Cpu, permission: 'model:manage' },
+  { path: '/history', title: '历史记录', icon: Clock, anyPermission: ['history:read:own', 'history:read:any'] },
+  { path: '/knowledge', title: '知识库', icon: Collection, permission: 'knowledge:manage' },
+  { path: '/dashboard', title: '数据看板', icon: DataAnalysis, permission: 'dashboard:read:any' },
   { path: '/settings', title: '系统设置', icon: Setting },
 ]
+
+const menuItems = computed(() => allMenuItems.filter((item) => (
+  (!item.permission || userStore.hasPermission(item.permission))
+  && (!item.anyPermission || userStore.hasAnyPermission(item.anyPermission))
+)))
 
 async function refreshSessions() {
   try {

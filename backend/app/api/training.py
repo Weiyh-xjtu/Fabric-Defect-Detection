@@ -20,7 +20,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_current_user
+from app.core.permissions import require_permission
+from app.core.rbac import MODEL_MANAGE
 from app.config.settings import settings
 from app.core.logger import get_logger
 from app.database.session import get_db
@@ -41,16 +42,9 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/training", tags=["模型训练"])
 
 
-def _get_owned_task(db: Session, task_id: int, user) -> TrainingTask:
-    """获取当前用户拥有的训练任务，避免跨用户访问模型产物。"""
-    task = (
-        db.query(TrainingTask)
-        .filter(
-            TrainingTask.id == task_id,
-            TrainingTask.user_id == user.id,
-        )
-        .first()
-    )
+def _get_owned_task(db: Session, task_id: int, _user) -> TrainingTask:
+    """获取训练任务；调用方已通过模型管理权限校验。"""
+    task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="训练任务不存在")
     return task
@@ -59,7 +53,7 @@ def _get_owned_task(db: Session, task_id: int, user) -> TrainingTask:
 @router.get("/scenes")
 async def list_training_scenes(
     db: Session = Depends(get_db),
-    _current_user=Depends(get_current_user),
+    _current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """获取可用于训练的启用场景。"""
     scenes = (
@@ -84,7 +78,7 @@ async def list_training_scenes(
 async def start_training(
     request: TrainingTaskCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """
     启动模型训练任务
@@ -172,17 +166,17 @@ async def start_training(
 @router.get("/tasks")
 async def list_training_tasks(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """获取当前用户的训练任务列表"""
-    tasks = training_service.get_task_list(db, user_id=current_user.id)
+    tasks = training_service.get_task_list(db, user_id=None)
     return {"total": len(tasks), "items": tasks}
 
 
 @router.post("/rescan")
 async def rescan_training_tasks(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """扫描训练产物目录，将磁盘上存在但数据库缺失的训练任务恢复入库。
 
@@ -204,7 +198,7 @@ async def rescan_training_tasks(
 async def get_training_status(
     task_id: int,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """
     获取训练任务状态
@@ -223,7 +217,7 @@ async def get_training_status(
 async def get_training_metrics(
     task_id: int,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """
     获取训练任务的所有 epoch 指标
@@ -239,7 +233,7 @@ async def get_training_metrics(
 async def stop_training(
     task_id: int,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """停止正在运行的训练任务"""
     _get_owned_task(db, task_id, current_user)
@@ -253,15 +247,12 @@ async def stop_training(
 async def get_results_csv(
     task_uuid: str,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
-    """获取当前用户训练任务的 Ultralytics results.csv 文件。"""
+    """获取训练任务的 Ultralytics results.csv 文件。"""
     task = (
         db.query(TrainingTask)
-        .filter(
-            TrainingTask.task_uuid == task_uuid,
-            TrainingTask.user_id == current_user.id,
-        )
+        .filter(TrainingTask.task_uuid == task_uuid)
         .first()
     )
     if not task:
@@ -287,7 +278,7 @@ async def validate_model(
     task_id: int,
     request: ModelValidateRequest = None,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """对已完成训练的模型执行验证集或测试集评估。"""
     _get_owned_task(db, task_id, current_user)
@@ -315,7 +306,7 @@ async def export_model(
     task_id: int,
     request: ModelExportRequest = None,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """导出训练权重、评估报告和模型版本信息。"""
     _get_owned_task(db, task_id, current_user)
@@ -343,7 +334,7 @@ async def export_model(
 async def download_model(
     task_id: int,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """下载训练任务的 best.pt，缺失时回退到 last.pt。"""
     _get_owned_task(db, task_id, current_user)
@@ -364,7 +355,7 @@ async def predict_test_image(
     conf: float = Form(0.25, ge=0, le=1, description="置信度阈值"),
     iou: float = Form(0.45, ge=0, le=1, description="NMS IoU 阈值"),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
     """上传测试图片并使用已完成任务的模型进行预测。"""
     allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp"}
