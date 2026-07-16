@@ -2,6 +2,7 @@
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.security import (
@@ -11,6 +12,7 @@ from app.core.security import (
     verify_password,
 )
 from app.core.logger import get_logger
+from app.core.rbac import QUALITY_INSPECTOR, SYSTEM_ADMIN, get_user_permission_codes
 from app.entity.db_models import Role, RolePermission, User, UserRole
 
 logger = get_logger(__name__)
@@ -46,13 +48,19 @@ class UserService:
         if existing_email:
             raise HTTPException(status_code=400, detail="邮箱已被注册")
 
-        # 创建新用户
+        default_role = db.query(Role).filter(Role.name == QUALITY_INSPECTOR).first()
+        if default_role is None:
+            raise HTTPException(status_code=503, detail="系统角色尚未初始化，请联系管理员")
+
+        # 创建新用户并在同一事务中分配默认质检角色。
         new_user = User(
             username=username,
             email=email,
             hashed_password=hash_password(password),
         )
         db.add(new_user)
+        db.flush()
+        db.add(UserRole(user_id=new_user.id, role_id=default_role.id))
         db.commit()
         db.refresh(new_user)
         return new_user
@@ -78,6 +86,8 @@ class UserService:
             raise HTTPException(status_code=401, detail="用户名或密码错误")
         if not verify_password(password, user.hashed_password):
             raise HTTPException(status_code=401, detail="用户名或密码错误")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="账号已被禁用")
         return user
 
     @staticmethod
@@ -94,6 +104,11 @@ class UserService:
     def get_user_roles(db: Session, user: User) -> list[str]:
         """获取用户的角色标识列表"""
         return [ur.role.name for ur in user.user_roles]
+
+    @staticmethod
+    def get_user_permissions(db: Session, user: User) -> list[str]:
+        """获取用户所有角色权限的并集。"""
+        return sorted(get_user_permission_codes(db, user))
 
     @staticmethod
     def get_user_by_id(db: Session, user_id: int) -> User:
@@ -131,11 +146,11 @@ class UserService:
             "page": page,
             "page_size": page_size,
             "total_pages": (total + page_size - 1) // page_size,
-            "items": [UserService._serialize_user(user) for user in users],
+            "items": [UserService._serialize_user(user, db) for user in users],
         }
 
     @staticmethod
-    def _serialize_user(user: User) -> dict:
+    def _serialize_user(user: User, db: Session | None = None) -> dict:
         """序列化用户信息，排除密码等敏感字段。"""
         return {
             "id": user.id,
@@ -146,6 +161,7 @@ class UserService:
             "is_active": bool(user.is_active),
             "is_superuser": bool(user.is_superuser),
             "roles": [user_role.role.name for user_role in user.user_roles],
+            "permissions": sorted(get_user_permission_codes(db, user)) if db else [],
             "last_login_at": (
                 user.last_login_at.isoformat() if user.last_login_at else None
             ),
@@ -163,7 +179,7 @@ class UserService:
         )
         if not user:
             raise HTTPException(status_code=404, detail="用户不存在")
-        return UserService._serialize_user(user)
+        return UserService._serialize_user(user, db)
 
     @staticmethod
     def list_roles(db: Session) -> list[dict]:
@@ -191,6 +207,89 @@ class UserService:
             }
             for role in roles
         ]
+
+    @staticmethod
+    def _active_admin_count(db: Session, exclude_user_id: int | None = None) -> int:
+        query = (
+            db.query(User.id)
+            .outerjoin(UserRole, UserRole.user_id == User.id)
+            .outerjoin(Role, Role.id == UserRole.role_id)
+            .filter(
+                User.is_active.is_(True),
+                or_(User.is_superuser.is_(True), Role.name == SYSTEM_ADMIN),
+            )
+            .distinct()
+        )
+        if exclude_user_id is not None:
+            query = query.filter(User.id != exclude_user_id)
+        return query.count()
+
+    @staticmethod
+    def replace_user_roles(
+        db: Session,
+        user_id: int,
+        role_names: list[str],
+    ) -> dict:
+        """整体替换用户角色，并防止移除最后一个有效管理员。"""
+        normalized_names = list(dict.fromkeys(name.strip() for name in role_names if name.strip()))
+        if not normalized_names:
+            raise HTTPException(status_code=400, detail="至少需要分配一个有效角色")
+        roles = db.query(Role).filter(Role.name.in_(normalized_names)).all()
+        found_names = {role.name for role in roles}
+        missing = sorted(set(normalized_names) - found_names)
+        if missing:
+            raise HTTPException(status_code=400, detail=f"角色不存在: {', '.join(missing)}")
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        current_admin = user.is_superuser or any(
+            item.role.name == SYSTEM_ADMIN for item in user.user_roles
+        )
+        remains_admin = user.is_superuser or SYSTEM_ADMIN in found_names
+        if (
+            user.is_active
+            and current_admin
+            and not remains_admin
+            and UserService._active_admin_count(db, exclude_user_id=user.id) == 0
+        ):
+            raise HTTPException(status_code=400, detail="不能移除系统中最后一个有效管理员")
+
+        # 通过 ORM 关系删除，确保旧关联同步退出 identity map。批量 DELETE 后
+        # SQLite 可能复用主键，导致新对象与会话中的旧对象发生 identity 冲突。
+        user.user_roles.clear()
+        db.flush()
+        for role in roles:
+            user.user_roles.append(UserRole(role_id=role.id))
+        db.commit()
+        return UserService.get_user_detail(db, user.id)
+
+    @staticmethod
+    def update_user_status(
+        db: Session,
+        user_id: int,
+        is_active: bool,
+        operator_id: int,
+    ) -> dict:
+        """启用或禁用用户，并保护当前及最后一个管理员账号。"""
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if not is_active and user.id == operator_id:
+            raise HTTPException(status_code=400, detail="不能禁用当前登录账号")
+        is_admin = user.is_superuser or any(
+            item.role.name == SYSTEM_ADMIN for item in user.user_roles
+        )
+        if (
+            not is_active
+            and user.is_active
+            and is_admin
+            and UserService._active_admin_count(db, exclude_user_id=user.id) == 0
+        ):
+            raise HTTPException(status_code=400, detail="不能禁用系统中最后一个有效管理员")
+        user.is_active = is_active
+        db.commit()
+        return UserService.get_user_detail(db, user.id)
 
     @staticmethod
     def update_profile(
@@ -222,7 +321,7 @@ class UserService:
         logger.info("用户 %s 更新了个人信息", user.username)
         return {
             "message": "个人信息已更新",
-            "user": UserService._serialize_user(user),
+            "user": UserService._serialize_user(user, db),
         }
 
     @staticmethod

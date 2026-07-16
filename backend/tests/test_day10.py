@@ -10,6 +10,7 @@ from app.entity.db_models import (
     DetectionTask,
     Role,
     User,
+    UserRole,
 )
 
 
@@ -48,6 +49,14 @@ def create_scene(db_session, name: str) -> DetectionScene:
     db_session.commit()
     db_session.refresh(scene)
     return scene
+
+
+def assign_role(db_session, username: str, role_name: str) -> None:
+    user = db_session.query(User).filter_by(username=username).one()
+    role = db_session.query(Role).filter_by(name=role_name).one()
+    if not any(item.role_id == role.id for item in user.user_roles):
+        db_session.add(UserRole(user_id=user.id, role_id=role.id))
+        db_session.commit()
 
 
 def create_detection_task(
@@ -91,8 +100,12 @@ def create_detection_task(
 class TestDashboardApi:
     """数据看板接口测试。"""
 
-    def test_dashboard_aggregates_only_current_user(self, client, db_session):
+    def test_dashboard_aggregates_all_users_for_manager(self, client, db_session):
+        db_session.query(DetectionResult).delete()
+        db_session.query(DetectionTask).delete()
+        db_session.commit()
         headers = register_and_login(client, "day10_dashboard_user")
+        assign_role(db_session, "day10_dashboard_user", "production_manager")
         other_headers = register_and_login(client, "day10_dashboard_other")
         del other_headers
         user = db_session.query(User).filter_by(username="day10_dashboard_user").one()
@@ -105,24 +118,25 @@ class TestDashboardApi:
             "/api/dashboard/statistics?days=30", headers=headers
         )
         assert statistics.status_code == 200
-        assert statistics.json()["total_tasks"] == 1
-        assert statistics.json()["total_images"] == 1
-        assert statistics.json()["total_objects"] == 1
+        assert statistics.json()["total_tasks"] == 2
+        assert statistics.json()["total_images"] == 2
+        assert statistics.json()["total_objects"] == 2
 
         trend = client.get("/api/dashboard/trend?days=7", headers=headers)
         assert trend.status_code == 200
         assert len(trend.json()["trend"]) == 7
-        assert sum(item["task_count"] for item in trend.json()["trend"]) == 1
+        assert sum(item["task_count"] for item in trend.json()["trend"]) == 2
 
         class_dist = client.get("/api/dashboard/class-dist", headers=headers)
         type_dist = client.get("/api/dashboard/type-dist", headers=headers)
         scene_dist = client.get("/api/dashboard/scene-dist", headers=headers)
-        assert class_dist.json()["distribution"] == [{"name": "hole", "value": 1}]
-        assert type_dist.json()["distribution"] == [
-            {"name": "单图检测", "value": 1}
-        ]
+        assert class_dist.json()["distribution"] == [{"name": "hole", "value": 2}]
+        assert {
+            item["name"]: item["value"]
+            for item in type_dist.json()["distribution"]
+        } == {"单图检测": 1, "视频检测": 1}
         assert scene_dist.json()["distribution"] == [
-            {"name": "织物缺陷检测", "value": 1}
+            {"name": "织物缺陷检测", "value": 2}
         ]
 
 
@@ -155,6 +169,10 @@ class TestHistoryApi:
         )
         assert forbidden.status_code == 404
 
+        denied_delete = client.delete(f"/api/history/tasks/{task.id}", headers=headers)
+        assert denied_delete.status_code == 403
+
+        assign_role(db_session, "day10_history_user", "system_admin")
         deleted = client.delete(f"/api/history/tasks/{task.id}", headers=headers)
         assert deleted.status_code == 200
         assert client.get(f"/api/history/tasks/{task.id}", headers=headers).status_code == 404
@@ -180,6 +198,7 @@ class TestUserApi:
 
     def test_user_list_roles_profile_and_password(self, client, db_session):
         headers = register_and_login(client, "day10_settings_user")
+        assign_role(db_session, "day10_settings_user", "system_admin")
         db_session.add(
             Role(
                 name="day10_operator",

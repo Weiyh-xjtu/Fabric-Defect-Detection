@@ -9,12 +9,12 @@ from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask
 
 
 class HistoryService:
-    """提供当前用户检测任务的分页、详情与统计能力。"""
+    """提供指定用户或全厂检测任务的分页、详情与统计能力。"""
 
     @staticmethod
     def list_tasks(
         db: Session,
-        user_id: int,
+        user_id: int | None,
         page: int = 1,
         page_size: int = 10,
         task_type: str | None = None,
@@ -29,8 +29,9 @@ class HistoryService:
             db.query(DetectionTask)
             .outerjoin(DetectionScene, DetectionTask.scene_id == DetectionScene.id)
             .options(joinedload(DetectionTask.scene))
-            .filter(DetectionTask.user_id == user_id)
         )
+        if user_id is not None:
+            query = query.filter(DetectionTask.user_id == user_id)
         if task_type:
             query = query.filter(DetectionTask.task_type == task_type)
         if status:
@@ -93,14 +94,16 @@ class HistoryService:
         }
 
     @staticmethod
-    def get_task_detail(db: Session, user_id: int, task_id: int) -> dict | None:
+    def get_task_detail(db: Session, user_id: int | None, task_id: int) -> dict | None:
         """获取当前用户的任务详情和全部检测结果。"""
         task = (
             db.query(DetectionTask)
             .options(joinedload(DetectionTask.scene))
-            .filter(DetectionTask.id == task_id, DetectionTask.user_id == user_id)
+            .filter(DetectionTask.id == task_id)
             .first()
         )
+        if task and user_id is not None and task.user_id != user_id:
+            return None
         if not task:
             return None
 
@@ -144,13 +147,15 @@ class HistoryService:
         }
 
     @staticmethod
-    def delete_task(db: Session, user_id: int, task_id: int) -> bool:
+    def delete_task(db: Session, user_id: int | None, task_id: int) -> bool:
         """删除当前用户的任务；ORM 关系会级联删除结果。"""
         task = (
             db.query(DetectionTask)
-            .filter(DetectionTask.id == task_id, DetectionTask.user_id == user_id)
+            .filter(DetectionTask.id == task_id)
             .first()
         )
+        if task and user_id is not None and task.user_id != user_id:
+            return False
         if not task:
             return False
         db.delete(task)
@@ -158,30 +163,21 @@ class HistoryService:
         return True
 
     @staticmethod
-    def get_summary(db: Session, user_id: int) -> dict:
+    def get_summary(db: Session, user_id: int | None) -> dict:
         """返回总任务数、今日任务数和状态分布。"""
         today_start = datetime.combine(date.today(), time.min)
-        total = (
-            db.query(func.count(DetectionTask.id))
-            .filter(DetectionTask.user_id == user_id)
-            .scalar()
-            or 0
+        total_query = db.query(func.count(DetectionTask.id))
+        today_query = db.query(func.count(DetectionTask.id)).filter(
+            DetectionTask.created_at >= today_start
         )
-        today_tasks = (
-            db.query(func.count(DetectionTask.id))
-            .filter(
-                DetectionTask.user_id == user_id,
-                DetectionTask.created_at >= today_start,
-            )
-            .scalar()
-            or 0
-        )
-        rows = (
-            db.query(DetectionTask.status, func.count(DetectionTask.id))
-            .filter(DetectionTask.user_id == user_id)
-            .group_by(DetectionTask.status)
-            .all()
-        )
+        status_query = db.query(DetectionTask.status, func.count(DetectionTask.id))
+        if user_id is not None:
+            total_query = total_query.filter(DetectionTask.user_id == user_id)
+            today_query = today_query.filter(DetectionTask.user_id == user_id)
+            status_query = status_query.filter(DetectionTask.user_id == user_id)
+        total = total_query.scalar() or 0
+        today_tasks = today_query.scalar() or 0
+        rows = status_query.group_by(DetectionTask.status).all()
         status_counts = {
             "completed": 0,
             "processing": 0,

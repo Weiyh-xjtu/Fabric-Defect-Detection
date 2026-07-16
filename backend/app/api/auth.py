@@ -30,6 +30,7 @@ def _build_token_response(user: User, db: Session) -> dict:
     """构造登录或续期成功后的统一响应。"""
     access_token = user_service.create_access_token_for_user(user)
     roles = user_service.get_user_roles(db, user)
+    permissions = user_service.get_user_permissions(db, user)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -39,6 +40,8 @@ def _build_token_response(user: User, db: Session) -> dict:
             "email": user.email,
             "avatar": user.avatar,
             "roles": roles,
+            "permissions": permissions,
+            "is_superuser": bool(user.is_superuser),
         },
     }
 
@@ -84,6 +87,8 @@ async def get_current_user(
         raise credentials_exception
 
     user = user_service.get_user_by_id(db, user_id)
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="账号已被禁用")
     return user
 
 
@@ -188,6 +193,7 @@ async def get_current_user_info(
         "is_active": current_user.is_active,
         "is_superuser": current_user.is_superuser,
         "roles": roles,
+        "permissions": user_service.get_user_permissions(db, current_user),
         "last_login_at": current_user.last_login_at,
         "created_at": current_user.created_at,
     }
