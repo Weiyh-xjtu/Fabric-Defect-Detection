@@ -109,78 +109,86 @@
       </div>
     </div>
 
-    <!-- ── 快捷操作栏 ── -->
-    <div class="quick-actions">
-      <el-button
-        @click="handleQuickDetect('single')"
-        :disabled="agentStore.isLoading"
-      >
-        📷 单图检测
-      </el-button>
-      <el-button
-        @click="handleQuickDetect('batch')"
-        :disabled="agentStore.isLoading"
-      >
-        📁 批量/ZIP
-      </el-button>
-      <el-button
-        @click="handleVideoDetect"
-        :disabled="agentStore.isLoading"
-      >
-        🎬 视频
-      </el-button>
-      <el-button @click="openCameraDetection">📹 摄像头</el-button>
-    </div>
-
-    <div v-if="selectedFiles.length" class="selected-files">
-      <el-tag
-        v-for="(file, index) in selectedFiles"
-        :key="`${file.name}-${file.lastModified}`"
-        closable
-        @close="removeSelectedFile(index)"
-      >
-        {{ file.name }}
-      </el-tag>
-    </div>
-
     <!-- ── 输入区域 ── -->
-    <div class="input-area">
-      <!-- 附件按钮 -->
-      <el-button
-        class="attach-btn"
-        @click="triggerFileInput"
-        :disabled="agentStore.isLoading"
-        circle
-      >
-        📎
-      </el-button>
-      <input
-        ref="fileInputRef"
-        type="file"
-        accept="image/*,video/*,.zip"
-        multiple
-        style="display: none"
-        @change="handleFileSelect"
-      />
+    <div class="composer-wrapper">
+      <div class="input-area">
+        <div v-if="selectedFiles.length" class="selected-files">
+          <el-tag
+            v-for="(file, index) in selectedFiles"
+            :key="`${file.name}-${file.lastModified}`"
+            closable
+            @close="removeSelectedFile(index)"
+          >
+            {{ file.name }}
+          </el-tag>
+        </div>
 
-      <!-- 文本输入框 -->
-      <el-input
-        v-model="inputText"
-        placeholder="输入消息，可附加单图、多图、ZIP 或视频..."
-        @keyup.enter="sendMessage"
-        :disabled="agentStore.isLoading"
-      />
+        <!-- 文本输入框 -->
+        <el-input
+          v-model="inputText"
+          type="textarea"
+          :autosize="{ minRows: 2, maxRows: 4 }"
+          resize="none"
+          placeholder="输入消息，可附加单图、多图、ZIP 或视频..."
+          @keydown.enter.exact.prevent="sendMessage"
+          :disabled="agentStore.isLoading"
+        />
 
-      <!-- 发送/停止按钮 -->
-      <el-button
-        v-if="!agentStore.isLoading"
-        type="primary"
-        @click="sendMessage"
-        :disabled="!inputText.trim() && !selectedFiles.length"
-      >
-        发送
-      </el-button>
-      <el-button v-else type="danger" @click="handleStop"> 停止 </el-button>
+        <div class="composer-actions">
+          <div class="quick-actions">
+            <!-- 附件按钮 -->
+            <el-button
+              class="attach-btn"
+              @click="triggerFileInput"
+              :disabled="agentStore.isLoading"
+              circle
+            >
+              📎
+            </el-button>
+            <input
+              ref="fileInputRef"
+              type="file"
+              accept="image/*,video/*,.zip"
+              multiple
+              style="display: none"
+              @change="handleFileSelect"
+            />
+            <el-button
+              @click="handleQuickDetect('single')"
+              :disabled="agentStore.isLoading"
+            >
+              📷 单图检测
+            </el-button>
+            <el-button
+              @click="handleQuickDetect('batch')"
+              :disabled="agentStore.isLoading"
+            >
+              📁 批量/ZIP
+            </el-button>
+            <el-button
+              @click="handleVideoDetect"
+              :disabled="agentStore.isLoading"
+            >
+              🎬 视频
+            </el-button>
+            <el-button @click="openCameraDetection">📹 摄像头</el-button>
+          </div>
+
+          <!-- 发送/停止按钮 -->
+          <el-button
+            v-if="!agentStore.isLoading"
+            class="send-btn"
+            type="primary"
+            @click="sendMessage"
+            :disabled="!inputText.trim() && !selectedFiles.length"
+          >
+            发送
+          </el-button>
+          <el-button v-else class="send-btn" type="danger" @click="handleStop">
+            停止
+          </el-button>
+        </div>
+      </div>
     </div>
     </div>
   </div>
@@ -809,7 +817,7 @@ onMounted(async () => {
   display: flex;
   flex-direction: row;
   height: 100%;
-  background: #f5f5f5;
+  background: #fff;
 }
 
 /* ── 对话主区域 ── */
@@ -845,22 +853,24 @@ onMounted(async () => {
 .message-bubble {
   max-width: 70%;
   padding: 12px 16px;
-  border-radius: 12px;
+  border-radius: 18px;
   font-size: 15px;
   line-height: 1.55;
   word-break: break-word;
 }
 
 .user-bubble {
-  background: #409eff;
-  color: white;
-  border-bottom-right-radius: 4px;
+  background: #f0f0f0;
+  color: #1f2328;
 }
 
 .assistant-bubble {
-  background: white;
-  border: 1px solid #e0e0e0;
-  border-bottom-left-radius: 4px;
+  max-width: min(780px, 100%);
+  padding: 0;
+  color: #1f2328;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
 }
 
 .message-content {
@@ -912,49 +922,75 @@ onMounted(async () => {
   }
 }
 
-/* ── 快捷操作栏 ── */
-.quick-actions {
-  display: flex;
-  gap: 8px;
-  padding: 12px 20px;
-  border-top: 1px solid #e0e0e0;
-  background: white;
-}
-
-.selected-files {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 8px 20px 0;
-  background: white;
-}
-
 /* ── 输入区域 ── */
+.composer-wrapper {
+  flex-shrink: 0;
+  padding: 16px 24px 20px;
+  background: white;
+  border-top: 1px solid #ebeef5;
+}
+
 .input-area {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 20px;
-  border-top: 1px solid #e0e0e0;
+  flex-direction: column;
+  gap: 12px;
+  width: min(1480px, 100%);
+  min-height: 132px;
+  margin: 0 auto;
+  padding: 18px 22px 16px;
   background: white;
+  border: 1px solid #b8d8ff;
+  border-radius: 28px;
+  box-shadow: 0 8px 28px rgba(64, 158, 255, 0.08);
 
-  .el-input {
+  .el-textarea {
     flex: 1;
   }
 
-  :deep(.el-input__wrapper) {
-    padding: 0 16px;
-    border-radius: 999px;
-  }
-
-  :deep(.el-input__inner) {
+  :deep(.el-textarea__inner) {
+    min-height: 54px !important;
+    padding: 0;
     font-size: 15px;
+    line-height: 1.6;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
   }
 
-  .attach-btn,
   .el-button {
     border-radius: 999px;
   }
+}
+
+.selected-files,
+.composer-actions,
+.quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.selected-files {
+  flex-wrap: wrap;
+}
+
+.composer-actions {
+  justify-content: space-between;
+}
+
+.quick-actions {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.attach-btn {
+  flex-shrink: 0;
+}
+
+.send-btn {
+  flex-shrink: 0;
+  min-width: 76px;
 }
 
 /* ── 附件预览 ── */
