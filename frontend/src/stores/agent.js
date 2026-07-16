@@ -24,10 +24,13 @@ function normalizeHistoryMessage(item) {
   }
   if (item.role === 'assistant') {
     if (item.agent_used) message.agent = item.agent_used
-    // 还原工具调用链摘要。历史记录不含标注图 base64，故仅展示调用链，
-    // 不重建检测结果卡片（标注图无法从数据库还原）。
+    // 还原工具调用链摘要。
     const chain = buildToolChainFromHistory(item)
     if (chain.length) message.toolChain = chain
+    // 还原检测结果卡片：统计信息来自 tool_result（已剥离 base64），
+    // 标注图/视频用后端换签的 MinIO 短期 URL 还原。
+    const detection = buildDetectionFromHistory(item)
+    if (detection) message.detectionResult = detection
   }
   return message
 }
@@ -40,6 +43,62 @@ function buildToolChainFromHistory(item) {
     status: 'done',
     summary: '',
   }))
+}
+
+/** 解析历史消息的 tool_result，取出首个检测结果对象。 */
+function parseHistoryDetection(item) {
+  if (!item.tool_result) return null
+  let results
+  try {
+    results = JSON.parse(item.tool_result)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(results)) return null
+  for (const entry of results) {
+    let result
+    try {
+      result = typeof entry.result === 'string' ? JSON.parse(entry.result) : entry.result
+    } catch {
+      continue
+    }
+    if (result && typeof result === 'object' && 'total_objects' in result) {
+      return result
+    }
+  }
+  return null
+}
+
+/**
+ * 重建检测结果卡片数据：合并 tool_result 的统计信息与 attachments 的 MinIO URL。
+ *
+ * 后端 attachments 已把 object_name 实时换签为短期 URL：
+ *   - type=image  → 单图 annotated_image_url
+ *   - type=images → 批量，按 image_path 匹配回每张图的 annotated_image_url
+ *   - type=video  → annotated_video_url
+ */
+function buildDetectionFromHistory(item) {
+  const detection = parseHistoryDetection(item)
+  if (!detection) return null
+  const attachments = Array.isArray(item.attachments) ? item.attachments : []
+
+  const video = attachments.find((a) => a.type === 'video')
+  if (video?.url) detection.annotated_video_url = video.url
+
+  const single = attachments.find((a) => a.type === 'image')
+  if (single?.url) detection.annotated_image_url = single.url
+
+  const batch = attachments.find((a) => a.type === 'images')
+  if (batch && Array.isArray(detection.annotated_images)) {
+    const urlByPath = new Map(
+      (batch.images || []).map((img) => [img.image_path, img.url]),
+    )
+    detection.annotated_images = detection.annotated_images.map((img) => ({
+      ...img,
+      annotated_image_url: urlByPath.get(img.image_path) || img.annotated_image_url || null,
+    }))
+  }
+  return detection
 }
 
 export const useAgentStore = defineStore('agent', {

@@ -295,6 +295,9 @@ class ChatMessage(Base):
     agent_used = Column(String(50), nullable=True, comment="处理的 Agent：supervisor/detection/analysis/qa")
     tool_calls = Column(JSON, nullable=True, comment='工具调用记录，如 [{"tool":"detect_objects","args":{...}}]')
     tool_result = Column(Text, nullable=True, comment="工具调用返回结果")
+    # 检测标注图/视频的 MinIO 永久对象标识，读取历史时实时换签短期 URL。
+    # 结构：[{"type":"image|images|video","object_name":str,...}]，不存易过期的预签名 URL。
+    attachments = Column(JSON, nullable=True, comment="检测结果附件的 MinIO 对象引用，用于历史还原图片/视频")
     # 元信息
     tokens_used = Column(Integer, nullable=True, comment="Token 消耗量")
     latency_ms = Column(Integer, nullable=True, comment="响应耗时（毫秒）")

@@ -20,11 +20,13 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.agent.multi_agent import multi_agent as detection_agent
+from app.agent.detection_agent import _strip_base64_for_llm
 from app.api.auth import get_current_user
 from app.core.logger import get_logger
 from app.database.session import SessionLocal, get_db
 from app.entity.db_models import ChatMessage, ChatSession
 from app.agent.memory import conversation_memory
+from app.storage.minio_client import MinIOClient
 
 logger = get_logger(__name__)
 
@@ -120,6 +122,170 @@ def _get_or_create_session(db: Session, user_id: int, session_uuid: str, title: 
     return session
 
 
+def _slim_tool_result(raw) -> str:
+    """
+    剥离工具结果中的 base64 标注图后返回 JSON 字符串，用于存库。
+
+    base64（单图可达数万字符）只服务本轮前端即时渲染，历史改用 MinIO URL
+    还原，因此不必落库。非检测结果或解析失败时按原样截断兜底。
+    """
+    if not raw:
+        return ""
+    try:
+        result = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return str(raw)[:10000]
+    if not isinstance(result, dict):
+        return str(raw)[:10000]
+    return json.dumps(_strip_base64_for_llm(result), ensure_ascii=False)
+
+
+def _extract_attachment_refs(tool_results: list[dict]) -> list[dict]:
+    """
+    从本轮工具结果中提取检测标注图/视频的 MinIO 永久对象引用。
+
+    存库时把易过期的预签名 URL 归一化为 object_name，历史读回时再实时换签。
+    仅记录对象标识（几十字节），绝不把 base64 或视频字节写进数据库。
+
+    Returns:
+        [{"tool":..., "type":"image|images|video", ...}]，无可持久化附件时为空列表。
+    """
+    try:
+        minio = MinIOClient()
+    except Exception as e:
+        logger.warning("MinIO 不可用，跳过附件引用提取: %s", str(e))
+        return []
+
+    refs = []
+    for item in tool_results:
+        raw = item.get("result")
+        if not raw:
+            continue
+        try:
+            result = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(result, dict):
+            continue
+        tool = item.get("tool")
+
+        # 视频：单个标注视频 URL
+        video_url = result.get("annotated_video_url")
+        if video_url:
+            object_name = minio.object_name_from_url(video_url)
+            if object_name:
+                refs.append({"tool": tool, "type": "video", "object_name": object_name})
+            continue
+
+        # 批量/ZIP：多张标注图
+        annotated_images = result.get("annotated_images")
+        if isinstance(annotated_images, list) and annotated_images:
+            images = []
+            for img in annotated_images:
+                if not isinstance(img, dict):
+                    continue
+                object_name = minio.object_name_from_url(img.get("annotated_image_url", ""))
+                if object_name:
+                    images.append({
+                        "image_path": img.get("image_path"),
+                        "object_name": object_name,
+                    })
+            if images:
+                refs.append({"tool": tool, "type": "images", "images": images})
+            continue
+
+        # 单图：单张标注图 URL
+        image_url = result.get("annotated_image_url")
+        if image_url:
+            object_name = minio.object_name_from_url(image_url)
+            if object_name:
+                refs.append({"tool": tool, "type": "image", "object_name": object_name})
+
+    return refs
+
+
+def _collect_object_names(attachments: list[dict] | None) -> list[str]:
+    """
+    从存储的 attachments 引用中收集所有 MinIO 永久对象名。
+
+    覆盖单图（object_name）、视频（object_name）与批量（images[].object_name）
+    三种结构，用于删除会话时清理对应的对象存储文件。
+    """
+    if not attachments:
+        return []
+    names = []
+    for ref in attachments:
+        if ref.get("type") == "images":
+            for img in ref.get("images", []):
+                name = img.get("object_name")
+                if name:
+                    names.append(name)
+        else:
+            name = ref.get("object_name")
+            if name:
+                names.append(name)
+    return names
+
+
+def _delete_session_objects(messages) -> None:
+    """
+    删除会话所有消息在 MinIO 中引用的标注图/视频对象。
+
+    对象路径带 task.id，为每次检测独有，故可安全删除，不会影响其他会话。
+    MinIO 不可用或单个对象删除失败时记录告警并继续，不阻断会话删除。
+    """
+    object_names = []
+    for message in messages:
+        object_names.extend(_collect_object_names(message.attachments))
+    if not object_names:
+        return
+    try:
+        minio = MinIOClient()
+    except Exception as e:
+        logger.warning("MinIO 不可用，跳过会话附件对象清理: %s", str(e))
+        return
+    for object_name in object_names:
+        try:
+            minio.delete_file(object_name)
+        except Exception as e:
+            logger.warning("删除 MinIO 对象失败 object_name=%s: %s", object_name, str(e))
+
+
+def _resign_attachments(attachments: list[dict] | None) -> list[dict]:
+    """
+    读取历史时把存储的 object_name 实时换签为短期访问 URL。
+
+    对象已被删除或 MinIO 不可用时，对应项的 url 为 None，前端据此回退提示。
+    """
+    if not attachments:
+        return []
+    try:
+        minio = MinIOClient()
+    except Exception as e:
+        logger.warning("MinIO 不可用，历史附件无法换签: %s", str(e))
+        return []
+
+    resolved = []
+    for ref in attachments:
+        ref_type = ref.get("type")
+        if ref_type == "images":
+            images = [
+                {
+                    "image_path": img.get("image_path"),
+                    "url": minio.presign_from_url_or_name(img.get("object_name", "")),
+                }
+                for img in ref.get("images", [])
+            ]
+            resolved.append({"tool": ref.get("tool"), "type": "images", "images": images})
+        else:
+            resolved.append({
+                "tool": ref.get("tool"),
+                "type": ref_type,
+                "url": minio.presign_from_url_or_name(ref.get("object_name", "")),
+            })
+    return resolved
+
+
 @router.get("/sessions", summary="获取当前用户会话列表")
 def list_sessions(current_user=Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
     sessions = db.query(ChatSession).filter(
@@ -147,7 +313,16 @@ def get_session_history(session_uuid: str, current_user=Depends(get_current_user
     return {
         "session": {"session_uuid": session.session_uuid, "title": session.title, "message_count": session.message_count},
         "messages": [
-            {"role": item.role, "content": item.content, "agent_used": item.agent_used, "tool_calls": item.tool_calls, "tool_result": item.tool_result, "created_at": item.created_at}
+            {
+                "role": item.role,
+                "content": item.content,
+                "agent_used": item.agent_used,
+                "tool_calls": item.tool_calls,
+                "tool_result": item.tool_result,
+                # 读取时用存储的 object_name 实时换签短期 URL，避免存过期链接
+                "attachments": _resign_attachments(item.attachments),
+                "created_at": item.created_at,
+            }
             for item in session.messages
         ],
     }
@@ -160,6 +335,8 @@ def delete_session(session_uuid: str, current_user=Depends(get_current_user), db
         raise HTTPException(status_code=404, detail="会话不存在")
     attachments = conversation_memory.load_all_attachments(session_uuid, current_user.id)
     _cleanup_attachments(attachments)
+    # 清理 MinIO 中该会话引用的标注图/视频对象（须在 db.delete 前读取消息）。
+    _delete_session_objects(session.messages)
     conversation_memory.clear(session_uuid, current_user.id)
     db.delete(session)
     db.commit()
@@ -324,7 +501,9 @@ async def chat_stream(
                 elif event.get("type") == "tool_call":
                     tool_calls.append({"tool": event.get("tool"), "input": event.get("input")})
                 elif event.get("type") == "tool_result":
-                    tool_results.append({"tool": event.get("tool"), "result": str(event.get("result", ""))[:10000]})
+                    # 保留完整结果（含 base64/URL）供后续提取 MinIO 引用，
+                    # 落库前再由 _slim_tool_result 剥离 base64。
+                    tool_results.append({"tool": event.get("tool"), "result": str(event.get("result", ""))})
                 elif event.get("type") == "agent_route":
                     agent_used = event.get("agent")
                 # 将事件序列化为 SSE 格式
@@ -337,13 +516,22 @@ async def chat_stream(
 
             assistant_content = "".join(assistant_chunks).strip()
             if assistant_content or tool_results:
+                # 提取标注图/视频的 MinIO 永久引用，供历史还原（不落 base64）。
+                attachment_refs = _extract_attachment_refs(tool_results)
+                # 存库前剥离 base64：base64 只服务本轮前端渲染，存进数据库会撑爆
+                # 字段、拖慢历史加载，且历史已改用 MinIO URL 还原。
+                slim_tool_results = [
+                    {"tool": tr.get("tool"), "result": _slim_tool_result(tr.get("result"))}
+                    for tr in tool_results
+                ]
                 db.add(ChatMessage(
                     session_id=db_session.id,
                     role="assistant",
                     content=assistant_content or "工具调用已完成",
                     agent_used=agent_used,
                     tool_calls=tool_calls or None,
-                    tool_result=json.dumps(tool_results, ensure_ascii=False) if tool_results else None,
+                    tool_result=json.dumps(slim_tool_results, ensure_ascii=False) if slim_tool_results else None,
+                    attachments=attachment_refs or None,
                 ))
                 db_session.message_count = int(db_session.message_count or 0) + 1
                 db_session.last_message_at = datetime.now()
