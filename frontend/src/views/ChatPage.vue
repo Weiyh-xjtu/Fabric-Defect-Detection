@@ -2,194 +2,228 @@
   <div class="chat-page">
     <!-- ── 对话主区域 ── -->
     <div class="chat-main">
-    <!-- ── 消息列表区域 ── -->
-    <div class="message-list" ref="messageListRef">
-      <div
-        v-for="(msg, index) in agentStore.messages"
-        :key="index"
-        :class="['message-item', `message-${msg.role}`]"
-      >
-        <!-- 用户消息 -->
-        <div v-if="msg.role === 'user'" class="message-bubble user-bubble">
-          <div class="message-content">{{ msg.content }}</div>
-          <!-- 单张图片附件 -->
-          <div v-if="msg.image" class="message-attachment">
-            <img :src="msg.imagePreview" alt="附件图片" />
-          </div>
-          <!-- 多图附件（批量检测） -->
-          <div v-if="msg.images && msg.images.length" class="message-attachments-grid">
-            <img v-for="(src, i) in msg.images" :key="i" :src="src" alt="附件图片" />
-          </div>
-          <div v-if="msg.videoUrl" class="message-video">
-            <video :src="msg.videoUrl" controls preload="metadata"></video>
-          </div>
-          <div v-if="msg.fileAttachments?.length" class="message-files">
-            <span v-for="filename in msg.fileAttachments" :key="filename">
-              📦 {{ filename }}
-            </span>
-          </div>
-        </div>
-
-        <!-- AI 消息 -->
+      <!-- ── 消息列表区域 ── -->
+      <div class="message-list" ref="messageListRef">
         <div
-          v-else-if="msg.role === 'assistant'"
-          class="message-bubble assistant-bubble"
+          v-for="(msg, index) in agentStore.messages"
+          :key="index"
+          :class="['message-item', `message-${msg.role}`]"
         >
-          <!-- 处理该消息的专家 Agent -->
-          <div v-if="msg.agent" class="agent-route">
-            <el-tag size="small" effect="plain" type="warning">
-              🤖 {{ agentLabel(msg.agent) }}
-            </el-tag>
-          </div>
-
-          <div v-if="msg.loading" class="typing-indicator">
-            <span></span><span></span><span></span>
-          </div>
-          <div
-            v-else
-            class="message-content markdown-body"
-            v-html="renderMarkdown(msg.content)"
-          ></div>
-
-          <!-- 工具调用链 -->
-          <div v-if="msg.toolChain?.length" class="tool-chain">
+          <!-- 用户消息 -->
+          <div v-if="msg.role === 'user'" class="message-bubble user-bubble">
+            <div class="message-content">{{ msg.content }}</div>
+            <!-- 单张图片附件 -->
+            <div v-if="msg.image" class="message-attachment">
+              <img :src="msg.imagePreview" alt="附件图片" />
+            </div>
+            <!-- 多图附件（批量检测） -->
             <div
-              v-for="(step, i) in msg.toolChain"
-              :key="i"
-              class="tool-chain-step"
+              v-if="msg.images && msg.images.length"
+              class="message-attachments-grid"
             >
-              <div class="tool-chain-head">
-                <span class="tool-chain-index">{{ i + 1 }}</span>
-                <el-tag
-                  size="small"
-                  :type="step.status === 'done' ? 'success' : step.status === 'error' ? 'danger' : 'info'"
-                >
-                  🔧 {{ toolDisplayName(step.tool) }}
-                </el-tag>
-                <span :class="['tool-chain-status', `status-${step.status}`]">
-                  {{ step.status === 'running' ? '执行中…' : step.status === 'error' ? '失败' : '完成' }}
-                </span>
-                <span v-if="step.summary" class="tool-chain-summary">{{ step.summary }}</span>
-              </div>
-
-              <!-- 知识库检索来源 -->
-              <div v-if="step.knowledge" class="knowledge-sources">
-                <div v-if="step.knowledge.fallback_reason" class="knowledge-fallback">
-                  ⚠ 向量检索暂不可用，本次为本地词法检索
-                </div>
-                <el-collapse class="knowledge-collapse">
-                  <el-collapse-item
-                    v-for="(item, j) in step.knowledge.results"
-                    :key="j"
-                    :title="`📄 ${item.source} · 相关度 ${formatScore(item.score, step.knowledge.retrieval_mode)}`"
-                  >
-                    <div class="knowledge-snippet">{{ item.content }}</div>
-                  </el-collapse-item>
-                </el-collapse>
-                <div v-if="!step.knowledge.results?.length" class="knowledge-empty">
-                  知识库未命中任何片段
-                </div>
-              </div>
+              <img
+                v-for="(src, i) in msg.images"
+                :key="i"
+                :src="src"
+                alt="附件图片"
+              />
+            </div>
+            <div v-if="msg.videoUrl" class="message-video">
+              <video :src="msg.videoUrl" controls preload="metadata"></video>
+            </div>
+            <div v-if="msg.fileAttachments?.length" class="message-files">
+              <span v-for="filename in msg.fileAttachments" :key="filename">
+                📦 {{ filename }}
+              </span>
             </div>
           </div>
 
-          <!-- 检测结果卡片 -->
-          <DetectionResultCard
-            v-if="msg.detectionResult"
-            :result="msg.detectionResult"
-          />
-          <el-button
-            v-if="msg.retryData"
-            size="small"
-            type="primary"
-            plain
-            @click="retryMessage(msg)"
-          >重新发送</el-button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── 输入区域 ── -->
-    <div class="composer-wrapper">
-      <div class="input-area">
-        <div v-if="selectedFiles.length" class="selected-files">
-          <el-tag
-            v-for="(file, index) in selectedFiles"
-            :key="`${file.name}-${file.lastModified}`"
-            closable
-            @close="removeSelectedFile(index)"
+          <!-- AI 消息 -->
+          <div
+            v-else-if="msg.role === 'assistant'"
+            class="message-bubble assistant-bubble"
           >
-            {{ file.name }}
-          </el-tag>
-        </div>
+            <!-- 处理该消息的专家 Agent -->
+            <div v-if="msg.agent" class="agent-route">
+              <el-tag size="small" effect="plain" type="warning">
+                🤖 {{ agentLabel(msg.agent) }}
+              </el-tag>
+            </div>
 
-        <!-- 文本输入框 -->
-        <el-input
-          v-model="inputText"
-          type="textarea"
-          :autosize="{ minRows: 2, maxRows: 4 }"
-          resize="none"
-          placeholder="输入消息，可附加单图、多图、ZIP 或视频..."
-          @keydown.enter.exact.prevent="sendMessage"
-          :disabled="agentStore.isLoading"
-        />
+            <div v-if="msg.loading" class="typing-indicator">
+              <span></span><span></span><span></span>
+            </div>
+            <div
+              v-else
+              class="message-content markdown-body"
+              v-html="renderMarkdown(msg.content)"
+            ></div>
 
-        <div class="composer-actions">
-          <div class="quick-actions">
-            <!-- 附件按钮 -->
-            <el-button
-              class="attach-btn"
-              @click="triggerFileInput"
-              :disabled="agentStore.isLoading"
-              circle
-            >
-              📎
-            </el-button>
-            <input
-              ref="fileInputRef"
-              type="file"
-              accept="image/*,video/*,.zip"
-              multiple
-              style="display: none"
-              @change="handleFileSelect"
+            <!-- 工具调用链 -->
+            <div v-if="msg.toolChain?.length" class="tool-chain">
+              <div
+                v-for="(step, i) in msg.toolChain"
+                :key="i"
+                class="tool-chain-step"
+              >
+                <div class="tool-chain-head">
+                  <span class="tool-chain-index">{{ i + 1 }}</span>
+                  <el-tag
+                    size="small"
+                    :type="
+                      step.status === 'done'
+                        ? 'success'
+                        : step.status === 'error'
+                          ? 'danger'
+                          : 'info'
+                    "
+                  >
+                    🔧 {{ toolDisplayName(step.tool) }}
+                  </el-tag>
+                  <span :class="['tool-chain-status', `status-${step.status}`]">
+                    {{
+                      step.status === "running"
+                        ? "执行中…"
+                        : step.status === "error"
+                          ? "失败"
+                          : "完成"
+                    }}
+                  </span>
+                  <span v-if="step.summary" class="tool-chain-summary">{{
+                    step.summary
+                  }}</span>
+                </div>
+
+                <!-- 知识库检索来源 -->
+                <div v-if="step.knowledge" class="knowledge-sources">
+                  <div
+                    v-if="step.knowledge.fallback_reason"
+                    class="knowledge-fallback"
+                  >
+                    ⚠ 向量检索暂不可用，本次为本地词法检索
+                  </div>
+                  <el-collapse class="knowledge-collapse">
+                    <el-collapse-item
+                      v-for="(item, j) in step.knowledge.results"
+                      :key="j"
+                      :title="`📄 ${item.source} · 相关度 ${formatScore(item.score, step.knowledge.retrieval_mode)}`"
+                    >
+                      <div class="knowledge-snippet">{{ item.content }}</div>
+                    </el-collapse-item>
+                  </el-collapse>
+                  <div
+                    v-if="!step.knowledge.results?.length"
+                    class="knowledge-empty"
+                  >
+                    知识库未命中任何片段
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 检测结果卡片 -->
+            <DetectionResultCard
+              v-if="msg.detectionResult"
+              :result="msg.detectionResult"
             />
             <el-button
-              @click="handleQuickDetect('single')"
-              :disabled="agentStore.isLoading"
+              v-if="msg.retryData"
+              size="small"
+              type="primary"
+              plain
+              @click="retryMessage(msg)"
+              >重新发送</el-button
             >
-              📷 单图检测
-            </el-button>
-            <el-button
-              @click="handleQuickDetect('batch')"
-              :disabled="agentStore.isLoading"
-            >
-              📁 批量/ZIP
-            </el-button>
-            <el-button
-              @click="handleVideoDetect"
-              :disabled="agentStore.isLoading"
-            >
-              🎬 视频
-            </el-button>
-            <el-button @click="openCameraDetection">📹 摄像头</el-button>
           </div>
-
-          <!-- 发送/停止按钮 -->
-          <el-button
-            v-if="!agentStore.isLoading"
-            class="send-btn"
-            type="primary"
-            @click="sendMessage"
-            :disabled="!inputText.trim() && !selectedFiles.length"
-          >
-            发送
-          </el-button>
-          <el-button v-else class="send-btn" type="danger" @click="handleStop">
-            停止
-          </el-button>
         </div>
       </div>
-    </div>
+
+      <!-- ── 输入区域 ── -->
+      <div class="composer-wrapper">
+        <div class="input-area">
+          <div v-if="selectedFiles.length" class="selected-files">
+            <el-tag
+              v-for="(file, index) in selectedFiles"
+              :key="`${file.name}-${file.lastModified}`"
+              closable
+              @close="removeSelectedFile(index)"
+            >
+              {{ file.name }}
+            </el-tag>
+          </div>
+
+          <!-- 文本输入框 -->
+          <el-input
+            v-model="inputText"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 4 }"
+            resize="none"
+            placeholder="输入消息，可附加单图、多图、ZIP 或视频..."
+            @keydown.enter.exact.prevent="sendMessage"
+            :disabled="agentStore.isLoading"
+          />
+
+          <div class="composer-actions">
+            <div class="quick-actions">
+              <!-- 附件按钮 -->
+              <el-button
+                class="attach-btn"
+                @click="triggerFileInput"
+                :disabled="agentStore.isLoading"
+                circle
+              >
+                📎
+              </el-button>
+              <input
+                ref="fileInputRef"
+                type="file"
+                accept="image/*,video/*,.zip"
+                multiple
+                style="display: none"
+                @change="handleFileSelect"
+              />
+              <el-button
+                @click="handleQuickDetect('single')"
+                :disabled="agentStore.isLoading"
+              >
+                📷 单图检测
+              </el-button>
+              <el-button
+                @click="handleQuickDetect('batch')"
+                :disabled="agentStore.isLoading"
+              >
+                📁 批量/ZIP
+              </el-button>
+              <el-button
+                @click="handleVideoDetect"
+                :disabled="agentStore.isLoading"
+              >
+                🎬 视频
+              </el-button>
+              <el-button @click="openCameraDetection">📹 摄像头</el-button>
+            </div>
+
+            <!-- 发送/停止按钮 -->
+            <el-button
+              v-if="!agentStore.isLoading"
+              class="send-btn"
+              type="primary"
+              @click="sendMessage"
+              :disabled="!inputText.trim() && !selectedFiles.length"
+            >
+              发送
+            </el-button>
+            <el-button
+              v-else
+              class="send-btn"
+              type="danger"
+              @click="handleStop"
+            >
+              停止
+            </el-button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -263,7 +297,8 @@ async function sendMessage() {
     ? getAttachmentType(filesToSend[0])
     : null;
   const effectiveMessage =
-    message || getDefaultAttachmentInstruction(attachmentType, filesToSend.length);
+    message ||
+    getDefaultAttachmentInstruction(attachmentType, filesToSend.length);
 
   const userMessage = {
     role: "user",
@@ -392,7 +427,10 @@ async function sendMessage() {
       assistantMessage.content = `抱歉，处理出错了：${err.message}`;
       assistantMessage.loading = false;
       assistantMessage.error = true;
-      assistantMessage.retryData = { message: effectiveMessage, files: filesToSend };
+      assistantMessage.retryData = {
+        message: effectiveMessage,
+        files: filesToSend,
+      };
       agentStore.setLoading(false);
       ElMessage.error("对话请求失败，请重试");
     },
@@ -827,14 +865,14 @@ onMounted(async () => {
   flex: 1;
   min-width: 0;
   height: 100%;
-  font-size: 15px;
+  font-size: 18px;
 }
 
 /* ── 消息列表 ── */
 .message-list {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 28px clamp(16px, 6vw, 100px);
 }
 
 .message-item {
@@ -854,8 +892,8 @@ onMounted(async () => {
   max-width: 70%;
   padding: 12px 16px;
   border-radius: 18px;
-  font-size: 15px;
-  line-height: 1.55;
+  font-size: 18px;
+  line-height: 1.6;
   word-break: break-word;
 }
 
@@ -950,8 +988,8 @@ onMounted(async () => {
   :deep(.el-textarea__inner) {
     min-height: 54px !important;
     padding: 0;
-    font-size: 15px;
-    line-height: 1.6;
+    font-size: 16px;
+    line-height: 1.65;
     background: transparent;
     border: 0;
     border-radius: 0;
