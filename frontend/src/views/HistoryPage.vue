@@ -73,7 +73,7 @@
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" :icon="View" @click="openDetail(row.id)">详情</el-button>
-            <el-button link type="danger" :icon="Delete" @click="removeTask(row)">删除</el-button>
+            <el-button v-if="canDeleteHistory" link type="danger" :icon="Delete" @click="removeTask(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -151,7 +151,11 @@ import {
 } from '@/api/history'
 import { Delete, Refresh, Search, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useUserStore } from '@/stores/user'
+
+const userStore = useUserStore()
+const canDeleteHistory = computed(() => userStore.hasPermission('history:delete:any'))
 
 const typeOptions = [
   { label: '单图检测', value: 'single' },

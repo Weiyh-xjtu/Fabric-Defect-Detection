@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 import cv2
 import numpy as np
 import torch
+from jose import JWTError
 
 from fastapi import (
     APIRouter,
@@ -34,10 +35,16 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 
-from app.api.auth import get_current_user
+from app.core.permissions import require_permission
+from app.core.rbac import (
+    DETECTION_EXECUTE,
+    SYSTEM_ADMIN,
+    user_has_permission,
+)
+from app.core.security import decode_access_token
 from app.core.logger import get_logger
 from app.database.session import SessionLocal
-from app.entity.db_models import DetectionTask
+from app.entity.db_models import DetectionTask, User
 from app.services.detection_service import detection_service
 from app.agent.memory import conversation_memory
 from app.api.chat import persist_quick_detection
@@ -47,6 +54,35 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/detection", tags=["快捷检测"])
 CHAT_UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "rsod_uploads")
 os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
+
+
+def _can_access_task(db, user: User, task: DetectionTask) -> bool:
+    is_system_admin = user.is_superuser or any(
+        item.role is not None and item.role.name == SYSTEM_ADMIN
+        for item in user.user_roles
+    )
+    return task.user_id == user.id or is_system_admin
+
+
+def _authenticate_camera_token(token: str | None) -> tuple[User | None, int]:
+    """Authenticate the access token sent in the first WebSocket config message."""
+    if not token:
+        return None, 4401
+    db = SessionLocal()
+    try:
+        payload = decode_access_token(token)
+        user_id = int(payload.get("sub", ""))
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is None or not user.is_active:
+            return None, 4401
+        if not user_has_permission(db, user, DETECTION_EXECUTE):
+            return None, 4403
+        db.expunge(user)
+        return user, 0
+    except (JWTError, ValueError, TypeError):
+        return None, 4401
+    finally:
+        db.close()
 
 
 def _slim_detection_context(value):
@@ -111,7 +147,7 @@ async def detect_single_api(
     iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None, description="场景 ID"),
     session_id: str = Form(None, description="聊天会话 ID"),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(DETECTION_EXECUTE)),
 ):
     """
     快捷单图检测（跳过 LLM，直接调用 YOLO）
@@ -153,7 +189,7 @@ async def detect_batch_api(
     iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None),
     session_id: str = Form(None, description="聊天会话 ID"),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(DETECTION_EXECUTE)),
 ):
     """
     快捷批量检测
@@ -197,7 +233,7 @@ async def detect_zip_api(
     iou: float = Form(0.45, description="NMS IoU 阈值"),
     scene_id: int = Form(None),
     session_id: str = Form(None, description="聊天会话 ID"),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(DETECTION_EXECUTE)),
 ):
     """
     快捷 ZIP 检测：解压 ZIP 并批量检测其中所有图片
@@ -234,13 +270,18 @@ async def detect_zip_api(
 @router.get("/status/{task_id}", summary="查询检测任务状态")
 async def get_detection_status(
     task_id: int,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(DETECTION_EXECUTE)),
 ):
     """查询检测任务状态"""
     db = SessionLocal()
     try:
         task = db.query(DetectionTask).filter(DetectionTask.id == task_id).first()
         if not task:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"error": "任务不存在"},
+            )
+        if not _can_access_task(db, current_user, task):
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"error": "任务不存在"},
@@ -274,7 +315,7 @@ async def detect_video_api(
     max_frames: int = Form(50, ge=1, le=500, description="最多处理的关键帧数量"),
     scene_id: int = Form(None, description="场景 ID"),
     session_id: str = Form(None, description="聊天会话 ID"),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(DETECTION_EXECUTE)),
 ):
     """
     视频检测：上传视频文件，后台异步处理，通过 status 接口轮询进度
@@ -422,23 +463,13 @@ async def detect_video_api(
 @router.get("/video/status/{task_id}", summary="查询视频检测进度")
 async def get_video_detection_status(
     task_id: int,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(DETECTION_EXECUTE)),
 ):
     """
     查询视频检测任务的实时进度和结果
 
     轮询间隔建议：1-2 秒
     """
-    # 从 Redis 获取进度信息
-    progress_info = redis_client.get_json(f"video_task:{task_id}")
-
-    if progress_info:
-        return {
-            "task_id": task_id,
-            **progress_info,
-        }
-
-    # 回退：从数据库查询
     db = SessionLocal()
     try:
         task = db.query(DetectionTask).filter(DetectionTask.id == task_id).first()
@@ -447,6 +478,16 @@ async def get_video_detection_status(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"error": "任务不存在"},
             )
+        if not _can_access_task(db, current_user, task):
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"error": "任务不存在"},
+            )
+
+        # 通过数据库完成归属校验后，才允许读取 Redis 中的任务进度。
+        progress_info = redis_client.get_json(f"video_task:{task_id}")
+        if progress_info:
+            return {"task_id": task_id, **progress_info}
 
         result = {
             "task_id": task.id,
@@ -631,6 +672,7 @@ async def camera_detection_ws(websocket: WebSocket):
     model = None
     inference_device = torch.device("cpu")
     ip_camera_capture = None
+    authenticated_user = None
 
     frame_count = 0
     fps_start_time = time.time()
@@ -677,6 +719,15 @@ async def camera_detection_ws(websocket: WebSocket):
             msg_type = data.get("type")
 
             if msg_type == "config":
+                if authenticated_user is None:
+                    authenticated_user, close_code = _authenticate_camera_token(
+                        data.get("access_token")
+                    )
+                    if authenticated_user is None:
+                        message = "没有摄像头检测权限" if close_code == 4403 else "登录已失效，请重新登录"
+                        await websocket.send_json({"type": "error", "message": message})
+                        await websocket.close(code=close_code)
+                        break
                 mode = data.get("mode", "cpu")
                 conf = data.get("conf", 0.25)
                 iou = data.get("iou", 0.45)

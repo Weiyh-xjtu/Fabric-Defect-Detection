@@ -140,6 +140,9 @@ def test_retrieve_reports_empty_vector_index(monkeypatch):
 def test_search_knowledge_tool_reports_mode_and_sources(monkeypatch):
     """检索工具需返回检索模式和去重后的来源文件列表。"""
     monkeypatch.setattr(
+        "app.agent.detection_agent._tool_permission_error", lambda _permission: None
+    )
+    monkeypatch.setattr(
         knowledge_retriever,
         "retrieve",
         lambda query, top_k=3: {
@@ -181,8 +184,13 @@ def test_embed_texts_batches_within_dashscope_limit(monkeypatch):
     assert len(embeddings) == 23
     assert calls == [10, 10, 3]
 
-def test_agent_lists_legacy_session_attachments_for_repeat_detection(tmp_path):
+def test_agent_lists_legacy_session_attachments_for_repeat_detection(
+    tmp_path, monkeypatch
+):
     """无 user_id 的旧版会话也能通过附件查询工具拿到历史附件。"""
+    monkeypatch.setattr(
+        "app.agent.detection_agent._tool_permission_error", lambda _permission: None
+    )
     image = tmp_path / "fabric.jpg"
     image.write_bytes(b"image")
     session = "pytest-repeat-detection"

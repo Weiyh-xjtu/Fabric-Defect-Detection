@@ -1,6 +1,6 @@
 """Knowledge-base file management, inspection, and retrieval API.
 
-任何登录用户都可增删知识库文件；文件变动后自动触发后台向量索引重建。
+知识检索对有读取权限的用户开放；文件管理仅对知识库管理员开放。
 """
 import os
 from datetime import datetime
@@ -9,7 +9,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from app.api.auth import get_current_user
+from app.core.permissions import require_permission
+from app.core.rbac import KNOWLEDGE_MANAGE, KNOWLEDGE_READ
 from app.core.logger import get_logger
 from app.rag.document_loader import ALLOWED_KB_EXTENSIONS
 from app.rag.retriever import knowledge_retriever
@@ -72,7 +73,9 @@ def _list_files(directory: Path) -> list[dict]:
 
 
 @router.get("/files")
-def list_knowledge_files(_current_user=Depends(get_current_user)) -> dict:
+def list_knowledge_files(
+    _current_user=Depends(require_permission(KNOWLEDGE_MANAGE)),
+) -> dict:
     directory = _knowledge_dir()
     return {"directory": str(directory), "files": _list_files(directory)}
 
@@ -80,7 +83,7 @@ def list_knowledge_files(_current_user=Depends(get_current_user)) -> dict:
 @router.post("/files")
 async def upload_knowledge_files(
     files: list[UploadFile] = File(...),
-    _current_user=Depends(get_current_user),
+    _current_user=Depends(require_permission(KNOWLEDGE_MANAGE)),
 ) -> dict:
     """上传一个或多个知识库文档（pdf/md/txt）。同名文件直接覆盖，随后自动重建。"""
     upload_files = list(files)
@@ -125,7 +128,10 @@ async def upload_knowledge_files(
 
 
 @router.delete("/files/{filename}")
-def delete_knowledge_file(filename: str, _current_user=Depends(get_current_user)) -> dict:
+def delete_knowledge_file(
+    filename: str,
+    _current_user=Depends(require_permission(KNOWLEDGE_MANAGE)),
+) -> dict:
     """删除指定知识库文件（允许删除任意文件，含内置文档），随后自动重建。"""
     directory = _knowledge_dir()
     target = _safe_target(directory, filename)
@@ -142,13 +148,17 @@ def delete_knowledge_file(filename: str, _current_user=Depends(get_current_user)
 
 
 @router.post("/rebuild", status_code=202)
-def rebuild_knowledge(_current_user=Depends(get_current_user)) -> dict:
+def rebuild_knowledge(
+    _current_user=Depends(require_permission(KNOWLEDGE_MANAGE)),
+) -> dict:
     """手动触发一次后台向量索引重建（去抖，不会重复排队）。"""
     return knowledge_retriever.schedule_rebuild()
 
 
 @router.post("/build")
-def build_knowledge(_current_user=Depends(get_current_user)) -> dict:
+def build_knowledge(
+    _current_user=Depends(require_permission(KNOWLEDGE_MANAGE)),
+) -> dict:
     """同步构建向量索引（向后兼容旧调用方）。"""
     try:
         return knowledge_retriever.build()
@@ -157,14 +167,19 @@ def build_knowledge(_current_user=Depends(get_current_user)) -> dict:
 
 
 @router.get("/stats")
-def knowledge_stats(_current_user=Depends(get_current_user)) -> dict:
+def knowledge_stats(
+    _current_user=Depends(require_permission(KNOWLEDGE_READ)),
+) -> dict:
     stats = knowledge_retriever.stats()
     stats["rebuild"] = knowledge_retriever.rebuild_status()
     return stats
 
 
 @router.post("/search")
-def search_knowledge(request: SearchRequest, _current_user=Depends(get_current_user)) -> dict:
+def search_knowledge(
+    request: SearchRequest,
+    _current_user=Depends(require_permission(KNOWLEDGE_READ)),
+) -> dict:
     retrieval = knowledge_retriever.retrieve(request.query, request.top_k)
     return {
         "query": request.query,

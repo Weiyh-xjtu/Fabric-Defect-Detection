@@ -39,7 +39,7 @@ def kb_client(client, tmp_path, monkeypatch):
     )
 
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-        id=1, username="kb_test_user"
+        id=1, username="kb_test_user", is_superuser=True
     )
     try:
         yield SimpleNamespace(client=client, dir=tmp_path, calls=calls)
@@ -213,4 +213,3 @@ def test_run_rebuild_loop_marks_empty_build_success(tmp_path, monkeypatch):
     assert status["status"] == "success"
     assert status["total_chunks"] == 0
     assert status["detail"] is None
-
