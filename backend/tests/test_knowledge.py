@@ -5,6 +5,7 @@
   - 非法后缀 400、超大文件 413、路径穿越被拒、删除不存在 404
   - 增删均触发一次后台重建（schedule_rebuild 被 mock，不触真实 embedding）
   - extract_text 能从最小 PDF 抽取文本
+  - 空知识库重建清空向量表并标记 success（不调用 embedding）
 
 测试策略：
   - monkeypatch knowledge_retriever.knowledge_dir 指向 tmp_path，隔离真实知识库
@@ -164,3 +165,52 @@ def test_extract_text_from_pdf():
         txt_path = Path(tmp) / "note.txt"
         txt_path.write_text("纯文本内容", encoding="utf-8")
         assert extract_text(txt_path) == "纯文本内容"
+
+
+def test_build_empty_knowledge_clears_vector_table(tmp_path, monkeypatch):
+    """知识库为空时 build 应清空向量表并成功返回，且不调用 embedding。"""
+    from app.config.settings import BACKEND_DIR
+    from app.rag import retriever as retriever_module
+
+    retriever = retriever_module.KnowledgeRetriever(knowledge_dir=tmp_path)
+    # build 仅允许默认目录，绕过该校验以测试空库逻辑本身。
+    monkeypatch.setattr(retriever, "knowledge_dir", BACKEND_DIR / "knowledge_base")
+    monkeypatch.setattr(retriever_module, "load_documents", lambda _dir: [])
+
+    replace_calls = []
+    monkeypatch.setattr(retriever_module.pgvector_client, "init_table", lambda: None)
+    monkeypatch.setattr(
+        retriever_module.pgvector_client,
+        "replace",
+        lambda chunks, embeddings: replace_calls.append((chunks, embeddings)) or 0,
+    )
+
+    def fail_embed(_texts):
+        raise AssertionError("空库不应调用 embedding")
+
+    monkeypatch.setattr(retriever_module.embedding_service, "embed_texts", fail_embed)
+
+    result = retriever.build()
+
+    assert result["total_chunks"] == 0
+    assert replace_calls == [([], [])]  # 清空向量表（DELETE 后无插入）
+
+
+def test_run_rebuild_loop_marks_empty_build_success(tmp_path, monkeypatch):
+    """删光文档后后台重建应把状态标记为 success 而非 failed。"""
+    from app.config.settings import BACKEND_DIR
+    from app.rag import retriever as retriever_module
+
+    retriever = retriever_module.KnowledgeRetriever(knowledge_dir=tmp_path)
+    monkeypatch.setattr(retriever, "knowledge_dir", BACKEND_DIR / "knowledge_base")
+    monkeypatch.setattr(retriever_module, "load_documents", lambda _dir: [])
+    monkeypatch.setattr(retriever_module.pgvector_client, "init_table", lambda: None)
+    monkeypatch.setattr(retriever_module.pgvector_client, "replace", lambda chunks, embeddings: 0)
+
+    retriever._run_rebuild_loop()
+
+    status = retriever.rebuild_status()
+    assert status["status"] == "success"
+    assert status["total_chunks"] == 0
+    assert status["detail"] is None
+
