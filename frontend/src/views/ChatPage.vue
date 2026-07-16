@@ -190,7 +190,7 @@
           />
 
           <div class="composer-actions">
-            <div class="quick-actions">
+            <div v-if="canExecuteDetection" class="quick-actions">
               <!-- 附件按钮 -->
               <el-button
                 class="attach-btn"
@@ -285,6 +285,7 @@ import {
 } from "@/api/detection";
 import DetectionResultCard from "@/components/DetectionResultCard.vue";
 import { useAgentStore } from "@/stores/agent";
+import { useUserStore } from "@/stores/user";
 import { renderMarkdown } from "@/utils/markdown";
 import request from "@/utils/request";
 import { streamChat } from "@/utils/stream";
@@ -300,6 +301,7 @@ import { useRouter } from "vue-router";
 
 // ── Store ──
 const agentStore = useAgentStore();
+const userStore = useUserStore();
 const router = useRouter();
 
 // ── 响应式状态 ──
@@ -328,6 +330,7 @@ const MAX_FILE_SIZES = {
 };
 
 // ── 计算属性 ──
+const canExecuteDetection = computed(() => userStore.hasPermission("detection:execute"));
 const canSend = computed(() => {
   return inputText.value.trim() || selectedFiles.value.length;
 });

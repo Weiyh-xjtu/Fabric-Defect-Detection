@@ -38,6 +38,8 @@ class UserBrief(BaseModel):
     email: str
     avatar: Optional[str] = None
     roles: list[str] = []
+    permissions: list[str] = []
+    is_superuser: bool = False
     model_config = {
         "from_attributes": True,
     }
@@ -61,6 +63,7 @@ class UserResponse(BaseModel):
     is_active: bool
     is_superuser: bool
     roles: list[str] = []
+    permissions: list[str] = []
     last_login_at: Optional[datetime] = None
     created_at: datetime
     model_config = {
@@ -79,6 +82,16 @@ class ChangePassword(BaseModel):
     """修改密码"""
     old_password: str = Field(..., description="旧密码")
     new_password: str = Field(..., min_length=6, max_length=100, description="新密码")
+
+
+class UserRolesUpdate(BaseModel):
+    """管理员整体替换用户角色。"""
+    role_names: list[str] = Field(..., min_length=1, description="角色标识列表")
+
+
+class UserStatusUpdate(BaseModel):
+    """管理员启用或禁用用户。"""
+    is_active: bool
 
 
 # --- 角色权限 ---

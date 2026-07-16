@@ -32,6 +32,7 @@ def chat_client(client):
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         id=1,
         username="chat_test_user",
+        is_superuser=True,
     )
     try:
         yield client
@@ -527,6 +528,9 @@ def test_batch_tool_forwards_chat_attachment_original_names(monkeypatch):
         return {"task_id": 1, "total_images": len(image_paths)}
 
     monkeypatch.setattr(detection_service, "detect_batch", fake_detect_batch)
+    monkeypatch.setattr(
+        "app.agent.detection_agent._tool_permission_error", lambda _permission: None
+    )
     paths = ["C:/uploads/uuid_a.jpg", "C:/uploads/uuid_b.jpg"]
     token = _current_attachment_names.set(
         {paths[0]: "fabric-a.jpg", paths[1]: "fabric-b.jpg"}

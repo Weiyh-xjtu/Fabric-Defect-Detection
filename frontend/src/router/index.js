@@ -5,7 +5,7 @@
  * - 路由守卫自动检查登录状态
  */
 import { createRouter, createWebHistory } from 'vue-router'
-import { getValidStoredToken } from '@/utils/authSession'
+import { getStoredAuthSession, getValidStoredToken } from '@/utils/authSession'
 
 // ── 路由定义 ────────────────────────────────────────
 const routes = [
@@ -33,43 +33,53 @@ const routes = [
         path: 'chat',
         name: 'Chat',
         component: () => import('@/views/ChatPage.vue'),
-        meta: { title: '智能对话', icon: 'ChatDotRound' },
+        meta: { title: '智能对话', icon: 'ChatDotRound', permission: 'chat:use' },
       },
       {
         path: 'detection',
         name: 'Detection',
         component: () => import('@/views/DetectionPage.vue'),
-        meta: { title: '检测工作台', icon: 'Camera' },
+        meta: { title: '检测工作台', icon: 'Camera', permission: 'detection:execute' },
       },
       {
         path: 'training',
         name: 'Training',
         component: () => import('@/views/TrainingPage.vue'),
-        meta: { title: '模型训练', icon: 'Cpu' },
+        meta: { title: '模型训练', icon: 'Cpu', permission: 'model:manage' },
       },
       {
         path: 'history',
         name: 'History',
         component: () => import('@/views/HistoryPage.vue'),
-        meta: { title: '历史记录', icon: 'Clock' },
+        meta: {
+          title: '历史记录',
+          icon: 'Clock',
+          anyPermission: ['history:read:own', 'history:read:any'],
+        },
       },
       {
         path: 'knowledge',
         name: 'Knowledge',
         component: () => import('@/views/KnowledgePage.vue'),
-        meta: { title: '知识库', icon: 'Collection' },
+        meta: { title: '知识库', icon: 'Collection', permission: 'knowledge:manage' },
       },
       {
         path: 'dashboard',
         name: 'Dashboard',
         component: () => import('@/views/DashboardPage.vue'),
-        meta: { title: '数据看板', icon: 'DataAnalysis' },
+        meta: { title: '数据看板', icon: 'DataAnalysis', permission: 'dashboard:read:any' },
       },
       {
         path: 'settings',
         name: 'Settings',
         component: () => import('@/views/SettingsPage.vue'),
         meta: { title: '系统设置', icon: 'Setting' },
+      },
+      {
+        path: 'forbidden',
+        name: 'Forbidden',
+        component: () => import('@/views/ForbiddenPage.vue'),
+        meta: { title: '无权访问' },
       },
     ],
   },
@@ -107,6 +117,17 @@ router.beforeEach((to, from, next) => {
   } else if ((to.path === '/login' || to.path === '/register') && token) {
     // 已登录用户访问登录/注册页，跳转到首页
     next('/')
+  } else if (requiresAuth && to.path !== '/forbidden') {
+    const { user } = getStoredAuthSession()
+    const permissions = new Set(user?.permissions || [])
+    const isSuperuser = !!user?.is_superuser
+    const required = to.meta.permission
+    const alternatives = to.meta.anyPermission || []
+    const denied = (
+      (required && !permissions.has(required))
+      || (alternatives.length && !alternatives.some((item) => permissions.has(item)))
+    )
+    next(denied && !isSuperuser ? '/forbidden' : undefined)
   } else {
     next()
   }

@@ -199,6 +199,9 @@ def test_quick_single_saves_attachment_for_chat_session(
         "detect_single",
         lambda **_kwargs: {"task_id": 1, "total_objects": 0},
     )
+    monkeypatch.setattr(
+        "app.agent.detection_agent._tool_permission_error", lambda _permission: None
+    )
 
     response = client.post(
         "/api/detection/single",
@@ -231,12 +234,15 @@ def test_quick_single_saves_attachment_for_chat_session(
         conversation_memory.clear(session_id, user_id)
 
 
-def test_agent_lists_attachment_rounds_with_missing_files(tmp_path):
+def test_agent_lists_attachment_rounds_with_missing_files(tmp_path, monkeypatch):
     """附件查询工具应按轮次列出全部图片并标记已失效文件。"""
     session_id = "all-image-rounds"
     user_id = 987654
     first = {"type": "image", "path": str(tmp_path / "round-a.jpg"), "filename": "round-a.jpg"}
     second = {"type": "image", "path": str(tmp_path / "round-b.jpg"), "filename": "round-b.jpg"}
+    monkeypatch.setattr(
+        "app.agent.detection_agent._tool_permission_error", lambda _permission: None
+    )
     with open(first["path"], "wb") as file:
         file.write(b"image")
     # second 不落盘，模拟历史附件文件已被清理。

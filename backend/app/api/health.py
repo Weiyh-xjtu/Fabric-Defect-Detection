@@ -11,10 +11,12 @@
   - 任一服务不可用时不抛异常，而是标记为 unhealthy
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.config.settings import settings
 from app.core.logger import get_logger
+from app.core.permissions import require_permission
+from app.core.rbac import SYSTEM_HEALTH_READ
 
 logger = get_logger(__name__)
 
@@ -41,7 +43,9 @@ async def health_check():
 
 
 @router.get("/api/health/detail")
-async def health_check_detail():
+async def health_check_detail(
+    _current_user=Depends(require_permission(SYSTEM_HEALTH_READ)),
+):
     """
     详细健康检查
 
@@ -100,7 +104,9 @@ async def health_check_detail():
 
 
 @router.get("/api/health/redis")
-async def redis_debug():
+async def redis_debug(
+    _current_user=Depends(require_permission(SYSTEM_HEALTH_READ)),
+):
     """
     Redis 数据调试接口
 
@@ -129,7 +135,9 @@ async def redis_debug():
 
 
 @router.get("/api/health/redis/info")
-async def redis_info():
+async def redis_info(
+    _current_user=Depends(require_permission(SYSTEM_HEALTH_READ)),
+):
     """
     Redis 客户端状态信息
 

@@ -47,11 +47,28 @@ def recover_training_history():
         db.close()
 
 
+def init_rbac():
+    """幂等初始化系统角色和权限。"""
+    from app.core.rbac import initialize_rbac
+    from app.database.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        initialize_rbac(db)
+        print("RBAC 角色与权限初始化完成")
+    except Exception as e:
+        db.rollback()
+        print(f"RBAC 初始化失败: {e}")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
     print("正在初始化服务...")
+    init_rbac()
     init_minio()
     recover_training_history()
     yield

@@ -31,12 +31,19 @@ from sqlalchemy import func
 
 from app.config.settings import settings
 from app.core.logger import get_logger
+from app.core.rbac import (
+    DASHBOARD_READ_ANY,
+    DETECTION_EXECUTE,
+    KNOWLEDGE_READ,
+    USER_MANAGE,
+    user_has_permission,
+)
 from app.database.session import SessionLocal
 from app.services.detection_service import detection_service
 from app.services.user_service import user_service
 from app.agent.memory import conversation_memory
 from app.rag.retriever import knowledge_retriever
-from app.entity.db_models import DetectionResult, DetectionTask
+from app.entity.db_models import DetectionResult, DetectionTask, User
 
 logger = get_logger(__name__)
 
@@ -127,6 +134,27 @@ def _finalize_tool_result(result: dict) -> str:
         _last_full_tool_result.set(full_result)
     # 精简版返回给 LLM
     return json.dumps(_strip_base64_for_llm(result), ensure_ascii=False)
+
+
+def _tool_permission_error(permission: str) -> str | None:
+    """Return a JSON error when the request user cannot invoke a tool."""
+    user_id = _current_user_id.get()
+    if user_id is None:
+        return json.dumps({"error": "需要登录后才能使用该工具"}, ensure_ascii=False)
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is None or not user.is_active:
+            return json.dumps({"error": "用户不存在或已被禁用"}, ensure_ascii=False)
+        if not user_has_permission(db, user, permission):
+            return json.dumps(
+                {"error": "无权使用该工具", "required_permission": permission},
+                ensure_ascii=False,
+            )
+        return None
+    finally:
+        db.close()
 
 
 def _append_attachment_context(
@@ -228,6 +256,8 @@ def list_session_attachments(attachment_type: str = "") -> str:
         JSON 字符串。rounds 中 round 数字越大表示发送时间越新；
         file_exists 为 false 的文件已失效，不能再用于检测。
     """
+    if error := _tool_permission_error(DETECTION_EXECUTE):
+        return error
     session_id = _current_session_id.get()
     if session_id is None:
         return json.dumps(
@@ -301,6 +331,8 @@ def detect_single_image(image_path: str, conf: float = 0.25, iou: float = 0.45) 
     Returns:
         JSON 字符串，包含检测结果（目标数量、类别统计、标注图路径）
     """
+    if error := _tool_permission_error(DETECTION_EXECUTE):
+        return error
     result = detection_service.detect_single(
         image_path,
         conf=conf,
@@ -327,6 +359,8 @@ def detect_batch_images(
     Returns:
         JSON 字符串，包含每张图片的检测结果汇总
     """
+    if error := _tool_permission_error(DETECTION_EXECUTE):
+        return error
     result = detection_service.detect_batch(
         image_paths,
         conf=conf,
@@ -357,6 +391,8 @@ def detect_zip_images_file(
     Returns:
         JSON 字符串，包含 ZIP 内所有图片的检测结果汇总
     """
+    if error := _tool_permission_error(DETECTION_EXECUTE):
+        return error
     result = detection_service.detect_zip(
         zip_path,
         conf=conf,
@@ -386,6 +422,8 @@ def detect_video_file(
     Returns:
         JSON 字符串，包含视频检测结果（关键帧、目标统计、时长信息）
     """
+    if error := _tool_permission_error(DETECTION_EXECUTE):
+        return error
     result = detection_service.detect_video(
         video_path,
         conf=conf,
@@ -409,15 +447,15 @@ def query_system_users(
 
     Args:
         keyword: 可选的用户名或邮箱关键词
-        role: 可选的角色标识，例如 admin、operator、viewer
+        role: 可选的角色标识，例如 system_admin、quality_inspector、production_manager
         page: 页码，默认 1
         page_size: 每页数量，默认 20，最大 100
 
     Returns:
         JSON 字符串，只包含非敏感用户资料和角色
     """
-    if _current_user_id.get() is None:
-        return json.dumps({"error": "需要登录后才能查询用户"}, ensure_ascii=False)
+    if error := _tool_permission_error(USER_MANAGE):
+        return error
 
     db = SessionLocal()
     try:
@@ -449,8 +487,8 @@ def query_system_roles() -> str:
     Returns:
         JSON 字符串，包含角色名称、显示名、描述和权限编码列表
     """
-    if _current_user_id.get() is None:
-        return json.dumps({"error": "需要登录后才能查询角色"}, ensure_ascii=False)
+    if error := _tool_permission_error(USER_MANAGE):
+        return error
 
     db = SessionLocal()
     try:
@@ -467,7 +505,7 @@ def query_detection_statistics(
     task_type: str = "all",
     today: bool = False,
 ) -> str:
-    """查询当前用户检测任务统计。
+    """查询全厂检测任务统计。
 
     Args:
         days: 最近天数，1-365；当 today=true 时忽略该参数。
@@ -479,8 +517,8 @@ def query_detection_statistics(
         平均推理耗时和各任务类型数量。摄像头等无法统计的类型会返回 error，
         调用方应如实说明当前无法查询，不能用全部任务统计代替。
     """
-    if _current_user_id.get() is None:
-        return json.dumps({"error": "需要登录后才能查询统计"}, ensure_ascii=False)
+    if error := _tool_permission_error(DASHBOARD_READ_ANY):
+        return error
 
     normalized_type = (task_type or "all").strip().lower()
     task_type_filters = {
@@ -512,7 +550,6 @@ def query_detection_statistics(
     db = SessionLocal()
     try:
         time_base = db.query(DetectionTask).filter(
-            DetectionTask.user_id == _current_user_id.get(),
             DetectionTask.created_at >= since,
             DetectionTask.created_at <= now,
         )
@@ -575,9 +612,9 @@ def query_detection_statistics(
 
 @tool
 def query_detection_trends(days: int = 7) -> str:
-    """查询当前用户近期每日检测趋势与缺陷类别分布。"""
-    if _current_user_id.get() is None:
-        return json.dumps({"error": "需要登录后才能查询趋势"}, ensure_ascii=False)
+    """查询全厂近期每日检测趋势与缺陷类别分布。"""
+    if error := _tool_permission_error(DASHBOARD_READ_ANY):
+        return error
     days = max(1, min(days, 365))
     since = datetime.now() - timedelta(days=days)
     db = SessionLocal()
@@ -589,7 +626,6 @@ def query_detection_trends(days: int = 7) -> str:
                 func.coalesce(func.sum(DetectionTask.total_objects), 0),
             )
             .filter(
-                DetectionTask.user_id == _current_user_id.get(),
                 DetectionTask.created_at >= since,
             )
             .group_by(func.date(DetectionTask.created_at))
@@ -600,7 +636,6 @@ def query_detection_trends(days: int = 7) -> str:
             db.query(DetectionResult.class_name, func.count(DetectionResult.id))
             .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
             .filter(
-                DetectionTask.user_id == _current_user_id.get(),
                 DetectionTask.created_at >= since,
             )
             .group_by(DetectionResult.class_name)
@@ -632,6 +667,8 @@ def search_knowledge(query: str, top_k: int = 3) -> str:
         lexical_fallback=词法降级）；sources 为命中的来源文件列表。
         回答时必须注明引用了哪些来源文件。
     """
+    if error := _tool_permission_error(KNOWLEDGE_READ):
+        return error
     retrieval = knowledge_retriever.retrieve(query, top_k)
     return json.dumps(
         {
@@ -728,7 +765,7 @@ class DetectionAgent:
 - 对于多张图片或 ZIP 文件，调用 detect_batch_images 或 detect_zip_images_file 工具
 - 对于视频文件，调用 detect_video_file 工具
 - 用户询问“有哪些用户”、用户数量或某个用户时，调用 query_system_users 工具
-- 用户询问管理员时，调用 query_system_users，并将 role 设置为 admin
+- 用户询问系统管理员时，调用 query_system_users，并将 role 设置为 system_admin
 - 用户询问系统角色或权限时，调用 query_system_roles 工具
 - 用户与角色工具只返回非敏感资料；绝不能索取、推测或输出密码、Token 等凭据
 
