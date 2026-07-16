@@ -134,8 +134,12 @@ class KnowledgeRetriever:
             raise RuntimeError("仅默认知识库支持向量索引构建")
         documents = load_documents(self.knowledge_dir)
         chunks = split_documents(documents)
+        # 知识库为空（用户删光文档）时，清空向量表并视为成功，不残留旧向量、
+        # 不报错。空库无需 embedding，只要数据库可用即可，因此跳过 embed_texts。
         if not chunks:
-            raise RuntimeError("知识库中没有可索引的 Markdown/TXT/PDF 内容")
+            pgvector_client.init_table()
+            pgvector_client.replace([], [])
+            return {"documents": len(documents), "total_chunks": 0, "embedding_model": settings.EMBEDDING_MODEL, "embedding_dim": settings.EMBEDDING_DIM}
         embeddings = embedding_service.embed_texts([item["content"] for item in chunks])
         pgvector_client.init_table()
         inserted = pgvector_client.replace(chunks, embeddings)
