@@ -2,7 +2,7 @@
   <header class="app-header">
     <!-- 左侧：Logo + 平台名称 -->
     <div class="header-left">
-      <img src="/favicon.svg" alt="logo" class="header-logo" />
+      <img :src="productAvatar" alt="logo" class="header-logo" />
       <span class="header-title">RSOD Agent Platform</span>
     </div>
 
@@ -35,6 +35,7 @@
 import { useRouter } from 'vue-router'
 import { ArrowDown, User, SwitchButton } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
+import productAvatar from '@/assets/avatar.png'
 import { useUserStore } from '@/stores/user'
 import { useAgentStore } from '@/stores/agent'
 
@@ -83,12 +84,14 @@ function handleCommand(command) {
 }
 
 .header-logo {
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 10px;
 }
 
 .header-title {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
   color: $text-primary;
 }
