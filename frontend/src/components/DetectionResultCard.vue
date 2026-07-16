@@ -229,8 +229,8 @@ const classCountsArray = computed(() => {
 
 .card-body {
   display: flex;
-  gap: 16px;
-  padding: 12px;
+  gap: 24px;
+  padding: 16px 20px;
 }
 
 .video-result {
