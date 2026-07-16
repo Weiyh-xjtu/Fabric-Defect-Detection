@@ -1,7 +1,9 @@
 """RBAC seed, authentication, and permission matrix tests."""
 
 import json
+import warnings
 
+from sqlalchemy.exc import SAWarning
 from sqlalchemy.orm import sessionmaker
 
 from app.config.settings import settings
@@ -14,6 +16,7 @@ from app.core.rbac import (
     initialize_rbac,
 )
 from app.entity.db_models import Permission, Role, RolePermission, User, UserRole
+from app.services.user_service import user_service
 
 
 def _register_and_login(client, username: str) -> tuple[dict, dict[str, str]]:
@@ -123,6 +126,29 @@ def test_rbac_seed_maps_legacy_and_unassigned_users(db_session):
         assert mapped_role in {item.role.name for item in user.user_roles}
 
 
+def test_replacing_roles_keeps_sqlalchemy_identity_map_consistent(db_session):
+    user = User(
+        username="rbac_role_replace_warning",
+        email="rbac_role_replace_warning@example.com",
+        hashed_password="not-used",
+    )
+    quality_role = db_session.query(Role).filter_by(name=QUALITY_INSPECTOR).one()
+    db_session.add(user)
+    db_session.flush()
+    db_session.add(UserRole(user_id=user.id, role_id=quality_role.id))
+    db_session.commit()
+
+    # 预先加载旧关联，复现原批量 DELETE 会触发 identity map 警告的条件。
+    assert user.user_roles
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SAWarning)
+        result = user_service.replace_user_roles(
+            db_session, user.id, ["production_manager"]
+        )
+
+    assert result["roles"] == ["production_manager"]
+
+
 def test_register_assigns_quality_role_and_returns_permissions(client):
     login, headers = _register_and_login(client, "rbac_default_inspector")
 
@@ -184,6 +210,9 @@ def test_disabled_user_loses_access_login_and_refresh(client, db_session):
         json={"username": "rbac_disabled_target", "password": "123456"},
     ).status_code == 403
 
+    # 管理员登录会覆盖同名 Cookie；先清空，确保本次续期只携带
+    # 已被禁用目标用户的 Refresh Token。
+    client.cookies.clear()
     client.cookies.set(
         settings.REFRESH_COOKIE_NAME,
         target_refresh,

@@ -543,8 +543,11 @@ def test_batch_tool_forwards_chat_attachment_original_names(monkeypatch):
     assert captured["original_filenames"] == ["fabric-a.jpg", "fabric-b.jpg"]
 
 
-def test_list_session_attachments_filters_type_and_merges_names(tmp_path):
+def test_list_session_attachments_filters_type_and_merges_names(tmp_path, monkeypatch):
     """附件查询工具应支持类型过滤，并把历史文件名并入请求级映射。"""
+    monkeypatch.setattr(
+        "app.agent.detection_agent._tool_permission_error", lambda _permission: None
+    )
     session_id = "pytest-list-attachments"
     user_id = 24680
     video = {"type": "video", "path": str(tmp_path / "uuid_line.mp4"), "filename": "line.mp4"}
@@ -580,7 +583,10 @@ def test_list_session_attachments_filters_type_and_merges_names(tmp_path):
     assert video["path"] not in name_map
 
 
-def test_list_session_attachments_requires_session_context():
+def test_list_session_attachments_requires_session_context(monkeypatch):
     """无会话上下文时应返回明确错误而不是空列表。"""
+    monkeypatch.setattr(
+        "app.agent.detection_agent._tool_permission_error", lambda _permission: None
+    )
     listing = json.loads(list_session_attachments.invoke({}))
     assert "无法查询历史附件" in listing["error"]
