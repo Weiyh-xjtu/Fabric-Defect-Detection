@@ -199,6 +199,180 @@ async def test_full_tool_result_survives_tool_thread_context():
         _last_full_tool_result.reset(token)
 
 
+def test_minio_object_name_from_url_roundtrip():
+    """预签名 URL 应能反解回永久 object_name（含 URL 编码还原）。"""
+    from app.storage.minio_client import MinIOClient
+
+    # 绕过 __init__ 的网络连接，仅测纯字符串解析逻辑。
+    client = object.__new__(MinIOClient)
+    client.bucket_name = "rsod"
+
+    url = "http://localhost:9000/rsod/detections/12/a%20b.jpg?X-Amz-Signature=abc"
+    assert client.object_name_from_url(url) == "detections/12/a b.jpg"
+    # 桶名不匹配或空输入返回 None
+    assert client.object_name_from_url("http://localhost:9000/other/x.jpg") is None
+    assert client.object_name_from_url("") is None
+
+
+def test_slim_tool_result_strips_base64_but_keeps_stats():
+    """落库前应剥离 base64，但保留统计信息与 MinIO URL。"""
+    raw = json.dumps({
+        "total_objects": 2,
+        "class_counts": {"hole": 2},
+        "annotated_image_url": "http://minio/bucket/detections/1/a.jpg?sig=x",
+        "annotated_image_base64": "huge-base64-data",
+    })
+
+    slim = json.loads(chat_api._slim_tool_result(raw))
+
+    assert slim["total_objects"] == 2
+    assert slim["class_counts"] == {"hole": 2}
+    assert "annotated_image_base64" not in slim
+    # URL 是短标识，保留以便调试；真正的持久还原走 attachments。
+    assert slim["annotated_image_url"].startswith("http://minio")
+
+
+def test_slim_tool_result_tolerates_non_json():
+    assert chat_api._slim_tool_result("") == ""
+    assert chat_api._slim_tool_result("not-json") == "not-json"
+
+
+class _FakeMinio:
+    """用 object_name 直接换签的 MinIO 桩，避免依赖真实服务。"""
+
+    bucket_name = "bucket"
+
+    def object_name_from_url(self, url):
+        if not url:
+            return None
+        prefix = f"http://minio/{self.bucket_name}/"
+        if not url.startswith(prefix):
+            return None
+        return url[len(prefix):].split("?", 1)[0]
+
+    def presign_from_url_or_name(self, value):
+        if not value:
+            return None
+        name = self.object_name_from_url(value) if value.startswith("http") else value
+        return f"http://minio/{self.bucket_name}/{name}?fresh=1" if name else None
+
+
+def test_extract_attachment_refs_covers_image_batch_video(monkeypatch):
+    monkeypatch.setattr(chat_api, "MinIOClient", _FakeMinio)
+    tool_results = [
+        {"tool": "detect_single_image", "result": json.dumps({
+            "total_objects": 1,
+            "annotated_image_url": "http://minio/bucket/detections/1/a.jpg?sig=x",
+            "annotated_image_base64": "x",
+        })},
+        {"tool": "detect_batch_images", "result": json.dumps({
+            "total_objects": 3,
+            "annotated_images": [
+                {"image_path": "b.jpg", "annotated_image_url": "http://minio/bucket/detections/2/b.jpg?sig=y"},
+                {"image_path": "c.jpg", "annotated_image_url": "http://minio/bucket/detections/2/c.jpg?sig=z"},
+            ],
+        })},
+        {"tool": "detect_video_file", "result": json.dumps({
+            "type": "video",
+            "total_objects": 5,
+            "annotated_video_url": "http://minio/bucket/detections/3/annotated_video.mp4?sig=v",
+        })},
+    ]
+
+    refs = chat_api._extract_attachment_refs(tool_results)
+
+    by_type = {ref["type"]: ref for ref in refs}
+    assert by_type["image"]["object_name"] == "detections/1/a.jpg"
+    assert by_type["video"]["object_name"] == "detections/3/annotated_video.mp4"
+    assert {img["object_name"] for img in by_type["images"]["images"]} == {
+        "detections/2/b.jpg",
+        "detections/2/c.jpg",
+    }
+
+
+def test_resign_attachments_reissues_fresh_urls(monkeypatch):
+    monkeypatch.setattr(chat_api, "MinIOClient", _FakeMinio)
+    stored = [
+        {"tool": "detect_single_image", "type": "image", "object_name": "detections/1/a.jpg"},
+        {"tool": "detect_batch_images", "type": "images", "images": [
+            {"image_path": "b.jpg", "object_name": "detections/2/b.jpg"},
+        ]},
+        {"tool": "detect_video_file", "type": "video", "object_name": "detections/3/v.mp4"},
+    ]
+
+    resolved = chat_api._resign_attachments(stored)
+
+    by_type = {ref["type"]: ref for ref in resolved}
+    assert by_type["image"]["url"] == "http://minio/bucket/detections/1/a.jpg?fresh=1"
+    assert by_type["video"]["url"] == "http://minio/bucket/detections/3/v.mp4?fresh=1"
+    assert by_type["images"]["images"][0]["url"] == "http://minio/bucket/detections/2/b.jpg?fresh=1"
+
+
+def test_resign_attachments_empty_is_noop():
+    assert chat_api._resign_attachments(None) == []
+    assert chat_api._resign_attachments([]) == []
+
+
+def test_collect_object_names_covers_all_types():
+    attachments = [
+        {"type": "image", "object_name": "detections/1/a.jpg"},
+        {"type": "video", "object_name": "detections/3/v.mp4"},
+        {"type": "images", "images": [
+            {"object_name": "detections/2/b.jpg"},
+            {"object_name": "detections/2/c.jpg"},
+        ]},
+    ]
+
+    names = chat_api._collect_object_names(attachments)
+
+    assert set(names) == {
+        "detections/1/a.jpg",
+        "detections/3/v.mp4",
+        "detections/2/b.jpg",
+        "detections/2/c.jpg",
+    }
+    assert chat_api._collect_object_names(None) == []
+    assert chat_api._collect_object_names([]) == []
+
+
+def test_delete_session_objects_removes_all_referenced(monkeypatch):
+    deleted = []
+
+    class _DeletingMinio(_FakeMinio):
+        def delete_file(self, object_name):
+            deleted.append(object_name)
+
+    monkeypatch.setattr(chat_api, "MinIOClient", _DeletingMinio)
+    messages = [
+        SimpleNamespace(attachments=[
+            {"type": "image", "object_name": "detections/1/a.jpg"},
+        ]),
+        SimpleNamespace(attachments=[
+            {"type": "images", "images": [{"object_name": "detections/2/b.jpg"}]},
+        ]),
+        SimpleNamespace(attachments=None),
+    ]
+
+    chat_api._delete_session_objects(messages)
+
+    assert set(deleted) == {"detections/1/a.jpg", "detections/2/b.jpg"}
+
+
+def test_delete_session_objects_survives_minio_failure(monkeypatch):
+    """单个对象删除失败不应抛出，以免阻断会话删除。"""
+    class _FlakyMinio(_FakeMinio):
+        def delete_file(self, object_name):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(chat_api, "MinIOClient", _FlakyMinio)
+    messages = [SimpleNamespace(attachments=[
+        {"type": "image", "object_name": "detections/1/a.jpg"},
+    ])]
+
+    # 不抛异常即为通过
+    chat_api._delete_session_objects(messages)
+
+
 def test_agent_registers_user_and_role_query_tools():
     """Day 10 用户与权限查询工具已绑定，且未登录上下文不能调用。"""
     tool_names = {item.name for item in DETECTION_TOOLS}

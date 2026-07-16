@@ -203,6 +203,42 @@ class DetectionService:
         db.commit()
         return {"task_id": task.id, "annotated_image_url": annotated_image_url}
 
+    @staticmethod
+    def _upload_batch_annotated_images(
+        task_id: int, annotated_images: list[dict]
+    ) -> dict:
+        """
+        批量把标注图上传到 MinIO。
+
+        Args:
+            task_id: 所属检测任务 ID，用作对象路径前缀
+            annotated_images: 每项含 image_path 与 _annotated_bytes（标注图字节）
+
+        Returns:
+            {image_path: 预签名 URL}，上传失败的项不计入（不影响检测结果返回）。
+        """
+        url_by_image = {}
+        try:
+            minio_client = MinIOClient()
+        except Exception as e:
+            logger.warning("MinIO 初始化失败，批量标注图未上传: %s", str(e))
+            return url_by_image
+        for item in annotated_images:
+            image_bytes = item.get("_annotated_bytes")
+            image_path = item.get("image_path")
+            if not image_bytes or not image_path:
+                continue
+            # 对象名用 image_path 保证同任务内唯一；替换分隔符避免建出多层目录。
+            safe_name = image_path.replace("\\", "/").replace("/", "_")
+            object_name = f"detections/{task_id}/{safe_name}"
+            try:
+                url_by_image[image_path] = minio_client.upload_bytes(
+                    object_name, image_bytes, "image/jpeg"
+                )
+            except Exception as e:
+                logger.warning("批量标注图上传失败 %s: %s", object_name, str(e))
+        return url_by_image
+
     def detect_single(
         self,
         image_path: str,
@@ -395,7 +431,7 @@ class DetectionService:
                 inference_time = float(result.speed.get("inference", 0))
                 total_inference_time += inference_time
 
-                # 生成标注图 base64
+                # 生成标注图 base64（供本轮前端即时渲染）
                 annotated_img = result.plot()
                 _, buffer = cv2.imencode(
                     ".jpg", annotated_img, [cv2.IMWRITE_JPEG_QUALITY, 85]
@@ -403,6 +439,8 @@ class DetectionService:
                 annotated_images.append({
                     "image_path": original_name,
                     "annotated_image_base64": base64.b64encode(buffer).decode("utf-8"),
+                    # 标注图字节暂存，写库阶段再统一上传 MinIO（需要 task.id 作路径）
+                    "_annotated_bytes": buffer.tobytes(),
                 })
 
                 if result.boxes is not None and len(result.boxes) > 0:
@@ -435,6 +473,7 @@ class DetectionService:
             # 仅当有登录用户时才写库；场景缺省时自动选取第一个可用场景。
             # 无用户（如未透传身份）时跳过写库，但检测结果照常返回。
             task_id = None
+            url_by_image = {}
             if user_id:
                 if not scene_id:
                     default_scene = db.query(DetectionScene).first()
@@ -453,10 +492,17 @@ class DetectionService:
                     db.add(task)
                     db.flush()
 
+                    # ── 上传每张标注图到 MinIO（需 task.id 作对象路径）──
+                    # image_path → MinIO 预签名 URL，供 DetectionResult 落库与前端历史还原。
+                    url_by_image.update(
+                        self._upload_batch_annotated_images(task.id, annotated_images)
+                    )
+
                     for det in all_detections:
                         db_result = DetectionResult(
                             task_id=task.id,
                             image_path=det["image_path"],
+                            annotated_image_url=url_by_image.get(det["image_path"]),
                             class_name=det["class_name"],
                             class_id=det["class_id"],
                             confidence=det["confidence"],
@@ -473,6 +519,13 @@ class DetectionService:
                     task_id = task.id
                 else:
                     logger.warning("无可用检测场景，批量检测结果未持久化")
+
+            # 附上 MinIO URL 并剥离仅供上传使用的临时字节。
+            for item in annotated_images:
+                item.pop("_annotated_bytes", None)
+                url = url_by_image.get(item.get("image_path"))
+                if url:
+                    item["annotated_image_url"] = url
 
             logger.info(
                 "批量检测完成: %d 张图, 共 %d 个目标, 总耗时 %.2fms",
