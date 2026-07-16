@@ -13,6 +13,7 @@ import {
   getChatSessionHistory,
   getChatSessions,
 } from '@/api/chat'
+import { parseToolResult } from '@/utils/toolChain'
 
 const CURRENT_SESSION_KEY = 'rsod_chat_current_session'
 
@@ -63,27 +64,53 @@ function restoreUserAttachments(message, attachments) {
   }
 }
 
-/** 从数据库的 tool_calls / tool_result 字段重建只读的工具调用链。 */
+/** 解析历史消息的 tool_result 字段为 [{tool, result}] 数组。 */
+function parseHistoryToolResults(item) {
+  if (!item.tool_result) return []
+  try {
+    const results = JSON.parse(item.tool_result)
+    return Array.isArray(results) ? results : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 从数据库的 tool_calls / tool_result 字段重建只读的工具调用链。
+ *
+ * 复用 parseToolResult 还原每步的摘要、失败状态与知识库检索片段
+ * （step.knowledge），保证刷新后知识库来源卡片不丢失。
+ */
 function buildToolChainFromHistory(item) {
   const calls = Array.isArray(item.tool_calls) ? item.tool_calls : []
-  return calls.map((call) => ({
-    tool: call.tool || call.name || 'unknown',
-    status: 'done',
-    summary: '',
-  }))
+  const results = parseHistoryToolResults(item)
+  const consumed = new Set()
+
+  return calls.map((call) => {
+    const tool = call.tool || call.name || 'unknown'
+    const step = { tool, status: 'done', summary: '' }
+    // 按顺序匹配同名工具的首个未消费结果，兼容同一工具被多次调用。
+    const idx = results.findIndex(
+      (entry, i) => !consumed.has(i) && entry.tool === tool,
+    )
+    if (idx !== -1) {
+      consumed.add(idx)
+      const raw = results[idx].result
+      const info = parseToolResult(
+        tool,
+        typeof raw === 'string' ? raw : JSON.stringify(raw),
+      )
+      step.status = info.error ? 'error' : 'done'
+      step.summary = info.summary
+      if (info.knowledge) step.knowledge = info.knowledge
+    }
+    return step
+  })
 }
 
 /** 解析历史消息的 tool_result，取出首个检测结果对象。 */
 function parseHistoryDetection(item) {
-  if (!item.tool_result) return null
-  let results
-  try {
-    results = JSON.parse(item.tool_result)
-  } catch {
-    return null
-  }
-  if (!Array.isArray(results)) return null
-  for (const entry of results) {
+  for (const entry of parseHistoryToolResults(item)) {
     let result
     try {
       result = typeof entry.result === 'string' ? JSON.parse(entry.result) : entry.result

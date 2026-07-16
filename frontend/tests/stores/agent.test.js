@@ -201,6 +201,67 @@ describe('agent store 历史还原', () => {
     expect(store.messages[0].fileAttachments).toEqual(['images.zip'])
   })
 
+  it('知识库检索历史还原片段与检索模式到工具链', async () => {
+    getChatSessionHistory.mockResolvedValue({
+      messages: [
+        {
+          role: 'assistant',
+          content: '根据知识库……',
+          agent_used: 'qa',
+          tool_calls: [{ tool: 'search_knowledge' }],
+          tool_result: JSON.stringify([
+            {
+              tool: 'search_knowledge',
+              result: JSON.stringify({
+                retrieval_mode: 'pgvector',
+                results: [
+                  { source: 'defects.md', score: 0.87, content: '破洞是常见织物缺陷……' },
+                ],
+              }),
+            },
+          ]),
+          attachments: [],
+        },
+      ],
+    })
+
+    const store = useAgentStore()
+    await store.loadSession('uuid-kb')
+
+    const step = store.messages[0].toolChain[0]
+    expect(step.status).toBe('done')
+    expect(step.summary).toBe('向量检索 · 命中 1 条片段')
+    expect(step.knowledge.retrieval_mode).toBe('pgvector')
+    expect(step.knowledge.results[0].source).toBe('defects.md')
+    expect(step.knowledge.results[0].content).toContain('破洞')
+  })
+
+  it('工具执行失败的历史步骤标记为 error 并显示原因', async () => {
+    getChatSessionHistory.mockResolvedValue({
+      messages: [
+        {
+          role: 'assistant',
+          content: '出错了',
+          tool_calls: [{ tool: 'detect_single_image' }],
+          tool_result: JSON.stringify([
+            {
+              tool: 'detect_single_image',
+              result: JSON.stringify({ error: '文件不存在' }),
+            },
+          ]),
+          attachments: [],
+        },
+      ],
+    })
+
+    const store = useAgentStore()
+    await store.loadSession('uuid-err')
+
+    const step = store.messages[0].toolChain[0]
+    expect(step.status).toBe('error')
+    expect(step.summary).toBe('文件不存在')
+  })
+
   it('无附件时仍不报错，仅重建统计卡片', async () => {
     getChatSessionHistory.mockResolvedValue({
       messages: [
