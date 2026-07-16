@@ -31,13 +31,19 @@ class MinIOClient:
         except S3Error as e:
             print(f"MinIO bucket 初始化警告: {e}")
 
-    def upload_file(self, object_name: str, file_path: str) -> str:
+    def upload_file(
+        self,
+        object_name: str,
+        file_path: str,
+        content_type: str = "application/octet-stream",
+    ) -> str:
         """
         上传本地文件到 MinIO
 
         Args:
             object_name: MinIO 中的对象名称（路径）
             file_path: 本地文件路径
+            content_type: 对象 MIME 类型，确保历史中的图片/视频可直接预览
 
         Returns:
             预签名 URL
@@ -46,6 +52,7 @@ class MinIOClient:
             bucket_name=self.bucket_name,
             object_name=object_name,
             file_path=file_path,
+            content_type=content_type,
         )
         return self.get_presigned_url(object_name)
 

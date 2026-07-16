@@ -123,6 +123,84 @@ describe('agent store 历史还原', () => {
     )
   })
 
+  it('用户原始图片和视频从 MinIO URL 还原到消息预览', async () => {
+    getChatSessionHistory.mockResolvedValue({
+      messages: [
+        {
+          role: 'user',
+          content: '请检测单图',
+          attachments: [
+            {
+              source: 'user',
+              type: 'image',
+              filename: 'fabric.jpg',
+              url: 'http://minio/rsod/original.jpg?fresh=1',
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: '请批量检测',
+          attachments: [
+            { source: 'user', type: 'image', filename: 'a.jpg', url: 'http://minio/rsod/a-original.jpg?fresh=1' },
+            { source: 'user', type: 'image', filename: 'b.jpg', url: 'http://minio/rsod/b-original.jpg?fresh=1' },
+          ],
+        },
+        {
+          role: 'user',
+          content: '请检测视频',
+          attachments: [
+            {
+              source: 'user',
+              type: 'video',
+              filename: 'fabric.mp4',
+              url: 'http://minio/rsod/original.mp4?fresh=1',
+            },
+          ],
+        },
+      ],
+    })
+
+    const store = useAgentStore()
+    await store.loadSession('uuid-user-originals')
+
+    expect(store.messages[0].image).toBe('fabric.jpg')
+    expect(store.messages[0].imagePreview).toBe(
+      'http://minio/rsod/original.jpg?fresh=1',
+    )
+    expect(store.messages[1].images).toEqual([
+      'http://minio/rsod/a-original.jpg?fresh=1',
+      'http://minio/rsod/b-original.jpg?fresh=1',
+    ])
+    expect(store.messages[2].videoUrl).toBe(
+      'http://minio/rsod/original.mp4?fresh=1',
+    )
+  })
+
+  it('用户 ZIP 附件在历史中恢复文件名', async () => {
+    getChatSessionHistory.mockResolvedValue({
+      messages: [
+        {
+          role: 'user',
+          content: '请检测 ZIP',
+          attachments: [
+            {
+              source: 'user',
+              type: 'zip',
+              filename: 'images.zip',
+              url: 'http://minio/rsod/images.zip?fresh=1',
+            },
+          ],
+        },
+      ],
+    })
+
+    const store = useAgentStore()
+    await store.loadSession('uuid-user-zip')
+
+    expect(store.messages[0].fileAttachments).toEqual(['images.zip'])
+  })
+
   it('无附件时仍不报错，仅重建统计卡片', async () => {
     getChatSessionHistory.mockResolvedValue({
       messages: [
