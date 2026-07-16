@@ -289,7 +289,7 @@ class ModelExportRequest(BaseModel):
 
 
 class ModelValidateResponse(BaseModel):
-    """模型评估响应"""
+    """模型评估报告"""
     task_id: int
     task_uuid: str
     split: str
@@ -297,6 +297,25 @@ class ModelValidateResponse(BaseModel):
     per_class: dict
     model_version_id: Optional[int] = None
     model_version: Optional[str] = None
+
+
+class ModelValidateStartResponse(BaseModel):
+    """模型评估启动响应（评估在后台异步执行）"""
+    task_id: int
+    status: Literal["running"]
+    split: str
+    message: str
+
+
+class ModelValidateStatusResponse(BaseModel):
+    """模型评估状态轮询响应；completed 时携带评估报告"""
+    task_id: int
+    status: Literal["idle", "running", "completed", "failed"]
+    split: Optional[str] = None
+    error: Optional[str] = None
+    report: Optional[ModelValidateResponse] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
 
 
 class ModelExportResponse(BaseModel):

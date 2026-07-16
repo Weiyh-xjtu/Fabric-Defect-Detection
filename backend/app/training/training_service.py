@@ -54,6 +54,12 @@ logger = get_logger(__name__)
 _running_tasks: dict = {}
 _running_lock = threading.Lock()
 
+# ── 评估任务注册表 ────────────────────────────────────
+# 后台评估的状态与最近一次报告（进程内存，重启后清空，前端轮询读取）
+# key: task_id, value: {status, split, report, error, started_at, completed_at, thread}
+_running_evaluations: dict = {}
+_eval_lock = threading.Lock()
+
 
 class TrainingService:
     """模型训练服务 — 封装 YOLOv11 训练全流程"""
@@ -658,11 +664,13 @@ class TrainingService:
         if not scene:
             return {"error": "关联场景不存在"}
 
+        eval_device = _resolve_eval_device(task.device)
         logger.info(
-            "开始模型评估: task_id=%d, weights=%s, split=%s",
+            "开始模型评估: task_id=%d, weights=%s, split=%s, device=%s",
             task_id,
             weights_path,
             split,
+            eval_device,
         )
 
         try:
@@ -685,7 +693,7 @@ class TrainingService:
                 conf=conf,
                 iou=iou,
                 imgsz=task.img_size,
-                device="cpu",
+                device=eval_device,
                 save_json=True,
                 plots=True,
                 project=str(task_output_dir.parent),
@@ -756,6 +764,121 @@ class TrainingService:
                 exc_info=True,
             )
             return {"error": f"评估失败: {str(e)}"}
+
+    @staticmethod
+    def start_validation(
+        db,
+        task_id: int,
+        split: str = "val",
+        conf: float = 0.001,
+        iou: float = 0.6,
+    ) -> dict:
+        """在后台线程中启动模型评估，立即返回（前端轮询获取结果）。
+
+        与训练相同的异步模式：接口只负责校验和登记，耗时的
+        model.val() 在守护线程中执行，结果写入 _running_evaluations。
+        """
+        # ── 前置校验（复用 validate_model 的失败条件，尽早同步报错）──
+        task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
+        if not task:
+            return {"error": "训练任务不存在"}
+        if task.status != "completed":
+            return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能评估"}
+
+        weights_path = _task_output_dir(task.task_uuid) / "weights" / "best.pt"
+        if not weights_path.exists():
+            return {"error": f"模型权重不存在: {weights_path}"}
+        if not _resolve_data_yaml(task):
+            return {"error": "data.yaml 不存在"}
+
+        with _eval_lock:
+            entry = _running_evaluations.get(task_id)
+            if entry and entry["status"] == "running":
+                return {"error": "该任务已有评估正在进行，请等待完成"}
+            entry = {
+                "status": "running",
+                "split": split,
+                "report": None,
+                "error": None,
+                "started_at": datetime.now().isoformat(),
+                "completed_at": None,
+                "thread": None,
+            }
+            _running_evaluations[task_id] = entry
+
+        def _run_validation() -> None:
+            """后台线程：执行评估并把结果写入注册表。"""
+            # 后台线程不能复用请求级会话，需创建独立会话
+            thread_db = SessionLocal()
+            try:
+                result = TrainingService.validate_model(
+                    thread_db,
+                    task_id=task_id,
+                    split=split,
+                    conf=conf,
+                    iou=iou,
+                )
+            except Exception as e:  # validate_model 内部已兜底，这里防御线程裸奔
+                logger.error(
+                    "评估线程异常: task_id=%d, error=%s", task_id, str(e), exc_info=True
+                )
+                result = {"error": f"评估失败: {str(e)}"}
+            finally:
+                thread_db.close()
+
+            with _eval_lock:
+                current = _running_evaluations.get(task_id)
+                if current is None:
+                    return
+                current["completed_at"] = datetime.now().isoformat()
+                if "error" in result:
+                    current["status"] = "failed"
+                    current["error"] = result["error"]
+                else:
+                    current["status"] = "completed"
+                    current["report"] = result
+
+        thread = threading.Thread(
+            target=_run_validation,
+            daemon=True,
+            name=f"validate-{task.task_uuid}",
+        )
+        entry["thread"] = thread
+        thread.start()
+
+        logger.info(
+            "评估任务已启动: task_id=%d, uuid=%s, split=%s",
+            task_id,
+            task.task_uuid,
+            split,
+        )
+        return {
+            "task_id": task_id,
+            "status": "running",
+            "split": split,
+            "message": "评估任务已启动，请轮询评估状态获取结果",
+        }
+
+    @staticmethod
+    def get_validation_status(task_id: int) -> dict:
+        """查询后台评估状态；completed 时返回评估报告。
+
+        注册表在进程内存中，服务重启后为空，此时返回 idle，
+        前端可提示用户重新发起评估。
+        """
+        with _eval_lock:
+            entry = _running_evaluations.get(task_id)
+            if entry is None:
+                return {"task_id": task_id, "status": "idle"}
+            return {
+                "task_id": task_id,
+                "status": entry["status"],
+                "split": entry["split"],
+                "error": entry["error"],
+                "report": entry["report"],
+                "started_at": entry["started_at"],
+                "completed_at": entry["completed_at"],
+            }
 
     @staticmethod
     def export_model(
@@ -1297,6 +1420,38 @@ def _get_augmentation_kwargs(augment_config) -> dict:
         for key, value in augment_config.items()
         if key in _AUGMENTATION_KEYS and value is not None
     }
+
+
+def _resolve_eval_device(train_device) -> str:
+    """评估设备跟随训练设备，GPU 不可用时回退 CPU。
+
+    训练记录里的 device 可能是 "cpu"、"0"、"1" 或 "cuda:0"；
+    评估机器不一定有训练时的 GPU（如云端训练、本地评估），
+    因此先检查 CUDA 可用性再决定是否沿用。
+    """
+    device = str(train_device or "cpu").strip().lower()
+    if device in ("", "cpu"):
+        return "cpu"
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            logger.warning("训练设备 %s 不可用（无 CUDA），评估回退到 CPU", train_device)
+            return "cpu"
+        # "0" / "cuda:0" → 校验显卡编号存在
+        index_part = device.split(":")[-1]
+        if index_part.isdigit() and int(index_part) >= torch.cuda.device_count():
+            logger.warning(
+                "训练设备 %s 超出本机 GPU 数量（%d），评估回退到 CPU",
+                train_device,
+                torch.cuda.device_count(),
+            )
+            return "cpu"
+        return str(train_device)
+    except Exception as e:
+        logger.warning("检测 GPU 可用性失败（%s），评估回退到 CPU", str(e))
+        return "cpu"
 
 
 def _class_name(class_names, class_id: int) -> str:

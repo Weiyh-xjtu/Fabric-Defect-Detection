@@ -384,6 +384,8 @@ let mapChart = null
 
 // ── 轮询定时器 ──
 let pollTimer = null
+let evalPollTimer = null
+let evalPollFailures = 0
 
 // ── 训练表单 ──
 const trainForm = ref({
@@ -512,6 +514,9 @@ async function fetchTasks() {
 
 // ── 选择任务并开始监控 ──
 async function selectTask(task) {
+  stopEvalPolling()
+  validating.value = false
+  evalPollFailures = 0
   selectedTask.value = task
   evalReport.value = null
   predictResult.value = null
@@ -519,6 +524,7 @@ async function selectTask(task) {
   initCharts()
   fetchMetrics()
   startPolling()
+  restoreEvalState(task)
 }
 
 // ── 初始化 ECharts 图表 ──
@@ -702,18 +708,87 @@ async function stopTask(taskId) {
 
 async function validateModel() {
   if (!selectedTask.value) return
+  const taskId = selectedTask.value.id
   validating.value = true
   try {
-    evalReport.value = await request.post(`/training/validate/${selectedTask.value.id}`, {
+    await request.post(`/training/validate/${taskId}`, {
       split: 'val',
       conf: 0.001,
       iou: 0.6,
     })
-    ElMessage.success('模型评估完成')
+    ElMessage.info('评估任务已启动，正在后台执行...')
+    scheduleEvalPoll(taskId)
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '模型评估失败')
-  } finally {
     validating.value = false
+    ElMessage.error(e.response?.data?.detail || '模型评估失败')
+  }
+}
+
+// ── 评估状态轮询 ──
+// 评估在后端异步执行（对 val 集逐张推理，CPU 上可能需要几分钟），
+// 启动后每 3 秒轮询一次状态，完成时取回报告
+function stopEvalPolling() {
+  if (evalPollTimer) {
+    clearTimeout(evalPollTimer)
+    evalPollTimer = null
+  }
+}
+
+function scheduleEvalPoll(taskId, delay = 3000) {
+  stopEvalPolling()
+  evalPollTimer = setTimeout(() => pollEvalStatus(taskId), delay)
+}
+
+async function pollEvalStatus(taskId) {
+  // 切换任务或离开页面后，废弃旧任务的轮询
+  if (!selectedTask.value || selectedTask.value.id !== taskId) return
+  try {
+    const res = await request.get(`/training/validate/${taskId}/status`, {
+      skipGlobalError: true,
+    })
+    evalPollFailures = 0
+    if (res.status === 'running') {
+      scheduleEvalPoll(taskId)
+      return
+    }
+    validating.value = false
+    if (res.status === 'completed' && res.report) {
+      evalReport.value = res.report
+      ElMessage.success('模型评估完成')
+    } else if (res.status === 'failed') {
+      ElMessage.error(res.error || '模型评估失败')
+    } else {
+      // idle：后端重启导致内存中的评估状态丢失
+      ElMessage.warning('评估状态已丢失（后端服务可能重启过），请重新评估')
+    }
+  } catch (e) {
+    evalPollFailures += 1
+    if (evalPollFailures >= 5) {
+      evalPollFailures = 0
+      validating.value = false
+      ElMessage.error('评估状态查询失败，请稍后重新评估')
+      return
+    }
+    scheduleEvalPoll(taskId)
+  }
+}
+
+// 选中任务时恢复评估状态：评估进行中则继续轮询，已完成则直接展示上次报告
+async function restoreEvalState(task) {
+  if (task.status !== 'completed') return
+  try {
+    const res = await request.get(`/training/validate/${task.id}/status`, {
+      skipGlobalError: true,
+    })
+    if (!selectedTask.value || selectedTask.value.id !== task.id) return
+    if (res.status === 'running') {
+      validating.value = true
+      scheduleEvalPoll(task.id)
+    } else if (res.status === 'completed' && res.report) {
+      evalReport.value = res.report
+    }
+  } catch (e) {
+    console.error('恢复评估状态失败', e)
   }
 }
 
@@ -800,6 +875,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopPolling()
+  stopEvalPolling()
   if (lossChart) lossChart.dispose()
   if (mapChart) mapChart.dispose()
 })

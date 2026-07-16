@@ -9,6 +9,8 @@
   - GET    /api/training/metrics/{task_id}   获取训练指标历史（所有 epoch）
   - POST   /api/training/stop/{task_id}      停止训练任务
   - GET    /api/training/results/{task_uuid}  获取 results.csv 原始数据
+  - POST   /api/training/validate/{task_id}          启动模型评估（异步）
+  - GET    /api/training/validate/{task_id}/status   轮询评估状态与报告
 """
 
 import base64
@@ -29,7 +31,8 @@ from app.entity.schemas import (
     ModelExportRequest,
     ModelExportResponse,
     ModelValidateRequest,
-    ModelValidateResponse,
+    ModelValidateStartResponse,
+    ModelValidateStatusResponse,
     TrainingMetricResponse,
     TrainingTaskCreate,
     TrainingTaskResponse,
@@ -282,17 +285,17 @@ async def get_results_csv(
     )
 
 
-@router.post("/validate/{task_id}", response_model=ModelValidateResponse)
+@router.post("/validate/{task_id}", response_model=ModelValidateStartResponse)
 async def validate_model(
     task_id: int,
     request: ModelValidateRequest = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """对已完成训练的模型执行验证集或测试集评估。"""
+    """启动模型评估（后台异步执行，前端轮询 /validate/{task_id}/status 获取结果）。"""
     _get_owned_task(db, task_id, current_user)
     request = request or ModelValidateRequest()
-    result = training_service.validate_model(
+    result = training_service.start_validation(
         db=db,
         task_id=task_id,
         split=request.split,
@@ -302,12 +305,23 @@ async def validate_model(
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     logger.info(
-        "用户 %s 评估模型: task_id=%d, mAP50=%.4f",
+        "用户 %s 启动模型评估: task_id=%d, split=%s",
         current_user.username,
         task_id,
-        result.get("overall", {}).get("map50", 0),
+        request.split,
     )
     return result
+
+
+@router.get("/validate/{task_id}/status", response_model=ModelValidateStatusResponse)
+async def get_validation_status(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """查询模型评估状态；completed 时携带评估报告。"""
+    _get_owned_task(db, task_id, current_user)
+    return training_service.get_validation_status(task_id)
 
 
 @router.post("/export/{task_id}", response_model=ModelExportResponse)
