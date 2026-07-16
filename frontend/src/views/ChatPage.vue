@@ -14,7 +14,11 @@
             <div class="message-content">{{ msg.content }}</div>
             <!-- 单张图片附件 -->
             <div v-if="msg.image" class="message-attachment">
-              <img :src="msg.imagePreview" alt="附件图片" />
+              <img
+                :src="msg.imagePreview"
+                alt="附件图片"
+                @click="previewUserImage(msg.imagePreview)"
+              />
             </div>
             <!-- 多图附件（批量检测） -->
             <div
@@ -26,6 +30,7 @@
                 :key="i"
                 :src="src"
                 alt="附件图片"
+                @click="previewUserImage(src)"
               />
             </div>
             <div v-if="msg.videoUrl" class="message-video">
@@ -225,6 +230,16 @@
         </div>
       </div>
     </div>
+
+    <!-- 用户附件图片全屏预览 -->
+    <el-dialog v-model="showUserImagePreview" title="附件图片" width="80%">
+      <img
+        v-if="userImagePreviewSrc"
+        :src="userImagePreviewSrc"
+        style="width: 100%"
+        alt="附件图片"
+      />
+    </el-dialog>
   </div>
 </template>
 
@@ -271,6 +286,17 @@ const inputText = ref("");
 const selectedFiles = ref([]);
 const messageListRef = ref(null);
 const fileInputRef = ref(null);
+
+// 用户附件图片的全屏预览
+const showUserImagePreview = ref(false);
+const userImagePreviewSrc = ref(null);
+
+/** 点击用户消息中的附件图片，弹出全屏预览 */
+function previewUserImage(src) {
+  if (!src) return;
+  userImagePreviewSrc.value = src;
+  showUserImagePreview.value = true;
+}
 
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "bmp", "webp"]);
 const VIDEO_EXTENSIONS = new Set(["mp4", "avi", "mov", "mkv", "wmv", "flv"]);
@@ -1039,6 +1065,12 @@ onMounted(async () => {
     max-width: 200px;
     border-radius: 8px;
     border: 1px solid #e0e0e0;
+    cursor: pointer;
+    transition: opacity 0.2s;
+
+    &:hover {
+      opacity: 0.8;
+    }
   }
 }
 
@@ -1055,6 +1087,12 @@ onMounted(async () => {
     object-fit: cover;
     border-radius: 6px;
     border: 1px solid #e0e0e0;
+    cursor: pointer;
+    transition: opacity 0.2s;
+
+    &:hover {
+      opacity: 0.8;
+    }
   }
 }
 
