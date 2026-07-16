@@ -54,6 +54,12 @@ const routes = [
         meta: { title: '历史记录', icon: 'Clock' },
       },
       {
+        path: 'knowledge',
+        name: 'Knowledge',
+        component: () => import('@/views/KnowledgePage.vue'),
+        meta: { title: '知识库', icon: 'Collection' },
+      },
+      {
         path: 'dashboard',
         name: 'Dashboard',
         component: () => import('@/views/DashboardPage.vue'),

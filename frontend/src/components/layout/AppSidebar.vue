@@ -70,6 +70,7 @@ import {
   Camera,
   Cpu,
   Clock,
+  Collection,
   DataAnalysis,
   Setting,
 } from '@element-plus/icons-vue'
@@ -92,6 +93,7 @@ const menuItems = [
   { path: '/detection', title: '检测工作台', icon: Camera },
   { path: '/training', title: '模型训练', icon: Cpu },
   { path: '/history', title: '历史记录', icon: Clock },
+  { path: '/knowledge', title: '知识库', icon: Collection },
   { path: '/dashboard', title: '数据看板', icon: DataAnalysis },
   { path: '/settings', title: '系统设置', icon: Setting },
 ]

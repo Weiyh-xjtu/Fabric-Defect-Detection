@@ -7,11 +7,16 @@ changing the Agent tool contract.
 """
 import re
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 
 from app.config.settings import BACKEND_DIR, settings
 from app.core.logger import get_logger
-from app.rag.document_loader import load_documents, split_documents
+from app.rag.document_loader import (
+    ALLOWED_KB_EXTENSIONS,
+    extract_text,
+    load_documents,
+    split_documents,
+)
 from app.rag.embedding import embedding_service
 from app.vectorstore.pgvector_client import pgvector_client
 
@@ -25,11 +30,23 @@ class KnowledgeRetriever:
         self._chunks: list[dict[str, str]] = []
         self._signature: tuple = ()
         self._lock = Lock()
+        # 后台重建编排：_rebuild_lock 保护状态与线程/挂起标记，与 _lock（保护
+        # 词法检索缓存）分离，避免检索与重建互相阻塞。
+        self._rebuild_lock = Lock()
+        self._rebuild_thread: Thread | None = None
+        self._rebuild_pending = False
+        self._rebuild_state: dict = {
+            "status": "idle",  # idle | running | success | failed
+            "detail": None,
+            "documents": 0,
+            "total_chunks": 0,
+            "updated_at": None,
+        }
 
     def _files(self) -> list[Path]:
         if not self.knowledge_dir.exists():
             return []
-        return sorted(p for p in self.knowledge_dir.rglob("*") if p.suffix.lower() in {".md", ".txt"})
+        return sorted(p for p in self.knowledge_dir.rglob("*") if p.suffix.lower() in ALLOWED_KB_EXTENSIONS)
 
     def _load_if_changed(self) -> None:
         files = self._files()
@@ -39,7 +56,7 @@ class KnowledgeRetriever:
         with self._lock:
             chunks = []
             for path in files:
-                text = path.read_text(encoding="utf-8", errors="ignore")
+                text = extract_text(path)
                 sections = re.split(r"(?=^#{1,6}\s)", text, flags=re.MULTILINE)
                 for section in sections:
                     section = section.strip()
@@ -118,11 +135,68 @@ class KnowledgeRetriever:
         documents = load_documents(self.knowledge_dir)
         chunks = split_documents(documents)
         if not chunks:
-            raise RuntimeError("知识库中没有可索引的 Markdown/TXT 内容")
+            raise RuntimeError("知识库中没有可索引的 Markdown/TXT/PDF 内容")
         embeddings = embedding_service.embed_texts([item["content"] for item in chunks])
         pgvector_client.init_table()
         inserted = pgvector_client.replace(chunks, embeddings)
         return {"documents": len(documents), "total_chunks": inserted, "embedding_model": settings.EMBEDDING_MODEL, "embedding_dim": settings.EMBEDDING_DIM}
+
+    # ── 后台自动重建 ────────────────────────────────────
+    def rebuild_status(self) -> dict:
+        """返回当前重建状态的快照，供前端轮询展示。"""
+        with self._rebuild_lock:
+            return dict(self._rebuild_state)
+
+    def schedule_rebuild(self) -> dict:
+        """请求一次后台向量索引重建。
+
+        文件增删后调用。若已有重建在跑，仅置挂起标记（去抖），使连续增删只在
+        末尾补跑一轮，保证最终文件状态一定被索引，同时避免重复 embedding 开销。
+        embedding/pgvector 不可用时重建线程会把状态记为 failed 并留原因，不抛出，
+        此时词法降级检索仍随文件签名自动更新（优雅降级）。
+        """
+        with self._rebuild_lock:
+            if self._rebuild_thread and self._rebuild_thread.is_alive():
+                self._rebuild_pending = True
+                return dict(self._rebuild_state)
+            self._rebuild_state = {**self._rebuild_state, "status": "running", "detail": None}
+            thread = Thread(target=self._run_rebuild_loop, name="kb-rebuild", daemon=True)
+            self._rebuild_thread = thread
+            thread.start()
+            return dict(self._rebuild_state)
+
+    def _run_rebuild_loop(self) -> None:
+        """在后台线程内重建，直到无挂起请求为止。"""
+        from datetime import datetime
+
+        while True:
+            try:
+                result = self.build()
+                state = {
+                    "status": "success",
+                    "detail": None,
+                    "documents": result["documents"],
+                    "total_chunks": result["total_chunks"],
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            except Exception as exc:
+                logger.warning("知识库向量索引重建失败：%s", exc)
+                state = {
+                    "status": "failed",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                    "documents": self._rebuild_state.get("documents", 0),
+                    "total_chunks": self._rebuild_state.get("total_chunks", 0),
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            with self._rebuild_lock:
+                self._rebuild_state = state
+                if self._rebuild_pending:
+                    # 有增删在重建期间发生，补跑一轮并保持 running 展示。
+                    self._rebuild_pending = False
+                    self._rebuild_state = {**state, "status": "running", "detail": None}
+                    continue
+                self._rebuild_thread = None
+                return
 
 
 knowledge_retriever = KnowledgeRetriever()
