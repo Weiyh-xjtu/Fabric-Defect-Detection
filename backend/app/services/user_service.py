@@ -255,11 +255,12 @@ class UserService:
         ):
             raise HTTPException(status_code=400, detail="不能移除系统中最后一个有效管理员")
 
-        db.query(UserRole).filter(UserRole.user_id == user.id).delete(
-            synchronize_session=False
-        )
+        # 通过 ORM 关系删除，确保旧关联同步退出 identity map。批量 DELETE 后
+        # SQLite 可能复用主键，导致新对象与会话中的旧对象发生 identity 冲突。
+        user.user_roles.clear()
+        db.flush()
         for role in roles:
-            db.add(UserRole(user_id=user.id, role_id=role.id))
+            user.user_roles.append(UserRole(role_id=role.id))
         db.commit()
         return UserService.get_user_detail(db, user.id)
 
