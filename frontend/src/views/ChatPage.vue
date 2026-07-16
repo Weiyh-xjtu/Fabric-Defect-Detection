@@ -892,7 +892,7 @@ onMounted(async () => {
   max-width: 70%;
   padding: 12px 16px;
   border-radius: 18px;
-  font-size: 18px;
+  font-size: 16.5px;
   line-height: 1.6;
   word-break: break-word;
 }
