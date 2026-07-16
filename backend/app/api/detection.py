@@ -94,7 +94,14 @@ def _remember_quick_detection(
         + json.dumps(_slim_detection_context(result), ensure_ascii=False),
         user_id,
     )
-    persist_quick_detection(user_id, session_id, tool_name, label, result)
+    persist_quick_detection(
+        user_id,
+        session_id,
+        tool_name,
+        label,
+        result,
+        original_attachments=attachments,
+    )
 
 
 @router.post("/single", summary="单图检测")
@@ -385,6 +392,7 @@ async def detect_video_api(
                         "detect_video_file",
                         f"视频 {file.filename}",
                         result,
+                        original_attachments=video_attachments,
                     )
         except Exception as e:
             logger.error("视频后台检测异常: %s", str(e), exc_info=True)

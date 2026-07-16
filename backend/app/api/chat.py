@@ -7,7 +7,9 @@
 
 """
 
+import asyncio
 import json
+import mimetypes
 import os
 import tempfile
 import uuid
@@ -204,12 +206,57 @@ def _extract_attachment_refs(tool_results: list[dict]) -> list[dict]:
     return refs
 
 
+def _upload_user_attachment_refs(
+    user_id: int,
+    attachments: list[dict] | None,
+) -> list[dict]:
+    """
+    把用户原始附件上传到 MinIO，并返回适合写入 ChatMessage.attachments 的引用。
+
+    原始文件仍保留在临时目录供当前会话复检；历史展示只依赖 MinIO。数据库
+    仅保存 object_name、文件名和类型，不保存文件字节、base64 或易过期 URL。
+    单个附件上传失败时记录告警并继续，不阻断检测流程。
+    """
+    if not attachments:
+        return []
+    try:
+        minio = MinIOClient()
+    except Exception as e:
+        logger.warning("MinIO 不可用，用户原始附件未持久化: %s", str(e))
+        return []
+
+    refs = []
+    for item in attachments:
+        path = item.get("path") if isinstance(item, dict) else None
+        if not path or not os.path.isfile(path):
+            continue
+        filename = Path(item.get("filename") or path).name
+        attachment_type = item.get("type") or "file"
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        object_name = f"chat-originals/{user_id}/{uuid.uuid4().hex}_{filename}"
+        try:
+            minio.upload_file(object_name, path, content_type=content_type)
+        except Exception as e:
+            logger.warning("用户原始附件上传失败 object_name=%s: %s", object_name, str(e))
+            continue
+        refs.append({
+            "source": "user",
+            "type": attachment_type,
+            "filename": filename,
+            "content_type": content_type,
+            "size": os.path.getsize(path),
+            "object_name": object_name,
+        })
+    return refs
+
+
 def persist_quick_detection(
     user_id: int,
     session_uuid: str,
     tool_name: str,
     user_label: str,
     result: dict,
+    original_attachments: list[dict] | None = None,
 ) -> None:
     """
     把"快捷检测"（跳过 LLM，直接调 YOLO）的一轮结果落库。
@@ -218,12 +265,14 @@ def persist_quick_detection(
     完全一致的结构写入 ChatSession + 两条 ChatMessage（用户 + 助手），使
     前端历史还原逻辑（buildDetectionFromHistory）无需区分来源。
 
-    与 /stream 一致：只存剥离 base64 的统计信息 + MinIO 永久对象引用。
-    单独开启会话，失败不抛出以免影响检测结果返回。
+    与 /stream 一致：用户原始附件和检测结果都上传 MinIO，数据库只保存
+    object_name；tool_result 只存剥离 base64 的统计信息。失败不抛出，以免
+    影响检测结果返回。
     """
     if not session_uuid:
         return
     tool_results = [{"tool": tool_name, "result": json.dumps(result, ensure_ascii=False)}]
+    user_attachment_refs = _upload_user_attachment_refs(user_id, original_attachments)
     db = SessionLocal()
     try:
         db_session = _get_or_create_session(db, user_id, session_uuid, user_label)
@@ -231,6 +280,7 @@ def persist_quick_detection(
             session_id=db_session.id,
             role="user",
             content=f"[快捷检测] {user_label}",
+            attachments=user_attachment_refs or None,
         ))
         attachment_refs = _extract_attachment_refs(tool_results)
         slim_tool_results = [
@@ -252,6 +302,7 @@ def persist_quick_detection(
         db.commit()
     except Exception as e:
         db.rollback()
+        _delete_attachment_objects(user_attachment_refs)
         logger.error("快捷检测落库失败 session=%s tool=%s: %s", session_uuid, tool_name, str(e), exc_info=True)
     finally:
         db.close()
@@ -280,28 +331,34 @@ def _collect_object_names(attachments: list[dict] | None) -> list[str]:
     return names
 
 
-def _delete_session_objects(messages) -> None:
-    """
-    删除会话所有消息在 MinIO 中引用的标注图/视频对象。
-
-    对象路径带 task.id，为每次检测独有，故可安全删除，不会影响其他会话。
-    MinIO 不可用或单个对象删除失败时记录告警并继续，不阻断会话删除。
-    """
-    object_names = []
-    for message in messages:
-        object_names.extend(_collect_object_names(message.attachments))
+def _delete_attachment_objects(attachments: list[dict] | None) -> None:
+    """尽力删除一组附件引用对应的 MinIO 对象，不因单个失败中断。"""
+    object_names = set(_collect_object_names(attachments))
     if not object_names:
         return
     try:
         minio = MinIOClient()
     except Exception as e:
-        logger.warning("MinIO 不可用，跳过会话附件对象清理: %s", str(e))
+        logger.warning("MinIO 不可用，跳过附件对象清理: %s", str(e))
         return
     for object_name in object_names:
         try:
             minio.delete_file(object_name)
         except Exception as e:
             logger.warning("删除 MinIO 对象失败 object_name=%s: %s", object_name, str(e))
+
+
+def _delete_session_objects(messages) -> None:
+    """
+    删除会话所有消息在 MinIO 中引用的原始附件及标注结果对象。
+
+    对象名均为上传时生成的唯一路径，可安全删除，不会影响其他会话。
+    MinIO 不可用或单个对象删除失败时记录告警并继续，不阻断会话删除。
+    """
+    attachments = []
+    for message in messages:
+        attachments.extend(message.attachments or [])
+    _delete_attachment_objects(attachments)
 
 
 def _resign_attachments(attachments: list[dict] | None) -> list[dict]:
@@ -321,19 +378,26 @@ def _resign_attachments(attachments: list[dict] | None) -> list[dict]:
     resolved = []
     for ref in attachments:
         ref_type = ref.get("type")
+        # 保留 source/filename/content_type/size 等元数据，只移除永久 object_name。
+        metadata = {
+            key: value
+            for key, value in ref.items()
+            if key not in {"object_name", "images"}
+        }
         if ref_type == "images":
-            images = [
-                {
-                    "image_path": img.get("image_path"),
-                    "url": minio.presign_from_url_or_name(img.get("object_name", "")),
+            images = []
+            for img in ref.get("images", []):
+                image_metadata = {
+                    key: value for key, value in img.items() if key != "object_name"
                 }
-                for img in ref.get("images", [])
-            ]
-            resolved.append({"tool": ref.get("tool"), "type": "images", "images": images})
+                image_metadata["url"] = minio.presign_from_url_or_name(
+                    img.get("object_name", "")
+                )
+                images.append(image_metadata)
+            resolved.append({**metadata, "images": images})
         else:
             resolved.append({
-                "tool": ref.get("tool"),
-                "type": ref_type,
+                **metadata,
                 "url": minio.presign_from_url_or_name(ref.get("object_name", "")),
             })
     return resolved
@@ -524,6 +588,8 @@ async def chat_stream(
         tool_calls = []
         tool_results = []
         agent_used = None
+        user_attachment_refs = []
+        user_message_committed = False
         try:
             db_session = _get_or_create_session(db, current_user.id, session_id, message)
             if not conversation_memory.load(session_id, current_user.id):
@@ -534,10 +600,21 @@ async def chat_stream(
                         previous.content,
                         current_user.id,
                     )
-            db.add(ChatMessage(session_id=db_session.id, role="user", content=message))
+            user_attachment_refs = await asyncio.to_thread(
+                _upload_user_attachment_refs,
+                current_user.id,
+                attachments,
+            )
+            db.add(ChatMessage(
+                session_id=db_session.id,
+                role="user",
+                content=message,
+                attachments=user_attachment_refs or None,
+            ))
             db_session.message_count = int(db_session.message_count or 0) + 1
             db_session.last_message_at = datetime.now()
             db.commit()
+            user_message_committed = True
             yield f"data: {json.dumps({'type': 'session', 'session_id': session_id}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'thinking', 'content': '正在分析您的请求…'}, ensure_ascii=False)}\n\n"
             # 使用 Agent 流式处理（透传当前用户，用于检测记录归属）
@@ -590,6 +667,9 @@ async def chat_stream(
                 db_session.last_message_at = datetime.now()
                 db.commit()
         except Exception as e:
+            db.rollback()
+            if not user_message_committed:
+                _delete_attachment_objects(user_attachment_refs)
             logger.error("SSE 流异常: %s", str(e), exc_info=True)
             error_data = json.dumps(
                 {"type": "error", "content": str(e)},

@@ -103,12 +103,24 @@ def test_chat_stream_passes_structured_attachments(
     )
     os.close(fd)
     captured = {}
+    captured_upload = {}
 
     async def fake_chat_stream(**kwargs):
         captured.update(kwargs)
         yield {"type": "text_chunk", "content": "已收到附件"}
 
+    def fake_upload_user_refs(user_id, attachments):
+        captured_upload["user_id"] = user_id
+        captured_upload["attachments"] = attachments
+        return [{
+            "source": "user",
+            "type": "zip",
+            "filename": "images.zip",
+            "object_name": "chat-originals/1/images.zip",
+        }]
+
     monkeypatch.setattr(chat_api.detection_agent, "chat_stream", fake_chat_stream)
+    monkeypatch.setattr(chat_api, "_upload_user_attachment_refs", fake_upload_user_refs)
 
     try:
         response = chat_client.post(
@@ -129,6 +141,8 @@ def test_chat_stream_passes_structured_attachments(
         assert "已收到附件" in response.text
         assert captured["attachments"][0]["type"] == "zip"
         assert captured["attachments"][0]["path"] == attachment_path
+        assert captured_upload["user_id"] == 1
+        assert captured_upload["attachments"][0]["filename"] == "images.zip"
         assert not os.path.exists(attachment_path)
     finally:
         if os.path.exists(attachment_path):
@@ -242,6 +256,9 @@ class _FakeMinio:
 
     bucket_name = "bucket"
 
+    def upload_file(self, object_name, file_path, content_type="application/octet-stream"):
+        return f"http://minio/{self.bucket_name}/{object_name}?uploaded=1"
+
     def object_name_from_url(self, url):
         if not url:
             return None
@@ -255,6 +272,34 @@ class _FakeMinio:
             return None
         name = self.object_name_from_url(value) if value.startswith("http") else value
         return f"http://minio/{self.bucket_name}/{name}?fresh=1" if name else None
+
+
+def test_upload_user_attachment_refs_stores_only_minio_reference(monkeypatch, tmp_path):
+    uploaded = []
+
+    class _UploadingMinio(_FakeMinio):
+        def upload_file(self, object_name, file_path, content_type="application/octet-stream"):
+            uploaded.append((object_name, file_path, content_type))
+            return f"http://minio/{self.bucket_name}/{object_name}?uploaded=1"
+
+    source = tmp_path / "original.jpg"
+    source.write_bytes(b"jpeg-data")
+    monkeypatch.setattr(chat_api, "MinIOClient", _UploadingMinio)
+
+    refs = chat_api._upload_user_attachment_refs(
+        7,
+        [{"type": "image", "path": str(source), "filename": "fabric.jpg"}],
+    )
+
+    assert len(refs) == 1
+    assert refs[0]["source"] == "user"
+    assert refs[0]["type"] == "image"
+    assert refs[0]["filename"] == "fabric.jpg"
+    assert refs[0]["content_type"] == "image/jpeg"
+    assert refs[0]["size"] == len(b"jpeg-data")
+    assert refs[0]["object_name"].startswith("chat-originals/7/")
+    assert uploaded[0][2] == "image/jpeg"
+    assert "jpeg-data" not in json.dumps(refs)
 
 
 def test_extract_attachment_refs_covers_image_batch_video(monkeypatch):
@@ -293,7 +338,14 @@ def test_extract_attachment_refs_covers_image_batch_video(monkeypatch):
 def test_resign_attachments_reissues_fresh_urls(monkeypatch):
     monkeypatch.setattr(chat_api, "MinIOClient", _FakeMinio)
     stored = [
-        {"tool": "detect_single_image", "type": "image", "object_name": "detections/1/a.jpg"},
+        {
+            "source": "user",
+            "type": "image",
+            "filename": "original.jpg",
+            "content_type": "image/jpeg",
+            "size": 123,
+            "object_name": "chat-originals/1/a.jpg",
+        },
         {"tool": "detect_batch_images", "type": "images", "images": [
             {"image_path": "b.jpg", "object_name": "detections/2/b.jpg"},
         ]},
@@ -303,7 +355,11 @@ def test_resign_attachments_reissues_fresh_urls(monkeypatch):
     resolved = chat_api._resign_attachments(stored)
 
     by_type = {ref["type"]: ref for ref in resolved}
-    assert by_type["image"]["url"] == "http://minio/bucket/detections/1/a.jpg?fresh=1"
+    assert by_type["image"]["url"] == "http://minio/bucket/chat-originals/1/a.jpg?fresh=1"
+    assert by_type["image"]["source"] == "user"
+    assert by_type["image"]["filename"] == "original.jpg"
+    assert by_type["image"]["content_type"] == "image/jpeg"
+    assert by_type["image"]["size"] == 123
     assert by_type["video"]["url"] == "http://minio/bucket/detections/3/v.mp4?fresh=1"
     assert by_type["images"]["images"][0]["url"] == "http://minio/bucket/detections/2/b.jpg?fresh=1"
 
@@ -350,12 +406,23 @@ def test_delete_session_objects_removes_all_referenced(monkeypatch):
         SimpleNamespace(attachments=[
             {"type": "images", "images": [{"object_name": "detections/2/b.jpg"}]},
         ]),
+        SimpleNamespace(attachments=[
+            {
+                "source": "user",
+                "type": "video",
+                "object_name": "chat-originals/1/original.mp4",
+            },
+        ]),
         SimpleNamespace(attachments=None),
     ]
 
     chat_api._delete_session_objects(messages)
 
-    assert set(deleted) == {"detections/1/a.jpg", "detections/2/b.jpg"}
+    assert set(deleted) == {
+        "detections/1/a.jpg",
+        "detections/2/b.jpg",
+        "chat-originals/1/original.mp4",
+    }
 
 
 def test_delete_session_objects_survives_minio_failure(monkeypatch):
@@ -373,7 +440,7 @@ def test_delete_session_objects_survives_minio_failure(monkeypatch):
     chat_api._delete_session_objects(messages)
 
 
-def test_persist_quick_detection_creates_session_and_messages(monkeypatch):
+def test_persist_quick_detection_creates_session_and_messages(monkeypatch, tmp_path):
     """快捷检测应落库为可刷新还原的会话（用户 + 助手两条消息）。"""
     from tests.conftest import TestSessionLocal
     from app.entity.db_models import ChatMessage, ChatSession
@@ -381,6 +448,8 @@ def test_persist_quick_detection_creates_session_and_messages(monkeypatch):
     monkeypatch.setattr(chat_api, "SessionLocal", TestSessionLocal)
     monkeypatch.setattr(chat_api, "MinIOClient", _FakeMinio)
     session_uuid = "quick-detect-uuid-1"
+    original = tmp_path / "original.jpg"
+    original.write_bytes(b"original-image")
     result = {
         "total_objects": 2,
         "annotated_image_url": "http://minio/bucket/detections/9/a.jpg?sig=x",
@@ -393,6 +462,11 @@ def test_persist_quick_detection_creates_session_and_messages(monkeypatch):
         tool_name="detect_single_image",
         user_label="单图 a.jpg",
         result=result,
+        original_attachments=[{
+            "type": "image",
+            "path": str(original),
+            "filename": "original.jpg",
+        }],
     )
 
     db = TestSessionLocal()
@@ -406,8 +480,14 @@ def test_persist_quick_detection_creates_session_and_messages(monkeypatch):
             ChatMessage.session_id == session.id
         ).order_by(ChatMessage.id).all()
         assert [m.role for m in messages] == ["user", "assistant"]
-        assistant = messages[1]
-        # 存的 attachments 是 object_name，不含 base64
+        user_message, assistant = messages
+        assert user_message.attachments[0]["source"] == "user"
+        assert user_message.attachments[0]["type"] == "image"
+        assert user_message.attachments[0]["filename"] == "original.jpg"
+        assert user_message.attachments[0]["object_name"].startswith(
+            "chat-originals/1/"
+        )
+        # 助手消息保存的是标注结果引用，不与用户原图混在同一条消息中。
         assert assistant.attachments[0]["object_name"] == "detections/9/a.jpg"
         assert "SHOULD_NOT_PERSIST" not in (assistant.tool_result or "")
         # 统计信息保留，供历史卡片重建（tool_result 为嵌套 JSON 字符串）
