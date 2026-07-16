@@ -576,6 +576,8 @@ async function handleQuickDetect(type) {
         lastMsg.content = `检测完成！发现 ${result.total_objects} 个目标。`;
         lastMsg.loading = false;
         lastMsg.detectionResult = result;
+        // 快捷检测已在后端落库，刷新侧栏使新会话出现在历史列表。
+        refreshSessions();
       } catch (err) {
         const lastMsg = agentStore.messages[agentStore.messages.length - 1];
         lastMsg.content = "检测失败，请重试";
@@ -638,6 +640,8 @@ async function handleQuickDetect(type) {
         lastMsg.content = `批量检测完成！共 ${totalObjects} 个目标。`;
         lastMsg.loading = false;
         lastMsg.detectionResult = result;
+        // 快捷检测已在后端落库，刷新侧栏使新会话出现在历史列表。
+        refreshSessions();
         console.log("[批量检测结果]", result);
       } catch (err) {
         console.error("[批量检测异常]", err);
@@ -775,6 +779,8 @@ async function handleVideoDetect() {
 
       // 开始轮询进度
       await pollVideoProgress(taskId, resultMessage);
+      // 视频检测完成后已在后端落库，刷新侧栏。
+      refreshSessions();
     } catch (err) {
       console.error("[视频检测失败]", err);
       resultMessage.content = `视频检测失败：${err.message || err}`;

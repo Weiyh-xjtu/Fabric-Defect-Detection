@@ -40,6 +40,7 @@ from app.database.session import SessionLocal
 from app.entity.db_models import DetectionTask
 from app.services.detection_service import detection_service
 from app.agent.memory import conversation_memory
+from app.api.chat import persist_quick_detection
 
 logger = get_logger(__name__)
 
@@ -67,8 +68,15 @@ def _remember_quick_detection(
     label: str,
     attachments: list[dict],
     result: dict,
+    tool_name: str,
 ) -> None:
-    """把跳过 LLM 的快捷检测同步为可供 Agent 使用的完整对话上下文。"""
+    """
+    把跳过 LLM 的快捷检测同步为对话上下文，并落库为持久会话。
+
+    - conversation_memory：供 Agent 后续追问时使用（易失，Redis）。
+    - persist_quick_detection：写入 ChatSession/ChatMessage，使刷新后仍可见，
+      结构与 /stream 一致，供前端历史还原。
+    """
     if not session_id:
         return
     conversation_memory.save_attachments(session_id, attachments, user_id)
@@ -86,6 +94,7 @@ def _remember_quick_detection(
         + json.dumps(_slim_detection_context(result), ensure_ascii=False),
         user_id,
     )
+    persist_quick_detection(user_id, session_id, tool_name, label, result)
 
 
 @router.post("/single", summary="单图检测")
@@ -122,6 +131,7 @@ async def detect_single_api(
             f"单图 {file.filename}",
             [{"type": "image", "path": tmp_path, "filename": file.filename}],
             result,
+            "detect_single_image",
         )
         return result
     finally:
@@ -163,7 +173,7 @@ async def detect_batch_api(
             original_filenames=original_filenames,
         )
         quick_attachments = [{"type": "image", "path": path, "filename": filename} for path, filename in zip(temp_paths, original_filenames)]
-        _remember_quick_detection(session_id, current_user.id, f"批量图片 {len(quick_attachments)} 张", quick_attachments, result)
+        _remember_quick_detection(session_id, current_user.id, f"批量图片 {len(quick_attachments)} 张", quick_attachments, result, "detect_batch_images")
         return result
     finally:
         for path in temp_paths if not session_id else []:
@@ -206,6 +216,7 @@ async def detect_zip_api(
             f"ZIP {file.filename}",
             [{"type": "zip", "path": tmp_path, "filename": file.filename}],
             result,
+            "detect_batch_images",
         )
         return result
     finally:
@@ -366,6 +377,14 @@ async def detect_video_api(
                         "快捷视频检测已完成，结构化检测结果如下：\n"
                         + json.dumps(_slim_detection_context(result), ensure_ascii=False),
                         user_id,
+                    )
+                    # 落库为持久会话，使刷新后视频检测结果仍可见。
+                    persist_quick_detection(
+                        user_id,
+                        session_id,
+                        "detect_video_file",
+                        f"视频 {file.filename}",
+                        result,
                     )
         except Exception as e:
             logger.error("视频后台检测异常: %s", str(e), exc_info=True)

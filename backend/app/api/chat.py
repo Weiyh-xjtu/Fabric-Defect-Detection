@@ -204,6 +204,59 @@ def _extract_attachment_refs(tool_results: list[dict]) -> list[dict]:
     return refs
 
 
+def persist_quick_detection(
+    user_id: int,
+    session_uuid: str,
+    tool_name: str,
+    user_label: str,
+    result: dict,
+) -> None:
+    """
+    把"快捷检测"（跳过 LLM，直接调 YOLO）的一轮结果落库。
+
+    快捷检测不经过 /stream，若不落库则刷新后会话消失。这里复用与 /stream
+    完全一致的结构写入 ChatSession + 两条 ChatMessage（用户 + 助手），使
+    前端历史还原逻辑（buildDetectionFromHistory）无需区分来源。
+
+    与 /stream 一致：只存剥离 base64 的统计信息 + MinIO 永久对象引用。
+    单独开启会话，失败不抛出以免影响检测结果返回。
+    """
+    if not session_uuid:
+        return
+    tool_results = [{"tool": tool_name, "result": json.dumps(result, ensure_ascii=False)}]
+    db = SessionLocal()
+    try:
+        db_session = _get_or_create_session(db, user_id, session_uuid, user_label)
+        db.add(ChatMessage(
+            session_id=db_session.id,
+            role="user",
+            content=f"[快捷检测] {user_label}",
+        ))
+        attachment_refs = _extract_attachment_refs(tool_results)
+        slim_tool_results = [
+            {"tool": tr.get("tool"), "result": _slim_tool_result(tr.get("result"))}
+            for tr in tool_results
+        ]
+        total = result.get("total_objects", 0)
+        db.add(ChatMessage(
+            session_id=db_session.id,
+            role="assistant",
+            content=f"检测完成，共发现 {total} 个目标。",
+            agent_used="detection",
+            tool_calls=[{"tool": tool_name}],
+            tool_result=json.dumps(slim_tool_results, ensure_ascii=False),
+            attachments=attachment_refs or None,
+        ))
+        db_session.message_count = int(db_session.message_count or 0) + 2
+        db_session.last_message_at = datetime.now()
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error("快捷检测落库失败 session=%s tool=%s: %s", session_uuid, tool_name, str(e), exc_info=True)
+    finally:
+        db.close()
+
+
 def _collect_object_names(attachments: list[dict] | None) -> list[str]:
     """
     从存储的 attachments 引用中收集所有 MinIO 永久对象名。

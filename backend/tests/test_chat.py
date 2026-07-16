@@ -373,6 +373,60 @@ def test_delete_session_objects_survives_minio_failure(monkeypatch):
     chat_api._delete_session_objects(messages)
 
 
+def test_persist_quick_detection_creates_session_and_messages(monkeypatch):
+    """快捷检测应落库为可刷新还原的会话（用户 + 助手两条消息）。"""
+    from tests.conftest import TestSessionLocal
+    from app.entity.db_models import ChatMessage, ChatSession
+
+    monkeypatch.setattr(chat_api, "SessionLocal", TestSessionLocal)
+    monkeypatch.setattr(chat_api, "MinIOClient", _FakeMinio)
+    session_uuid = "quick-detect-uuid-1"
+    result = {
+        "total_objects": 2,
+        "annotated_image_url": "http://minio/bucket/detections/9/a.jpg?sig=x",
+        "annotated_image_base64": "SHOULD_NOT_PERSIST",
+    }
+
+    chat_api.persist_quick_detection(
+        user_id=1,
+        session_uuid=session_uuid,
+        tool_name="detect_single_image",
+        user_label="单图 a.jpg",
+        result=result,
+    )
+
+    db = TestSessionLocal()
+    try:
+        session = db.query(ChatSession).filter(
+            ChatSession.session_uuid == session_uuid
+        ).first()
+        assert session is not None
+        assert session.message_count == 2
+        messages = db.query(ChatMessage).filter(
+            ChatMessage.session_id == session.id
+        ).order_by(ChatMessage.id).all()
+        assert [m.role for m in messages] == ["user", "assistant"]
+        assistant = messages[1]
+        # 存的 attachments 是 object_name，不含 base64
+        assert assistant.attachments[0]["object_name"] == "detections/9/a.jpg"
+        assert "SHOULD_NOT_PERSIST" not in (assistant.tool_result or "")
+        # 统计信息保留，供历史卡片重建（tool_result 为嵌套 JSON 字符串）
+        inner = json.loads(json.loads(assistant.tool_result)[0]["result"])
+        assert inner["total_objects"] == 2
+        assert "annotated_image_base64" not in inner
+    finally:
+        db.close()
+
+
+def test_persist_quick_detection_no_session_is_noop(monkeypatch):
+    """无 session_uuid 时应静默跳过，不触碰数据库。"""
+    def _boom():
+        raise AssertionError("不应创建数据库会话")
+
+    monkeypatch.setattr(chat_api, "SessionLocal", _boom)
+    chat_api.persist_quick_detection(1, "", "detect_single_image", "x", {"total_objects": 0})
+
+
 def test_agent_registers_user_and_role_query_tools():
     """Day 10 用户与权限查询工具已绑定，且未登录上下文不能调用。"""
     tool_names = {item.name for item in DETECTION_TOOLS}
