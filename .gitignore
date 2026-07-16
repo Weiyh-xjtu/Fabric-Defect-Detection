@@ -88,6 +88,7 @@ videos/
 *.jpg
 *.jpeg
 *.png
+!frontend/src/assets/avatar.png
 *.gif
 *.bmp
 *.mp4

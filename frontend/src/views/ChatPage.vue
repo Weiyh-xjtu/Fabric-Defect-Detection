@@ -1,45 +1,5 @@
 <template>
   <div class="chat-page">
-    <!-- ── 历史会话侧栏 ── -->
-    <aside class="chat-sidebar">
-      <div class="sidebar-header">
-        <span class="sidebar-title">历史对话</span>
-        <el-button size="small" type="primary" plain @click="handleNewChat">
-          + 新对话
-        </el-button>
-      </div>
-      <div v-loading="agentStore.isSessionsLoading" class="session-list">
-        <div
-          v-for="session in agentStore.sessions"
-          :key="session.session_uuid"
-          :class="[
-            'session-item',
-            { active: session.session_uuid === agentStore.currentSessionId },
-          ]"
-          @click="handleSelectSession(session.session_uuid)"
-        >
-          <div class="session-info">
-            <div class="session-name">{{ session.title || "新对话" }}</div>
-            <div class="session-meta">
-              {{ session.message_count }} 条 ·
-              {{ formatSessionTime(session.last_message_at || session.created_at) }}
-            </div>
-          </div>
-          <el-button
-            class="session-delete"
-            size="small"
-            text
-            @click.stop="handleDeleteSession(session)"
-          >
-            🗑
-          </el-button>
-        </div>
-        <div v-if="!agentStore.sessions.length" class="session-empty">
-          暂无历史对话
-        </div>
-      </div>
-    </aside>
-
     <!-- ── 对话主区域 ── -->
     <div class="chat-main">
     <!-- ── 消息列表区域 ── -->
@@ -256,8 +216,8 @@ import {
   completeToolStep,
   toolDisplayName,
 } from "@/utils/toolChain";
-import { ElMessage, ElMessageBox } from "element-plus";
-import { computed, nextTick, onMounted, ref } from "vue";
+import { ElMessage } from "element-plus";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 // ── Store ──
@@ -811,58 +771,15 @@ async function refreshSessions() {
   }
 }
 
-/** 侧栏点击：切换到指定历史会话并加载其消息。 */
-async function handleSelectSession(sessionUuid) {
-  if (sessionUuid === agentStore.currentSessionId || agentStore.isLoading) return;
-  try {
-    await agentStore.loadSession(sessionUuid);
-    showWelcomeIfEmpty();
-    scrollToBottom();
-  } catch (err) {
-    console.error("[会话历史加载失败]", err);
-    ElMessage.error("加载会话历史失败");
-  }
-}
-
-/** 新建对话：清空当前会话并显示欢迎语。 */
-function handleNewChat() {
-  agentStore.newChat();
-  showWelcomeIfEmpty();
-}
-
-/** 删除会话（带确认）。 */
-async function handleDeleteSession(session) {
-  try {
-    await ElMessageBox.confirm(
-      `确定删除会话「${session.title || "新对话"}」吗？此操作不可恢复。`,
-      "删除会话",
-      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" },
-    );
-  } catch {
-    return; // 用户取消
-  }
-  try {
-    await agentStore.removeSession(session.session_uuid);
-    showWelcomeIfEmpty();
-    ElMessage.success("会话已删除");
-  } catch (err) {
-    console.error("[会话删除失败]", err);
-    ElMessage.error("删除会话失败");
-  }
-}
-
-/** 会话标题的相对时间展示。 */
-function formatSessionTime(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const now = new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-  if (sameDay) {
-    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-  }
-  return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
-}
+watch(
+  () => agentStore.currentSessionId,
+  (sessionId) => {
+    if (!sessionId && agentStore.messages.length === 0) {
+      showWelcomeIfEmpty();
+      nextTick(scrollToBottom);
+    }
+  },
+);
 
 onMounted(async () => {
   await refreshSessions();
@@ -889,90 +806,6 @@ onMounted(async () => {
   background: #f5f5f5;
 }
 
-/* ── 历史会话侧栏 ── */
-.chat-sidebar {
-  display: flex;
-  flex-direction: column;
-  width: 260px;
-  flex-shrink: 0;
-  border-right: 1px solid #e4e7ed;
-  background: #fff;
-}
-
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.sidebar-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.session-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px;
-}
-
-.session-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  margin-bottom: 4px;
-  transition: background 0.2s;
-
-  &:hover {
-    background: #f5f7fa;
-
-    .session-delete {
-      visibility: visible;
-    }
-  }
-
-  &.active {
-    background: #ecf5ff;
-  }
-}
-
-.session-info {
-  min-width: 0;
-  flex: 1;
-}
-
-.session-name {
-  font-size: 14px;
-  color: #303133;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.session-meta {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 2px;
-}
-
-.session-delete {
-  visibility: hidden;
-  flex-shrink: 0;
-}
-
-.session-empty {
-  text-align: center;
-  color: #909399;
-  font-size: 13px;
-  padding: 24px 0;
-}
-
 /* ── 对话主区域 ── */
 .chat-main {
   display: flex;
@@ -980,6 +813,7 @@ onMounted(async () => {
   flex: 1;
   min-width: 0;
   height: 100%;
+  font-size: 15px;
 }
 
 /* ── 消息列表 ── */
@@ -1006,7 +840,8 @@ onMounted(async () => {
   max-width: 70%;
   padding: 12px 16px;
   border-radius: 12px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.55;
   word-break: break-word;
 }
 
@@ -1091,13 +926,28 @@ onMounted(async () => {
 /* ── 输入区域 ── */
 .input-area {
   display: flex;
-  gap: 8px;
-  padding: 12px 20px;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
   border-top: 1px solid #e0e0e0;
   background: white;
 
   .el-input {
     flex: 1;
+  }
+
+  :deep(.el-input__wrapper) {
+    padding: 0 16px;
+    border-radius: 999px;
+  }
+
+  :deep(.el-input__inner) {
+    font-size: 15px;
+  }
+
+  .attach-btn,
+  .el-button {
+    border-radius: 999px;
   }
 }
 
