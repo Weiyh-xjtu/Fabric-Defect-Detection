@@ -36,9 +36,11 @@ import { useRouter } from 'vue-router'
 import { ArrowDown, User, SwitchButton } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 import { useUserStore } from '@/stores/user'
+import { useAgentStore } from '@/stores/agent'
 
 const router = useRouter()
 const userStore = useUserStore()
+const agentStore = useAgentStore()
 
 /** 处理下拉菜单命令 */
 function handleCommand(command) {
@@ -53,6 +55,7 @@ function handleCommand(command) {
         type: 'warning',
       }).then(() => {
         userStore.logout()
+        agentStore.clear()
         router.push('/login')
       }).catch(() => {})
       break
