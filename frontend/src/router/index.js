@@ -70,6 +70,12 @@ const routes = [
         meta: { title: '数据看板', icon: 'DataAnalysis', permission: 'dashboard:read:any' },
       },
       {
+        path: 'users',
+        name: 'UserManagement',
+        component: () => import('@/views/UserManagementPage.vue'),
+        meta: { title: '用户管理', icon: 'UserFilled', permission: 'user:manage' },
+      },
+      {
         path: 'settings',
         name: 'Settings',
         component: () => import('@/views/SettingsPage.vue'),

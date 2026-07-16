@@ -73,6 +73,7 @@ import {
   Collection,
   DataAnalysis,
   Setting,
+  UserFilled,
 } from '@element-plus/icons-vue'
 import { useAgentStore } from '@/stores/agent'
 import { useUserStore } from '@/stores/user'
@@ -97,6 +98,7 @@ const allMenuItems = [
   { path: '/history', title: '历史记录', icon: Clock, anyPermission: ['history:read:own', 'history:read:any'] },
   { path: '/knowledge', title: '知识库', icon: Collection, permission: 'knowledge:manage' },
   { path: '/dashboard', title: '数据看板', icon: DataAnalysis, permission: 'dashboard:read:any' },
+  { path: '/users', title: '用户管理', icon: UserFilled, permission: 'user:manage' },
   { path: '/settings', title: '系统设置', icon: Setting },
 ]
 
