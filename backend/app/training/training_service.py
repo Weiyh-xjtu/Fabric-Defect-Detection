@@ -27,6 +27,7 @@
 """
 
 import csv
+import hashlib
 import json
 import os
 import shutil
@@ -972,6 +973,7 @@ class TrainingService:
                 json.dump(report, f, indent=2, ensure_ascii=False)
 
             minio_url = None
+            minio_object_name = None
             if upload_minio:
                 try:
                     from app.storage.minio_client import MinIOClient
@@ -981,6 +983,7 @@ class TrainingService:
                         object_name,
                         str(exported_weight),
                     )
+                    minio_object_name = object_name
                 except Exception as e:
                     logger.warning("MinIO 上传失败（不影响导出）: %s", str(e))
 
@@ -993,6 +996,14 @@ class TrainingService:
             model_version.model_name = f"{task.model_name}_{scene.name}_{version}"
             model_version.model_path = str(exported_weight)
             model_version.minio_url = minio_url
+            model_version.minio_object_name = minio_object_name
+            if minio_object_name:
+                digest = hashlib.sha256()
+                with exported_weight.open("rb") as model_file:
+                    for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                model_version.file_sha256 = digest.hexdigest()
+                model_version.backed_up_at = datetime.now()
             model_version.map50 = overall["map50"]
             model_version.map50_95 = overall["map50_95"]
             model_version.precision = overall["precision"]

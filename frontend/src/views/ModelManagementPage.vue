@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <h2>模型管理</h2>
-        <p>查看、测试和评估模型版本，并设置全局检测模型</p>
+        <p>管理模型版本、全局切换、归档删除及备份恢复</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
     </div>
@@ -29,6 +29,12 @@
             {{ currentModel.file_exists ? '文件可用' : '文件缺失' }}
           </el-tag>
         </el-descriptions-item>
+        <el-descriptions-item label="模型备份">
+          <el-tag :type="currentModel.backup_available ? 'success' : 'info'">
+            {{ currentModel.backup_available ? '已备份' : '未备份' }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="最近备份">{{ formatDate(currentModel.backed_up_at) }}</el-descriptions-item>
       </el-descriptions>
       <el-empty v-else description="尚未配置可用的全局模型，请从下方版本列表中选择" :image-size="72" />
     </el-card>
@@ -55,6 +61,11 @@
         <el-table-column prop="model_name" label="模型名称" min-width="210" show-overflow-tooltip />
         <el-table-column prop="model_type" label="类型" width="110" />
         <el-table-column prop="scene_name" label="场景" min-width="150" show-overflow-tooltip />
+        <el-table-column label="状态" width="95" align="center">
+          <template #default="{ row }">
+            <el-tag :type="statusTag(row.status)" size="small">{{ statusName(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="mAP@50" width="105" align="right">
           <template #default="{ row }">{{ formatPercent(row.map50) }}</template>
         </el-table-column>
@@ -68,17 +79,24 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="备份" width="105" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.backup_available ? 'success' : 'info'" size="small">
+              {{ row.backup_available ? '已备份' : '未备份' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="detection_task_count" label="任务数" width="90" align="right" />
         <el-table-column label="创建时间" min-width="170">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="操作" width="300" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" :disabled="!row.file_exists" @click="openTest(row)">测试</el-button>
+            <el-button link type="primary" :disabled="!row.file_exists || row.status !== 'active'" @click="openTest(row)">测试</el-button>
             <el-button
               link
               type="primary"
-              :disabled="!row.training_task_id"
+              :disabled="!row.training_task_id || row.status !== 'active'"
               :loading="evaluatingId === row.id"
               @click="startEvaluation(row)"
             >评估</el-button>
@@ -89,6 +107,22 @@
               :loading="activatingId === row.id"
               @click="switchModel(row)"
             >设为全局</el-button>
+            <el-dropdown
+              trigger="click"
+              :disabled="operatingKey?.endsWith(`:${row.id}`)"
+              @command="handleMoreCommand($event, row)"
+            >
+              <el-button link type="primary" :loading="operatingKey?.endsWith(`:${row.id}`)">更多</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="backup" :disabled="row.status === 'deleted' || !row.file_exists">备份模型</el-dropdown-item>
+                  <el-dropdown-item command="restore" :disabled="row.status === 'deleted' || !row.backup_available || row.file_exists">从备份恢复</el-dropdown-item>
+                  <el-dropdown-item v-if="row.status === 'active'" command="archive" :disabled="row.is_global_default" divided>归档</el-dropdown-item>
+                  <el-dropdown-item v-if="row.status === 'archived'" command="unarchive" divided>取消归档</el-dropdown-item>
+                  <el-dropdown-item v-if="row.status !== 'deleted'" command="delete" :disabled="row.is_global_default" divided>删除</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -158,11 +192,16 @@ import { Refresh, UploadFilled } from '@element-plus/icons-vue'
 import request, { getApiErrorMessage } from '@/utils/request'
 import {
   activateModel,
+  archiveModel,
+  backupModel,
+  deleteModel,
   evaluateModel,
   getCurrentModel,
   getModelEvaluation,
   getModelVersions,
+  restoreModel,
   testModel,
+  unarchiveModel,
 } from '@/api/models'
 
 const loading = ref(false)
@@ -170,6 +209,7 @@ const versions = ref([])
 const scenes = ref([])
 const currentModel = ref(null)
 const activatingId = ref(null)
+const operatingKey = ref('')
 const evaluatingId = ref(null)
 const evaluationTarget = ref(null)
 const evaluationReport = ref(null)
@@ -195,6 +235,11 @@ function formatPercent(value) {
 function formatDate(value) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
 }
+
+const statusNames = { active: '启用', archived: '已归档', deleted: '已删除' }
+const statusTags = { active: 'success', archived: 'warning', deleted: 'danger' }
+function statusName(status) { return statusNames[status] || status }
+function statusTag(status) { return statusTags[status] || 'info' }
 
 async function loadCurrent() {
   try {
@@ -227,11 +272,12 @@ async function loadAll() {
 }
 
 async function switchModel(row) {
-  await ElMessageBox.confirm(
+  const confirmed = await confirmAction(
     `切换后，所有新检测任务将使用 ${row.version}。是否继续？`,
     '切换全局模型',
     { type: 'warning', confirmButtonText: '确认切换', cancelButtonText: '取消' },
   )
+  if (!confirmed) return
   activatingId.value = row.id
   try {
     const result = await activateModel(row.id)
@@ -239,6 +285,72 @@ async function switchModel(row) {
     await Promise.all([loadCurrent(), loadVersions()])
   } finally {
     activatingId.value = null
+  }
+}
+
+async function confirmAction(message, title, options) {
+  try {
+    await ElMessageBox.confirm(message, title, options)
+    return true
+  } catch (action) {
+    if (action === 'cancel' || action === 'close') return false
+    throw action
+  }
+}
+
+async function runRowOperation(command, row, operation) {
+  operatingKey.value = `${command}:${row.id}`
+  try {
+    const result = await operation()
+    ElMessage.success(result.message)
+    await Promise.all([loadCurrent(), loadVersions()])
+  } finally {
+    operatingKey.value = ''
+  }
+}
+
+async function handleMoreCommand(command, row) {
+  if (command === 'backup') {
+    await runRowOperation(command, row, () => backupModel(row.id))
+    return
+  }
+  if (command === 'restore') {
+    const confirmed = await confirmAction(
+      `将从备份恢复模型版本 ${row.version}，并校验文件完整性。是否继续？`,
+      '恢复模型',
+      { type: 'warning', confirmButtonText: '确认恢复', cancelButtonText: '取消' },
+    )
+    if (!confirmed) return
+    await runRowOperation(command, row, () => restoreModel(row.id))
+    return
+  }
+  if (command === 'archive') {
+    const confirmed = await confirmAction(
+      `归档 ${row.version} 后不能用于新检测，模型文件和备份都会保留。`,
+      '确认归档',
+      { type: 'warning', confirmButtonText: '确认归档', cancelButtonText: '取消' },
+    )
+    if (!confirmed) return
+    await runRowOperation(command, row, () => archiveModel(row.id))
+    return
+  }
+  if (command === 'unarchive') {
+    await runRowOperation(command, row, () => unarchiveModel(row.id))
+    return
+  }
+  if (command === 'delete') {
+    const confirmed = await confirmAction(
+      `确定删除模型版本 ${row.version}？删除后该版本将无法继续使用，相关备份也会一并清理，历史检测记录不受影响。`,
+      '二次确认：删除模型',
+      {
+        type: 'error',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        distinguishCancelAndClose: true,
+      },
+    )
+    if (!confirmed) return
+    await runRowOperation(command, row, () => deleteModel(row.id))
   }
 }
 

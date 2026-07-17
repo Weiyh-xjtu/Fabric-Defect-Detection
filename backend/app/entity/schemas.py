@@ -374,6 +374,9 @@ class ModelVersionResponse(BaseModel):
     status: str
     model_path: str
     minio_url: Optional[str] = None
+    minio_object_name: Optional[str] = None
+    file_sha256: Optional[str] = None
+    backed_up_at: Optional[datetime] = None
     map50: Optional[float] = None
     map50_95: Optional[float] = None
     precision: Optional[float] = None
@@ -385,6 +388,9 @@ class ModelVersionResponse(BaseModel):
     is_global_default: bool = False
     file_exists: bool = False
     detection_task_count: int = 0
+    backup_available: bool = False
+    archived_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:

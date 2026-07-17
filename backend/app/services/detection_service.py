@@ -98,7 +98,7 @@ class DetectionService:
             ).first()
             if model_version is None:
                 raise RuntimeError(f"检测任务关联的模型版本不存在: {model_version_id}")
-            model_management_service._existing_model_path(model_version)
+            model_management_service.ensure_model_available(db, model_version)
             return DetectionService._load_model_version(model_version)
         finally:
             db.close()
