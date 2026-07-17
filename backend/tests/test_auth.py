@@ -11,9 +11,12 @@
   - 使用唯一的用户名避免测试间冲突
 """
 
+from datetime import datetime
+
 import pytest
 
 from app.config.settings import settings
+from app.entity.db_models import User
 
 
 class TestRegister:
@@ -142,6 +145,58 @@ class TestLogin:
             },
         )
         assert response.status_code == 401
+
+    def test_login_updates_last_login_at(self, client, db_session):
+        """成功登录后更新最后登录时间。"""
+        client.post(
+            "/api/auth/register",
+            json={
+                "username": "last_login_user",
+                "email": "last-login@example.com",
+                "password": "123456",
+            },
+        )
+        before_login = datetime.now()
+
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "last_login_user", "password": "123456"},
+        )
+        after_login = datetime.now()
+
+        assert response.status_code == 200
+        db_session.expire_all()
+        user = db_session.query(User).filter(User.username == "last_login_user").one()
+        assert user.last_login_at is not None
+        assert before_login <= user.last_login_at <= after_login
+
+    def test_failed_login_does_not_update_last_login_at(self, client, db_session):
+        """密码校验失败时不更新最后登录时间。"""
+        client.post(
+            "/api/auth/register",
+            json={
+                "username": "failed_last_login_user",
+                "email": "failed-last-login@example.com",
+                "password": "123456",
+            },
+        )
+
+        response = client.post(
+            "/api/auth/login",
+            json={
+                "username": "failed_last_login_user",
+                "password": "wrongpassword",
+            },
+        )
+
+        assert response.status_code == 401
+        db_session.expire_all()
+        user = (
+            db_session.query(User)
+            .filter(User.username == "failed_last_login_user")
+            .one()
+        )
+        assert user.last_login_at is None
 
     def test_login_nonexistent_user(self, client):
         """不存在的用户"""
