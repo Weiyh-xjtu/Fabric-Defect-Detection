@@ -198,7 +198,7 @@
                 :disabled="agentStore.isLoading"
                 circle
               >
-                📎
+                <el-icon><Paperclip /></el-icon>
               </el-button>
               <input
                 ref="fileInputRef"
@@ -212,21 +212,27 @@
                 @click="handleQuickDetect('single')"
                 :disabled="agentStore.isLoading"
               >
-                📷 单图检测
+                <el-icon><Picture /></el-icon>
+                <span>单图检测</span>
               </el-button>
               <el-button
                 @click="handleQuickDetect('batch')"
                 :disabled="agentStore.isLoading"
               >
-                📁 批量/ZIP
+                <el-icon><Folder /></el-icon>
+                <span>批量/ZIP</span>
               </el-button>
               <el-button
                 @click="handleVideoDetect"
                 :disabled="agentStore.isLoading"
               >
-                🎬 视频
+                <el-icon><VideoCamera /></el-icon>
+                <span>视频</span>
               </el-button>
-              <el-button @click="openCameraDetection">📹 摄像头</el-button>
+              <el-button @click="openCameraDetection">
+                <el-icon><Camera /></el-icon>
+                <span>摄像头</span>
+              </el-button>
             </div>
 
             <!-- 发送/停止按钮 -->
@@ -296,6 +302,7 @@ import {
   toolDisplayName,
 } from "@/utils/toolChain";
 import { ElMessage } from "element-plus";
+import { Camera, Folder, Paperclip, Picture, VideoCamera } from "@element-plus/icons-vue";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
