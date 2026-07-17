@@ -1,9 +1,9 @@
 """数据看板聚合统计服务。"""
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask
 
@@ -19,26 +19,128 @@ class DashboardService:
         return round((current - previous) / previous * 100, 1)
 
     @staticmethod
+    def _resolve_window(
+        start_date: date | None = None,
+        end_date: date | None = None,
+        days: int = 30,
+    ) -> tuple[datetime, datetime]:
+        """解析统计时间窗口，返回左闭右开的 (start_at, end_at)。
+
+        显式日期优先：给定 start_date / end_date 时按自然日边界取整；
+        否则回退到「最近 days 天到当前时刻」的滚动窗口。
+        """
+        if start_date or end_date:
+            end_day = end_date or date.today()
+            # 无起始日期时，用 end_date 往前推 days 天，保持窗口长度一致。
+            start_day = start_date or (end_day - timedelta(days=days - 1))
+            start_at = datetime.combine(start_day, time.min)
+            # 右开区间：结束日期当天 23:59:59 也要包含在内。
+            end_at = datetime.combine(end_day + timedelta(days=1), time.min)
+            return start_at, end_at
+        now = datetime.now()
+        return now - timedelta(days=days), now
+
+    @classmethod
+    def _resolve_day_window(
+        cls,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        days: int = 30,
+    ) -> tuple[datetime, datetime]:
+        """按自然日对齐的时间窗口，供每日趋势分桶使用。
+
+        与 `_resolve_window` 的区别：滚动模式下也对齐到自然日边界，
+        窗口为「今天往前 days-1 天的 00:00」到「明天 00:00」，
+        保证恰好 days 个自然日桶且包含今天。
+        """
+        if start_date or end_date:
+            return cls._resolve_window(start_date, end_date, days)
+        end_day = date.today()
+        start_day = end_day - timedelta(days=days - 1)
+        return (
+            datetime.combine(start_day, time.min),
+            datetime.combine(end_day + timedelta(days=1), time.min),
+        )
+
+    @staticmethod
+    def _normalize_classes(class_names: list[str] | None) -> list[str] | None:
+        """清洗缺陷类别过滤参数，去空白、去重且保持稳定。"""
+        if not class_names:
+            return None
+        cleaned = [name.strip() for name in class_names if name and name.strip()]
+        # 去重同时保留首次出现顺序，便于返回结果稳定。
+        seen: dict[str, None] = {}
+        for name in cleaned:
+            seen.setdefault(name, None)
+        return list(seen) or None
+
+    @classmethod
+    def _apply_class_filter(
+        cls, query: "Query", class_names: list[str] | None
+    ) -> "Query":
+        """按缺陷类别过滤，命中 DetectionResult.class_name 或其中文名。"""
+        normalized = cls._normalize_classes(class_names)
+        if not normalized:
+            return query
+        return query.filter(
+            (DetectionResult.class_name.in_(normalized))
+            | (DetectionResult.class_name_cn.in_(normalized))
+        )
+
     def _statistics_for_period(
+        self,
         db: Session,
         user_id: int | None,
         start_at: datetime,
         end_at: datetime,
-    ) -> object:
-        """查询一个左闭右开时间段内的汇总数据。"""
+        class_names: list[str] | None = None,
+    ) -> dict:
+        """查询一个左闭右开时间段内的汇总数据。
+
+        未指定缺陷类别时直接聚合 DetectionTask 上的冗余统计列；
+        指定缺陷类别时改为在 DetectionResult 上聚合目标级数据，
+        图片数按任务去重计数，任务数按命中缺陷的任务去重计数。
+        """
+        normalized = self._normalize_classes(class_names)
+        if not normalized:
+            row = (
+                db.query(
+                    func.count(DetectionTask.id).label("total_tasks"),
+                    func.coalesce(func.sum(DetectionTask.total_images), 0).label(
+                        "total_images"
+                    ),
+                    func.coalesce(func.sum(DetectionTask.total_objects), 0).label(
+                        "total_objects"
+                    ),
+                    func.coalesce(
+                        func.avg(DetectionTask.total_inference_time), 0
+                    ).label("avg_inference_time"),
+                )
+                .filter(
+                    DetectionTask.created_at >= start_at,
+                    DetectionTask.created_at < end_at,
+                )
+            )
+            if user_id is not None:
+                row = row.filter(DetectionTask.user_id == user_id)
+            result = row.one()
+            return {
+                "total_tasks": int(result.total_tasks or 0),
+                "total_images": int(result.total_images or 0),
+                "total_objects": int(result.total_objects or 0),
+                "avg_inference_time": float(result.avg_inference_time or 0),
+            }
+
+        # 缺陷级聚合：以检测结果为主体，join 回任务表做时间/用户过滤。
         query = (
             db.query(
-                func.count(DetectionTask.id).label("total_tasks"),
-                func.coalesce(func.sum(DetectionTask.total_images), 0).label(
+                func.count(func.distinct(DetectionTask.id)).label("total_tasks"),
+                func.count(func.distinct(DetectionResult.image_path)).label(
                     "total_images"
                 ),
-                func.coalesce(func.sum(DetectionTask.total_objects), 0).label(
-                    "total_objects"
-                ),
-                func.coalesce(func.avg(DetectionTask.total_inference_time), 0).label(
-                    "avg_inference_time"
-                ),
+                func.count(DetectionResult.id).label("total_objects"),
             )
+            .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
             .filter(
                 DetectionTask.created_at >= start_at,
                 DetectionTask.created_at < end_at,
@@ -46,74 +148,131 @@ class DashboardService:
         )
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
-        return query.one()
-
-    def get_statistics(self, db: Session, user_id: int | None, days: int = 30) -> dict:
-        """返回任务、图片、目标、平均耗时及环比增长率。"""
-        now = datetime.now()
-        current_start = now - timedelta(days=days)
-        previous_start = current_start - timedelta(days=days)
-        current = self._statistics_for_period(db, user_id, current_start, now)
-        previous = self._statistics_for_period(
-            db, user_id, previous_start, current_start
-        )
-
-        current_tasks = int(current.total_tasks or 0)
-        current_images = int(current.total_images or 0)
-        current_objects = int(current.total_objects or 0)
-        current_time = float(current.avg_inference_time or 0)
-        previous_tasks = int(previous.total_tasks or 0)
-        previous_images = int(previous.total_images or 0)
-        previous_objects = int(previous.total_objects or 0)
-        previous_time = float(previous.avg_inference_time or 0)
-
+        query = self._apply_class_filter(query, normalized)
+        result = query.one()
         return {
-            "total_tasks": current_tasks,
-            "total_images": current_images,
-            "total_objects": current_objects,
-            "avg_inference_time": round(current_time, 2),
-            "growth": {
-                "tasks": self._calc_growth(current_tasks, previous_tasks),
-                "images": self._calc_growth(current_images, previous_images),
-                "objects": self._calc_growth(current_objects, previous_objects),
-                "inference_time": self._calc_growth(current_time, previous_time),
-            },
-            "period_days": days,
+            "total_tasks": int(result.total_tasks or 0),
+            "total_images": int(result.total_images or 0),
+            "total_objects": int(result.total_objects or 0),
+            # 缺陷级视角下平均推理耗时按目标级样本无意义，置 0 由前端隐藏。
+            "avg_inference_time": 0.0,
         }
 
-    @staticmethod
-    def get_trend(db: Session, user_id: int | None, days: int = 30) -> dict:
-        """返回包含空白日期补零的每日检测趋势。"""
-        today = date.today()
-        first_day = today - timedelta(days=days - 1)
-        start_at = datetime.combine(first_day, datetime.min.time())
+    def get_statistics(
+        self,
+        db: Session,
+        user_id: int | None,
+        days: int = 30,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        class_names: list[str] | None = None,
+    ) -> dict:
+        """返回任务、图片、目标、平均耗时及环比增长率。
+
+        支持自定义时间段（start_date/end_date）与缺陷类别过滤（class_names）。
+        环比对比的是等长的前一个时间窗口。
+        """
+        start_at, end_at = self._resolve_window(start_date, end_date, days)
+        span = end_at - start_at
+        previous_start = start_at - span
+        current = self._statistics_for_period(
+            db, user_id, start_at, end_at, class_names
+        )
+        previous = self._statistics_for_period(
+            db, user_id, previous_start, start_at, class_names
+        )
+
+        return {
+            "total_tasks": current["total_tasks"],
+            "total_images": current["total_images"],
+            "total_objects": current["total_objects"],
+            "avg_inference_time": round(current["avg_inference_time"], 2),
+            "growth": {
+                "tasks": self._calc_growth(
+                    current["total_tasks"], previous["total_tasks"]
+                ),
+                "images": self._calc_growth(
+                    current["total_images"], previous["total_images"]
+                ),
+                "objects": self._calc_growth(
+                    current["total_objects"], previous["total_objects"]
+                ),
+                "inference_time": self._calc_growth(
+                    current["avg_inference_time"], previous["avg_inference_time"]
+                ),
+            },
+            "period_days": days,
+            "start_at": start_at.isoformat(timespec="seconds"),
+            "end_at": end_at.isoformat(timespec="seconds"),
+            "class_names": self._normalize_classes(class_names) or [],
+        }
+
+    def get_trend(
+        self,
+        db: Session,
+        user_id: int | None,
+        days: int = 30,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        class_names: list[str] | None = None,
+    ) -> dict:
+        """返回包含空白日期补零的每日检测趋势。
+
+        未过滤缺陷时按任务聚合；过滤缺陷时按目标级聚合（object_count 为
+        命中目标数，image_count 为去重图片数，task_count 为去重任务数）。
+        """
+        start_at, end_at = self._resolve_day_window(start_date, end_date, days)
+        first_day = start_at.date()
+        # 桶数量按窗口天数计算（右开区间，减 1 天得到最后一个自然日）。
+        bucket_days = max(1, (end_at.date() - first_day).days)
+
         # func.date 在 PostgreSQL 返回 date、在 SQLite 返回 ISO 字符串，
         # 两端都不会触发 SQLAlchemy Date 类型处理器的兼容问题。
         day_expression = func.date(DetectionTask.created_at)
-        query = (
-            db.query(
-                day_expression.label("day"),
-                func.count(DetectionTask.id).label("task_count"),
-                func.coalesce(func.sum(DetectionTask.total_objects), 0).label(
-                    "object_count"
-                ),
-                func.coalesce(func.sum(DetectionTask.total_images), 0).label(
-                    "image_count"
-                ),
+        normalized = self._normalize_classes(class_names)
+        if not normalized:
+            query = (
+                db.query(
+                    day_expression.label("day"),
+                    func.count(DetectionTask.id).label("task_count"),
+                    func.coalesce(func.sum(DetectionTask.total_objects), 0).label(
+                        "object_count"
+                    ),
+                    func.coalesce(func.sum(DetectionTask.total_images), 0).label(
+                        "image_count"
+                    ),
+                )
+                .filter(
+                    DetectionTask.created_at >= start_at,
+                    DetectionTask.created_at < end_at,
+                )
             )
-            .filter(DetectionTask.created_at >= start_at)
-        )
+        else:
+            query = (
+                db.query(
+                    day_expression.label("day"),
+                    func.count(func.distinct(DetectionTask.id)).label("task_count"),
+                    func.count(DetectionResult.id).label("object_count"),
+                    func.count(func.distinct(DetectionResult.image_path)).label(
+                        "image_count"
+                    ),
+                )
+                .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
+                .filter(
+                    DetectionTask.created_at >= start_at,
+                    DetectionTask.created_at < end_at,
+                )
+            )
+            query = self._apply_class_filter(query, normalized)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
-        rows = (
-            query.group_by(day_expression)
-            .order_by(day_expression)
-            .all()
-        )
+        rows = query.group_by(day_expression).order_by(day_expression).all()
 
         date_map = {}
         for row in rows:
-            day_value = row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day)
+            day_value = (
+                row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day)
+            )
             date_map[day_value] = {
                 "date": day_value,
                 "task_count": int(row.task_count or 0),
@@ -122,7 +281,7 @@ class DashboardService:
             }
 
         trend = []
-        for offset in range(days):
+        for offset in range(bucket_days):
             day_value = (first_day + timedelta(days=offset)).isoformat()
             trend.append(
                 date_map.get(
@@ -135,19 +294,161 @@ class DashboardService:
                     },
                 )
             )
-        return {"trend": trend, "period_days": days}
+        return {
+            "trend": trend,
+            "period_days": days,
+            "start_at": start_at.isoformat(timespec="seconds"),
+            "end_at": end_at.isoformat(timespec="seconds"),
+            "class_names": normalized or [],
+        }
 
-    @staticmethod
-    def get_class_distribution(db: Session, user_id: int | None, days: int = 30) -> dict:
-        """返回目标类别分布。"""
-        start_at = datetime.now() - timedelta(days=days)
+    def get_defect_trend(
+        self,
+        db: Session,
+        user_id: int | None,
+        days: int = 30,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        class_names: list[str] | None = None,
+        top_n: int = 8,
+    ) -> dict:
+        """返回按缺陷类别拆分的每日趋势，用于多折线对比图。
+
+        未指定 class_names 时自动取窗口内目标数最多的 top_n 个缺陷类别。
+        返回结构：{ dates, series:[{name, name_cn, data:[...]}] }，
+        每条 series 的 data 与 dates 等长且已补零。
+        """
+        start_at, end_at = self._resolve_day_window(start_date, end_date, days)
+        first_day = start_at.date()
+        bucket_days = max(1, (end_at.date() - first_day).days)
+        normalized = self._normalize_classes(class_names)
+
+        base_filters = [
+            DetectionTask.created_at >= start_at,
+            DetectionTask.created_at < end_at,
+        ]
+
+        # 决定要展示哪些缺陷类别。
+        if normalized:
+            selected_classes = normalized
+        else:
+            top_query = (
+                db.query(
+                    DetectionResult.class_name,
+                    func.count(DetectionResult.id).label("count"),
+                )
+                .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
+                .filter(*base_filters)
+            )
+            if user_id is not None:
+                top_query = top_query.filter(DetectionTask.user_id == user_id)
+            top_rows = (
+                top_query.group_by(DetectionResult.class_name)
+                .order_by(func.count(DetectionResult.id).desc())
+                .limit(max(1, top_n))
+                .all()
+            )
+            selected_classes = [row.class_name for row in top_rows]
+
+        dates = [
+            (first_day + timedelta(days=offset)).isoformat()
+            for offset in range(bucket_days)
+        ]
+        if not selected_classes:
+            return {
+                "dates": dates,
+                "series": [],
+                "period_days": days,
+                "start_at": start_at.isoformat(timespec="seconds"),
+                "end_at": end_at.isoformat(timespec="seconds"),
+            }
+
+        day_expression = func.date(DetectionTask.created_at)
         query = (
             db.query(
-                DetectionResult.class_name,
+                day_expression.label("day"),
+                DetectionResult.class_name.label("class_name"),
                 func.count(DetectionResult.id).label("count"),
             )
             .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
-            .filter(DetectionTask.created_at >= start_at)
+            .filter(*base_filters)
+        )
+        query = self._apply_class_filter(query, selected_classes)
+        if user_id is not None:
+            query = query.filter(DetectionTask.user_id == user_id)
+        rows = (
+            query.group_by(day_expression, DetectionResult.class_name)
+            .order_by(day_expression)
+            .all()
+        )
+
+        # class_name -> {date -> count}
+        counts: dict[str, dict[str, int]] = {name: {} for name in selected_classes}
+        for row in rows:
+            day_value = (
+                row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day)
+            )
+            counts.setdefault(row.class_name, {})[day_value] = int(row.count or 0)
+
+        cn_map = self._class_name_cn_map(db, selected_classes)
+        series = []
+        for name in selected_classes:
+            day_counts = counts.get(name, {})
+            series.append(
+                {
+                    "name": name,
+                    "name_cn": cn_map.get(name, name),
+                    "data": [day_counts.get(day, 0) for day in dates],
+                    "total": sum(day_counts.values()),
+                }
+            )
+        return {
+            "dates": dates,
+            "series": series,
+            "period_days": days,
+            "start_at": start_at.isoformat(timespec="seconds"),
+            "end_at": end_at.isoformat(timespec="seconds"),
+        }
+
+    @staticmethod
+    def _class_name_cn_map(db: Session, class_names: list[str]) -> dict[str, str]:
+        """查询缺陷类别对应的中文名映射（取最近出现的一条）。"""
+        if not class_names:
+            return {}
+        rows = (
+            db.query(DetectionResult.class_name, DetectionResult.class_name_cn)
+            .filter(DetectionResult.class_name.in_(class_names))
+            .filter(DetectionResult.class_name_cn.isnot(None))
+            .distinct()
+            .all()
+        )
+        mapping: dict[str, str] = {}
+        for class_name, class_name_cn in rows:
+            if class_name_cn:
+                mapping.setdefault(class_name, class_name_cn)
+        return mapping
+
+    def get_defect_options(
+        self,
+        db: Session,
+        user_id: int | None,
+        days: int = 30,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
+        """返回时间窗口内实际出现过的缺陷类别，用于前端下拉筛选。"""
+        start_at, end_at = self._resolve_window(start_date, end_date, days)
+        query = (
+            db.query(
+                DetectionResult.class_name,
+                func.max(DetectionResult.class_name_cn).label("class_name_cn"),
+                func.count(DetectionResult.id).label("count"),
+            )
+            .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
+            .filter(
+                DetectionTask.created_at >= start_at,
+                DetectionTask.created_at < end_at,
+            )
         )
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
@@ -157,23 +458,81 @@ class DashboardService:
             .all()
         )
         return {
-            "distribution": [
-                {"name": row.class_name, "value": int(row.count)} for row in rows
-            ],
-            "period_days": days,
+            "options": [
+                {
+                    "name": row.class_name,
+                    "name_cn": row.class_name_cn or row.class_name,
+                    "count": int(row.count or 0),
+                }
+                for row in rows
+            ]
         }
 
-    @staticmethod
-    def get_scene_distribution(db: Session, user_id: int | None, days: int = 30) -> dict:
+    def get_class_distribution(
+        self,
+        db: Session,
+        user_id: int | None,
+        days: int = 30,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        class_names: list[str] | None = None,
+    ) -> dict:
+        """返回目标类别分布。"""
+        start_at, end_at = self._resolve_window(start_date, end_date, days)
+        query = (
+            db.query(
+                DetectionResult.class_name,
+                func.max(DetectionResult.class_name_cn).label("class_name_cn"),
+                func.count(DetectionResult.id).label("count"),
+            )
+            .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
+            .filter(
+                DetectionTask.created_at >= start_at,
+                DetectionTask.created_at < end_at,
+            )
+        )
+        query = self._apply_class_filter(query, class_names)
+        if user_id is not None:
+            query = query.filter(DetectionTask.user_id == user_id)
+        rows = (
+            query.group_by(DetectionResult.class_name)
+            .order_by(func.count(DetectionResult.id).desc())
+            .all()
+        )
+        return {
+            "distribution": [
+                {
+                    "name": row.class_name,
+                    "name_cn": row.class_name_cn or row.class_name,
+                    "value": int(row.count),
+                }
+                for row in rows
+            ],
+            "period_days": days,
+            "start_at": start_at.isoformat(timespec="seconds"),
+            "end_at": end_at.isoformat(timespec="seconds"),
+        }
+
+    def get_scene_distribution(
+        self,
+        db: Session,
+        user_id: int | None,
+        days: int = 30,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
         """返回检测场景任务分布。"""
-        start_at = datetime.now() - timedelta(days=days)
+        start_at, end_at = self._resolve_window(start_date, end_date, days)
         query = (
             db.query(
                 DetectionScene.display_name,
                 func.count(DetectionTask.id).label("count"),
             )
             .join(DetectionScene, DetectionTask.scene_id == DetectionScene.id)
-            .filter(DetectionTask.created_at >= start_at)
+            .filter(
+                DetectionTask.created_at >= start_at,
+                DetectionTask.created_at < end_at,
+            )
         )
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
@@ -187,18 +546,29 @@ class DashboardService:
                 {"name": row.display_name, "value": int(row.count)} for row in rows
             ],
             "period_days": days,
+            "start_at": start_at.isoformat(timespec="seconds"),
+            "end_at": end_at.isoformat(timespec="seconds"),
         }
 
-    @staticmethod
-    def get_type_distribution(db: Session, user_id: int | None, days: int = 30) -> dict:
+    def get_type_distribution(
+        self,
+        db: Session,
+        user_id: int | None,
+        days: int = 30,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
         """返回检测任务类型分布。"""
-        start_at = datetime.now() - timedelta(days=days)
+        start_at, end_at = self._resolve_window(start_date, end_date, days)
         query = (
             db.query(
                 DetectionTask.task_type,
                 func.count(DetectionTask.id).label("count"),
             )
-            .filter(DetectionTask.created_at >= start_at)
+            .filter(
+                DetectionTask.created_at >= start_at,
+                DetectionTask.created_at < end_at,
+            )
         )
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
@@ -227,6 +597,8 @@ class DashboardService:
                 for name, value in merged_counts.items()
             ],
             "period_days": days,
+            "start_at": start_at.isoformat(timespec="seconds"),
+            "end_at": end_at.isoformat(timespec="seconds"),
         }
 
 

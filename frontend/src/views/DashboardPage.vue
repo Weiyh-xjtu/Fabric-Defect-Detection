@@ -3,14 +3,54 @@
     <div class="page-header">
       <div>
         <h2>数据看板</h2>
-        <p>汇总当前账号的检测任务与目标分布</p>
+        <p>灵活查看全厂检测任务、缺陷类别与趋势</p>
       </div>
-      <el-radio-group v-model="periodDays" @change="loadAllData">
-        <el-radio-button :value="7">近 7 天</el-radio-button>
-        <el-radio-button :value="30">近 30 天</el-radio-button>
-        <el-radio-button :value="90">近 90 天</el-radio-button>
-      </el-radio-group>
     </div>
+
+    <el-card shadow="never" class="filter-bar">
+      <div class="filter-row">
+        <div class="filter-item">
+          <span class="filter-label">时间</span>
+          <el-radio-group v-model="preset" @change="handlePresetChange">
+            <el-radio-button :value="7">近 7 天</el-radio-button>
+            <el-radio-button :value="30">近 30 天</el-radio-button>
+            <el-radio-button :value="90">近 90 天</el-radio-button>
+            <el-radio-button value="custom">自定义</el-radio-button>
+          </el-radio-group>
+          <el-date-picker
+            v-if="preset === 'custom'"
+            v-model="dateRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            :clearable="false"
+            @change="handleDateRangeChange"
+          />
+        </div>
+        <div class="filter-item">
+          <span class="filter-label">缺陷</span>
+          <el-select
+            v-model="selectedDefects"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="全部缺陷"
+            class="defect-select"
+            @change="loadAllData"
+          >
+            <el-option
+              v-for="option in defectOptions"
+              :key="option.name"
+              :label="`${option.name_cn}（${option.count}）`"
+              :value="option.name"
+            />
+          </el-select>
+        </div>
+      </div>
+    </el-card>
 
     <el-row :gutter="16" class="stat-cards">
       <el-col
@@ -45,7 +85,11 @@
     <el-row :gutter="16" class="chart-row">
       <el-col :xs="24" :xl="16">
         <el-card shadow="hover">
-          <template #header>每日检测趋势</template>
+          <template #header>
+            <div class="card-header">
+              <span>{{ defectFilterActive ? '所选缺陷每日趋势' : '每日检测趋势' }}</span>
+            </div>
+          </template>
           <div ref="trendChartRef" class="chart-container" />
         </el-card>
       </el-col>
@@ -53,6 +97,22 @@
         <el-card shadow="hover">
           <template #header>类别分布</template>
           <div ref="classChartRef" class="chart-container" />
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" class="chart-row">
+      <el-col :xs="24">
+        <el-card shadow="hover">
+          <template #header>
+            <div class="card-header">
+              <span>缺陷类别趋势对比</span>
+              <span class="card-hint">
+                {{ defectFilterActive ? '按所选缺陷拆分' : '默认展示目标数最多的类别' }}
+              </span>
+            </div>
+          </template>
+          <div ref="defectTrendChartRef" class="chart-container chart-container--tall" />
         </el-card>
       </el-col>
     </el-row>
@@ -77,6 +137,8 @@
 <script setup>
 import {
   getClassDistribution,
+  getDefectOptions,
+  getDefectTrend,
   getSceneDistribution,
   getStatistics,
   getTrend,
@@ -86,7 +148,10 @@ import { Aim, Document, PictureFilled, Timer } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-const periodDays = ref(30)
+const preset = ref(30)
+const dateRange = ref(null)
+const selectedDefects = ref([])
+const defectOptions = ref([])
 const loading = ref(false)
 const stats = ref({
   total_tasks: 0,
@@ -98,12 +163,31 @@ const stats = ref({
 
 const trendChartRef = ref(null)
 const classChartRef = ref(null)
+const defectTrendChartRef = ref(null)
 const sceneChartRef = ref(null)
 const typeChartRef = ref(null)
 let trendChart = null
 let classChart = null
+let defectTrendChart = null
 let sceneChart = null
 let typeChart = null
+
+const defectFilterActive = computed(() => selectedDefects.value.length > 0)
+
+/** 把当前筛选状态转成 API 参数：自定义区间优先，否则用天数预设。 */
+function currentQuery() {
+  const query = { classNames: selectedDefects.value }
+  if (preset.value === 'custom' && dateRange.value?.length === 2) {
+    query.start = dateRange.value[0]
+    query.end = dateRange.value[1]
+  } else if (preset.value !== 'custom') {
+    query.days = preset.value
+  } else {
+    // 自定义但尚未选日期时，回退到 30 天避免空查询。
+    query.days = 30
+  }
+  return query
+}
 
 const statCards = computed(() => [
   {
@@ -127,7 +211,7 @@ const statCards = computed(() => [
   {
     key: 'total_objects',
     growthKey: 'objects',
-    label: '检测目标',
+    label: defectFilterActive.value ? '缺陷目标' : '检测目标',
     icon: Aim,
     color: '#e6a23c',
     background: '#fdf6ec',
@@ -178,19 +262,49 @@ function emptyGraphic(isEmpty) {
     : []
 }
 
+function handlePresetChange(value) {
+  if (value === 'custom') {
+    // 切到自定义但未选日期时不立即请求，等用户选完区间。
+    if (dateRange.value?.length === 2) loadAllData()
+    return
+  }
+  loadAllData()
+}
+
+function handleDateRangeChange() {
+  if (dateRange.value?.length === 2) loadAllData()
+}
+
+/** 拉取缺陷下拉选项（不受已选缺陷影响，跟随时间窗口）。 */
+async function loadDefectOptions(query) {
+  try {
+    const { classNames, ...rest } = query
+    const result = await getDefectOptions(rest)
+    defectOptions.value = result.options || []
+    // 时间窗口变化后，清理不再存在的已选缺陷。
+    const available = new Set(defectOptions.value.map((item) => item.name))
+    selectedDefects.value = selectedDefects.value.filter((name) => available.has(name))
+  } catch (error) {
+    console.error('[缺陷选项加载失败]', error)
+  }
+}
+
 async function loadAllData() {
   loading.value = true
   try {
-    const days = periodDays.value
-    const [statistics, trend, classDist, sceneDist, typeDist] = await Promise.all([
-      getStatistics(days),
-      getTrend(days),
-      getClassDistribution(days),
-      getSceneDistribution(days),
-      getTypeDistribution(days),
-    ])
+    const query = currentQuery()
+    const [statistics, trend, defectTrend, classDist, sceneDist, typeDist] =
+      await Promise.all([
+        getStatistics(query),
+        getTrend(query),
+        getDefectTrend(query),
+        getClassDistribution(query),
+        getSceneDistribution(query),
+        getTypeDistribution(query),
+      ])
     stats.value = statistics
     renderTrendChart(trend.trend || [])
+    renderDefectTrendChart(defectTrend)
     renderClassChart(classDist.distribution || [])
     renderSceneChart(sceneDist.distribution || [])
     renderTypeChart(typeDist.distribution || [])
@@ -204,8 +318,9 @@ async function loadAllData() {
 function renderTrendChart(trend) {
   trendChart ||= echarts.init(trendChartRef.value)
   trendChart.setOption({
+    graphic: emptyGraphic(trend.length === 0),
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-    legend: { data: ['检测任务', '检测目标'], bottom: 0 },
+    legend: { data: ['检测任务', defectFilterActive.value ? '缺陷目标' : '检测目标'], bottom: 0 },
     grid: { left: 50, right: 50, top: 24, bottom: 44 },
     xAxis: {
       type: 'category',
@@ -231,7 +346,7 @@ function renderTrendChart(trend) {
         },
       },
       {
-        name: '检测目标',
+        name: defectFilterActive.value ? '缺陷目标' : '检测目标',
         type: 'line',
         smooth: true,
         yAxisIndex: 1,
@@ -239,6 +354,37 @@ function renderTrendChart(trend) {
         itemStyle: { color: '#67c23a' },
       },
     ],
+  }, true)
+}
+
+function renderDefectTrendChart(payload) {
+  const dates = payload?.dates || []
+  const series = payload?.series || []
+  defectTrendChart ||= echarts.init(defectTrendChartRef.value)
+  defectTrendChart.setOption({
+    graphic: emptyGraphic(series.length === 0),
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: {
+      type: 'scroll',
+      bottom: 0,
+      data: series.map((item) => item.name_cn),
+    },
+    grid: { left: 50, right: 30, top: 24, bottom: 48 },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: dates.map((date) => date.slice(5)),
+      axisLabel: { fontSize: 11 },
+    },
+    yAxis: { type: 'value', name: '缺陷数', minInterval: 1 },
+    series: series.map((item) => ({
+      name: item.name_cn,
+      type: 'line',
+      smooth: true,
+      showSymbol: false,
+      emphasis: { focus: 'series' },
+      data: item.data,
+    })),
   }, true)
 }
 
@@ -252,7 +398,7 @@ function renderClassChart(distribution) {
       type: 'pie',
       radius: '65%',
       center: ['38%', '50%'],
-      data: distribution,
+      data: distribution.map((item) => ({ name: item.name_cn || item.name, value: item.value })),
       label: { formatter: '{b}\n{d}%' },
     }],
   }, true)
@@ -302,12 +448,14 @@ function renderTypeChart(distribution) {
 function handleResize() {
   trendChart?.resize()
   classChart?.resize()
+  defectTrendChart?.resize()
   sceneChart?.resize()
   typeChart?.resize()
 }
 
-onMounted(() => {
-  loadAllData()
+onMounted(async () => {
+  await loadDefectOptions(currentQuery())
+  await loadAllData()
   window.addEventListener('resize', handleResize)
 })
 
@@ -315,6 +463,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
   trendChart?.dispose()
   classChart?.dispose()
+  defectTrendChart?.dispose()
   sceneChart?.dispose()
   typeChart?.dispose()
 })
@@ -327,10 +476,33 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   h2 { margin: 0 0 4px; }
   p { margin: 0; color: $text-secondary; font-size: 14px; }
 }
+.filter-bar {
+  margin-bottom: 16px;
+  :deep(.el-card__body) { padding: 16px 20px; }
+}
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px;
+}
+.filter-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.filter-label { color: $text-secondary; font-size: 14px; white-space: nowrap; }
+.defect-select { min-width: 260px; }
+.card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.card-hint { color: $text-secondary; font-size: 12px; }
 .stat-cards { row-gap: 16px; margin-bottom: 16px; }
 .stat-card :deep(.el-card__body) {
   display: flex;
@@ -358,7 +530,11 @@ onBeforeUnmount(() => {
 .growth-flat { color: $text-secondary; }
 .chart-row { row-gap: 16px; margin-bottom: 16px; }
 .chart-container { width: 100%; height: 320px; }
+.chart-container--tall { height: 360px; }
 @media (max-width: 768px) {
   .page-header { align-items: flex-start; flex-direction: column; }
+  .filter-row { gap: 16px; }
+  .filter-item { width: 100%; }
+  .defect-select { flex: 1; min-width: 0; }
 }
 </style>

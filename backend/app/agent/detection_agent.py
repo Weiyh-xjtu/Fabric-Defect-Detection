@@ -20,7 +20,7 @@ import contextvars
 import copy
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import AsyncGenerator
 
 from langchain.agents import AgentExecutor, create_openai_tools_agent
@@ -39,6 +39,7 @@ from app.core.rbac import (
     user_has_permission,
 )
 from app.database.session import SessionLocal
+from app.services.dashboard_service import dashboard_service
 from app.services.detection_service import detection_service
 from app.services.user_service import user_service
 from app.agent.memory import conversation_memory
@@ -499,26 +500,99 @@ def query_system_roles() -> str:
     finally:
         db.close()
 
+def _parse_tool_date(value: str) -> date | None:
+    """把 LLM 传入的日期字符串解析为 date，无法解析时返回 None。
+
+    仅接受 YYYY-MM-DD / YYYY/MM/DD 两种常见格式，避免歧义。
+    """
+    if not value or not value.strip():
+        return None
+    text = value.strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _resolve_defect_filter(defect: str) -> list[str] | None:
+    """把单个缺陷类别参数规整成 dashboard_service 需要的过滤列表。"""
+    if not defect or not defect.strip():
+        return None
+    return [defect.strip()]
+
+
 @tool
 def query_detection_statistics(
     days: int = 7,
     task_type: str = "all",
     today: bool = False,
+    start_date: str = "",
+    end_date: str = "",
+    defect: str = "",
 ) -> str:
-    """查询全厂检测任务统计。
+    """查询全厂检测任务统计，支持自定义时间段与按缺陷类别过滤。
 
     Args:
-        days: 最近天数，1-365；当 today=true 时忽略该参数。
+        days: 最近天数，1-365；当 today=true 或提供 start_date/end_date 时忽略。
         task_type: all、single、batch 或 video。batch 同时包含历史 zip/folder 类型。
+            指定 defect 时该参数不生效（缺陷统计基于目标级数据）。
         today: 是否严格按今天 00:00 至当前时间统计。
+        start_date: 自定义起始日期（含），格式 YYYY-MM-DD；优先于 days/today。
+        end_date: 自定义结束日期（含），格式 YYYY-MM-DD；默认今天。
+        defect: 缺陷类别（如 "hole" 或中文名 "破洞"）。给定后只统计该缺陷，
+            返回命中该缺陷的任务数、图片数与目标（缺陷）总数。
 
     Returns:
-        JSON 字符串，包含筛选条件、任务数、状态分布、图片数、目标数、
-        平均推理耗时和各任务类型数量。摄像头等无法统计的类型会返回 error，
-        调用方应如实说明当前无法查询，不能用全部任务统计代替。
+        JSON 字符串。未过滤缺陷时包含任务数、状态分布、图片数、目标数、
+        平均推理耗时和各任务类型数量；过滤缺陷时包含该缺陷的任务/图片/目标数。
+        摄像头等无法统计的类型会返回 error，调用方应如实说明无法查询。
     """
     if error := _tool_permission_error(DASHBOARD_READ_ANY):
         return error
+
+    parsed_start = _parse_tool_date(start_date)
+    parsed_end = _parse_tool_date(end_date)
+    if parsed_start and parsed_end and parsed_start > parsed_end:
+        return json.dumps(
+            {"error": "开始日期不能晚于结束日期"}, ensure_ascii=False
+        )
+    days = max(1, min(days, 365))
+    defect_filter = _resolve_defect_filter(defect)
+
+    # 缺陷维度统计：委托 dashboard_service 做目标级聚合，保持与看板一致。
+    if defect_filter:
+        db = SessionLocal()
+        try:
+            if parsed_start or parsed_end:
+                result = dashboard_service.get_statistics(
+                    db, None, days, parsed_start, parsed_end, defect_filter
+                )
+            elif today:
+                today_date = datetime.now().date()
+                result = dashboard_service.get_statistics(
+                    db, None, days, today_date, today_date, defect_filter
+                )
+            else:
+                result = dashboard_service.get_statistics(
+                    db, None, days, None, None, defect_filter
+                )
+            return json.dumps(
+                {
+                    "defect": defect.strip(),
+                    "from": result.get("start_at"),
+                    "to": result.get("end_at"),
+                    "matched_tasks": result.get("total_tasks", 0),
+                    "matched_images": result.get("total_images", 0),
+                    "defect_count": result.get("total_objects", 0),
+                    "growth": result.get("growth", {}),
+                    "note": "以上为该缺陷类别的目标级统计",
+                },
+                ensure_ascii=False,
+            )
+        finally:
+            db.close()
 
     normalized_type = (task_type or "all").strip().lower()
     task_type_filters = {
@@ -544,14 +618,26 @@ def query_detection_statistics(
             ensure_ascii=False,
         )
 
-    days = max(1, min(days, 365))
     now = datetime.now()
-    since = datetime.combine(now.date(), datetime.min.time()) if today else now - timedelta(days=days)
+    if parsed_start or parsed_end:
+        end_day = parsed_end or now.date()
+        start_day = parsed_start or (end_day - timedelta(days=days - 1))
+        since = datetime.combine(start_day, datetime.min.time())
+        until = datetime.combine(end_day + timedelta(days=1), datetime.min.time())
+        period_label = "custom_range"
+    elif today:
+        since = datetime.combine(now.date(), datetime.min.time())
+        until = now
+        period_label = "today"
+    else:
+        since = now - timedelta(days=days)
+        until = now
+        period_label = "recent_days"
     db = SessionLocal()
     try:
         time_base = db.query(DetectionTask).filter(
             DetectionTask.created_at >= since,
-            DetectionTask.created_at <= now,
+            DetectionTask.created_at < until,
         )
         type_rows = time_base.with_entities(
             DetectionTask.task_type,
@@ -590,10 +676,10 @@ def query_detection_statistics(
 
         return json.dumps(
             {
-                "period": "today" if today else "recent_days",
-                "days": 1 if today else days,
+                "period": period_label,
+                "days": 1 if period_label == "today" else days,
                 "from": since.isoformat(timespec="seconds"),
-                "to": now.isoformat(timespec="seconds"),
+                "to": until.isoformat(timespec="seconds"),
                 "task_type": normalized_type,
                 "total_tasks": total_tasks,
                 "completed_tasks": completed,
@@ -611,50 +697,66 @@ def query_detection_statistics(
 
 
 @tool
-def query_detection_trends(days: int = 7) -> str:
-    """查询全厂近期每日检测趋势与缺陷类别分布。"""
+def query_detection_trends(
+    days: int = 7,
+    start_date: str = "",
+    end_date: str = "",
+    defect: str = "",
+) -> str:
+    """查询全厂检测趋势与缺陷类别分布，支持自定义时间段与单缺陷趋势。
+
+    Args:
+        days: 最近天数，1-365；提供 start_date/end_date 时忽略。
+        start_date: 自定义起始日期（含），格式 YYYY-MM-DD；优先于 days。
+        end_date: 自定义结束日期（含），格式 YYYY-MM-DD；默认今天。
+        defect: 缺陷类别（如 "hole" 或中文名 "破洞"）。给定后 daily 返回该缺陷
+            每天的检测数量趋势，用于回答“某缺陷在某时间段的变化趋势”。
+
+    Returns:
+        JSON 字符串，包含 daily 每日趋势与 class_distribution 缺陷类别分布。
+    """
     if error := _tool_permission_error(DASHBOARD_READ_ANY):
         return error
+
+    parsed_start = _parse_tool_date(start_date)
+    parsed_end = _parse_tool_date(end_date)
+    if parsed_start and parsed_end and parsed_start > parsed_end:
+        return json.dumps(
+            {"error": "开始日期不能晚于结束日期"}, ensure_ascii=False
+        )
     days = max(1, min(days, 365))
-    since = datetime.now() - timedelta(days=days)
+    defect_filter = _resolve_defect_filter(defect)
+
     db = SessionLocal()
     try:
-        daily_rows = (
-            db.query(
-                func.date(DetectionTask.created_at).label("date"),
-                func.count(DetectionTask.id),
-                func.coalesce(func.sum(DetectionTask.total_objects), 0),
-            )
-            .filter(
-                DetectionTask.created_at >= since,
-            )
-            .group_by(func.date(DetectionTask.created_at))
-            .order_by(func.date(DetectionTask.created_at))
-            .all()
+        trend = dashboard_service.get_trend(
+            db, None, days, parsed_start, parsed_end, defect_filter
         )
-        class_rows = (
-            db.query(DetectionResult.class_name, func.count(DetectionResult.id))
-            .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
-            .filter(
-                DetectionTask.created_at >= since,
-            )
-            .group_by(DetectionResult.class_name)
-            .order_by(func.count(DetectionResult.id).desc())
-            .all()
+        class_dist = dashboard_service.get_class_distribution(
+            db, None, days, parsed_start, parsed_end, defect_filter
         )
-        return json.dumps(
+        daily = [
             {
-                "days": days,
-                "daily": [
-                    {"date": str(row[0]), "tasks": int(row[1]), "objects": int(row[2])}
-                    for row in daily_rows
-                ],
-                "class_distribution": [
-                    {"class_name": row[0], "count": int(row[1])} for row in class_rows
-                ],
-            },
-            ensure_ascii=False,
-        )
+                "date": item["date"],
+                "tasks": item["task_count"],
+                "objects": item["object_count"],
+            }
+            for item in trend["trend"]
+        ]
+        payload = {
+            "days": days,
+            "from": trend.get("start_at"),
+            "to": trend.get("end_at"),
+            "daily": daily,
+            "class_distribution": [
+                {"class_name": item["name"], "count": item["value"]}
+                for item in class_dist["distribution"]
+            ],
+        }
+        if defect_filter:
+            payload["defect"] = defect.strip()
+            payload["note"] = "daily.objects 为该缺陷每日检测数量"
+        return json.dumps(payload, ensure_ascii=False)
     finally:
         db.close()
 
