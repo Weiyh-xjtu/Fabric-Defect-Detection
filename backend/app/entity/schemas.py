@@ -342,6 +342,7 @@ class ModelExportResponse(BaseModel):
     file_size: Optional[int] = None
     evaluation: dict
     is_default: bool
+    is_global_default: bool = False
     message: str
 
 
@@ -354,6 +355,7 @@ class ModelVersionBrief(BaseModel):
     model_type: str
     map50: Optional[float] = None
     is_default: bool
+    is_global_default: bool = False
     created_at: datetime
 
     class Config:
@@ -380,6 +382,9 @@ class ModelVersionResponse(BaseModel):
     description: Optional[str] = None
     file_size: Optional[int] = None
     is_default: bool
+    is_global_default: bool = False
+    file_exists: bool = False
+    detection_task_count: int = 0
     created_at: datetime
 
     class Config:
@@ -393,6 +398,13 @@ class ModelVersionCreate(BaseModel):
     model_name: str = Field(..., description="模型名称")
     model_type: str = Field(default="yolo11n", description="模型类型")
     description: Optional[str] = None
+
+
+class ModelEvaluationRequest(BaseModel):
+    """从模型管理页启动版本评估。"""
+    split: Literal["train", "val", "test"] = "val"
+    conf: float = Field(default=0.001, ge=0, le=1)
+    iou: float = Field(default=0.6, ge=0, le=1)
 
 
 # ══════════════════════════════════════════════════════════════

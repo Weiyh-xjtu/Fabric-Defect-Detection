@@ -33,7 +33,6 @@ import cv2
 from sqlalchemy.orm import Session
 from ultralytics import YOLO
 
-from app.config.settings import settings
 from app.core.logger import get_logger
 from app.database.session import SessionLocal
 from app.entity.db_models import (
@@ -43,6 +42,7 @@ from app.entity.db_models import (
     ModelVersion,
 )
 from app.storage.minio_client import MinIOClient
+from app.services.model_management_service import model_management_service
 
 logger = get_logger(__name__)
 
@@ -65,78 +65,68 @@ class DetectionService:
 
     @staticmethod
     def _get_default_model_path() -> str:
-        """
-        获取默认模型权重路径
-
-        查找顺序：
-          1. models/ 目录下 is_default=True 的模型
-          2. runs/train/ 目录下最新训练产出的 best.pt
-          3. 回退到预训练模型 yolov11n.pt
-        """
+        """获取全局启用模型的权重路径。"""
         db = SessionLocal()
         try:
-            # 查找默认模型版本
-            default_model = (
-                db.query(ModelVersion).filter(ModelVersion.is_default == True).first()
-            )
-            if default_model and os.path.exists(default_model.model_path):
-                return default_model.model_path
-
-            # 回退：查找最新训练的 best.pt
-            from app.entity.db_models import TrainingTask
-
-            latest_task = (
-                db.query(TrainingTask)
-                .filter(TrainingTask.status == "completed")
-                .order_by(TrainingTask.completed_at.desc())
-                .first()
-            )
-            if latest_task:
-                weights_path = os.path.join(
-                    os.getcwd(),
-                    settings.TRAIN_OUTPUT_DIR,
-                    f"task_{latest_task.task_uuid}",
-                    "weights",
-                    "best.pt",
-                )
-                if os.path.exists(weights_path):
-                    return weights_path
+            model_version = model_management_service.get_global_model_version(db)
+            if model_version is None:
+                raise RuntimeError("尚未配置可用的全局检测模型")
+            return os.path.abspath(model_version.model_path)
         finally:
             db.close()
 
-        # 最终回退：预训练模型
-        return "../bestali.pt"
-
     @staticmethod
     def _get_model(scene_id: int = None) -> YOLO:
-        """
-        加载 YOLO 模型
+        """加载全局启用模型；scene_id 仅为兼容旧调用方保留。"""
+        del scene_id
+        db = SessionLocal()
+        try:
+            model_version = model_management_service.get_global_model_version(db)
+            if model_version is None:
+                raise RuntimeError("尚未配置可用的全局检测模型")
+            return DetectionService._load_model_version(model_version)
+        finally:
+            db.close()
 
-        优先使用场景关联的默认模型，否则使用全局默认模型
-        """
-        model_path = None
+    @staticmethod
+    def _get_model_by_version_id(model_version_id: int) -> YOLO:
+        """加载任务已经锁定的模型版本，避免切换影响运行中的任务。"""
+        db = SessionLocal()
+        try:
+            model_version = db.query(ModelVersion).filter(
+                ModelVersion.id == model_version_id
+            ).first()
+            if model_version is None:
+                raise RuntimeError(f"检测任务关联的模型版本不存在: {model_version_id}")
+            model_management_service._existing_model_path(model_version)
+            return DetectionService._load_model_version(model_version)
+        finally:
+            db.close()
 
-        if scene_id:
-            db = SessionLocal()
-            try:
-                default_model = (
-                    db.query(ModelVersion)
-                    .filter(
-                        ModelVersion.scene_id == scene_id,
-                        ModelVersion.is_default == True,
-                    )
-                    .first()
-                )
-                if default_model and os.path.exists(default_model.model_path):
-                    model_path = default_model.model_path
-            finally:
-                db.close()
+    @staticmethod
+    def _load_model_version(model_version: ModelVersion) -> YOLO:
+        """加载权重并在模型实例上附加持久化所需的版本元数据。"""
+        model_path = os.path.abspath(model_version.model_path)
+        logger.info(
+            "加载全局检测模型: id=%d, version=%s, path=%s",
+            model_version.id,
+            model_version.version,
+            model_path,
+        )
+        model = YOLO(model_path)
+        model._platform_model_version_id = model_version.id
+        model._platform_model_version = model_version.version
+        model._platform_scene_id = model_version.scene_id
+        return model
 
-        if not model_path:
-            model_path = DetectionService._get_default_model_path()
-
-        logger.info("加载检测模型: %s", model_path)
-        return YOLO(model_path)
+    @staticmethod
+    def _model_context(model: YOLO, fallback_scene_id: int | None) -> tuple[int | None, int | None, str | None]:
+        """读取模型实例携带的全局版本信息，并兼容测试替身。"""
+        return (
+            getattr(model, "_platform_scene_id", None) or fallback_scene_id,
+            getattr(model, "_platform_model_version_id", None),
+            getattr(model, "_platform_model_version", None),
+        )
 
     @staticmethod
     def _save_task_and_results(
@@ -150,6 +140,7 @@ class DetectionService:
         inference_time: float,
         conf: float,
         iou: float,
+        model_version_id: int | None = None,
     ) -> dict:
         """
         保存检测任务和结果到数据库 + MinIO
@@ -161,6 +152,7 @@ class DetectionService:
         task = DetectionTask(
             user_id=user_id,
             scene_id=scene_id,
+            model_version_id=model_version_id,
             task_type=task_type,
             status="completed",
             total_images=1,
@@ -272,8 +264,10 @@ class DetectionService:
         """
         db = SessionLocal()
         try:
-            # ── 加载模型 ──
             model = self._get_model(scene_id)
+            selected_scene_id, model_version_id, model_version = self._model_context(
+                model, scene_id
+            )
 
             # ── YOLO 推理 ──
             results = model.predict(
@@ -331,6 +325,7 @@ class DetectionService:
             task_id = None
             annotated_image_url = None
             if user_id:
+                scene_id = selected_scene_id
                 if not scene_id:
                     default_scene = db.query(DetectionScene).first()
                     scene_id = default_scene.id if default_scene else None
@@ -349,6 +344,7 @@ class DetectionService:
                         inference_time=float(result.speed.get("inference", 0)),
                         conf=conf,
                         iou=iou,
+                        model_version_id=model_version_id,
                     )
                     task_id = save_result["task_id"]
                     annotated_image_url = save_result.get("annotated_image_url")
@@ -370,6 +366,8 @@ class DetectionService:
                 "annotated_image_url": annotated_image_url,
                 "inference_time": round(float(result.speed.get("inference", 0)), 2),
                 "task_id": task_id,
+                "model_version_id": model_version_id,
+                "model_version": model_version,
             }
 
         except Exception as e:
@@ -404,6 +402,9 @@ class DetectionService:
         db = SessionLocal()
         try:
             model = self._get_model(scene_id)
+            selected_scene_id, model_version_id, model_version = self._model_context(
+                model, scene_id
+            )
 
             # ── 推理所有图片（与是否写库解耦，保证结果始终返回）──
             all_detections = []
@@ -475,6 +476,7 @@ class DetectionService:
             task_id = None
             url_by_image = {}
             if user_id:
+                scene_id = selected_scene_id
                 if not scene_id:
                     default_scene = db.query(DetectionScene).first()
                     scene_id = default_scene.id if default_scene else None
@@ -483,6 +485,7 @@ class DetectionService:
                     task = DetectionTask(
                         user_id=user_id,
                         scene_id=scene_id,
+                        model_version_id=model_version_id,
                         task_type="batch",
                         status="processing",
                         total_images=len(image_paths),
@@ -542,6 +545,8 @@ class DetectionService:
                 "total_inference_time": round(total_inference_time, 2),
                 "detections": all_detections,
                 "annotated_images": annotated_images,
+                "model_version_id": model_version_id,
+                "model_version": model_version,
             }
 
         except Exception as e:
@@ -676,9 +681,22 @@ class DetectionService:
             }
         """
         db = SessionLocal()
+        task = None
         try:
-            # ── 加载模型 ──
-            model = self._get_model(scene_id)
+            if task_id:
+                task = db.query(DetectionTask).filter(
+                    DetectionTask.id == task_id
+                ).first()
+
+            # 已创建的视频任务锁定提交时选择的模型，防止处理中途切换版本。
+            if task and task.model_version_id:
+                model = self._get_model_by_version_id(task.model_version_id)
+            else:
+                model = self._get_model(scene_id)
+            selected_scene_id, model_version_id, model_version = self._model_context(
+                model, scene_id
+            )
+            scene_id = selected_scene_id
 
             # ── 打开视频 ──
             cap = cv2.VideoCapture(video_path)
@@ -706,6 +724,7 @@ class DetectionService:
                 task = DetectionTask(
                     user_id=user_id or 0,
                     scene_id=scene_id or 1,
+                    model_version_id=model_version_id,
                     task_type="video",
                     status="processing",
                     total_images=0,  # 后续更新
@@ -715,10 +734,9 @@ class DetectionService:
                 db.add(task)
                 db.flush()
                 task_id = task.id
-            else:
-                task = (
-                    db.query(DetectionTask).filter(DetectionTask.id == task_id).first()
-                )
+            elif task:
+                task.scene_id = scene_id or task.scene_id
+                task.model_version_id = model_version_id or task.model_version_id
 
             # ── 计算需要采样的帧索引 ──
             # 根据视频总帧数和 max_frames 动态计算采样间隔，
@@ -984,6 +1002,8 @@ class DetectionService:
                 "key_frames": key_frames,
                 "annotated_video_url": annotated_video_url,
                 "total_inference_time": round(total_inference_time, 2),
+                "model_version_id": model_version_id,
+                "model_version": model_version,
             }
 
         except Exception as e:

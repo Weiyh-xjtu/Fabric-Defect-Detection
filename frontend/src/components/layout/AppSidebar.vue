@@ -68,6 +68,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ChatDotRound,
   Camera,
+  Box,
   Cpu,
   Clock,
   Collection,
@@ -95,6 +96,7 @@ const allMenuItems = [
   { path: '/chat', title: '智能对话', icon: ChatDotRound, permission: 'chat:use' },
   { path: '/detection', title: '检测工作台', icon: Camera, permission: 'detection:execute' },
   { path: '/training', title: '模型训练', icon: Cpu, permission: 'model:manage' },
+  { path: '/models', title: '模型管理', icon: Box, permission: 'model:manage' },
   { path: '/history', title: '历史记录', icon: Clock, anyPermission: ['history:read:own', 'history:read:any'] },
   { path: '/knowledge', title: '知识库', icon: Collection, permission: 'knowledge:manage' },
   { path: '/dashboard', title: '数据看板', icon: DataAnalysis, permission: 'dashboard:read:any' },

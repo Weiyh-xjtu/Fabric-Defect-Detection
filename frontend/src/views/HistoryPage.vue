@@ -62,6 +62,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="scene_name" label="场景" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="model_version" label="模型版本" min-width="120">
+          <template #default="{ row }">{{ row.model_version || '-' }}</template>
+        </el-table-column>
         <el-table-column label="发起人" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ initiatorName(row) }}</template>
         </el-table-column>
@@ -104,6 +107,9 @@
               <el-tag :type="statusTag(detail.task.status)">{{ statusName(detail.task.status) }}</el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="场景">{{ detail.task.scene_name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="模型版本">
+              {{ detail.task.model_version ? `${detail.task.model_version} · ${detail.task.model_name}` : '-' }}
+            </el-descriptions-item>
             <el-descriptions-item label="检测发起人">{{ initiatorName(detail.task) }}</el-descriptions-item>
             <el-descriptions-item label="图像 / 目标">{{ detail.task.total_images }} / {{ detail.task.total_objects }}</el-descriptions-item>
             <el-descriptions-item label="总耗时">{{ formatDuration(detail.task.total_inference_time) }}</el-descriptions-item>

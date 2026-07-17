@@ -11,7 +11,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, ForeignKey,
-    JSON, Text, Boolean, Enum, Table, BigInteger
+    JSON, Text, Boolean, Enum, Table, BigInteger, Index, text
 )
 from sqlalchemy.orm import relationship
 
@@ -236,6 +236,15 @@ class TrainingMetric(Base):
 class ModelVersion(Base):
     """模型版本管理表 — 每次训练产出或手动上传的模型版本"""
     __tablename__ = "model_versions"
+    __table_args__ = (
+        Index(
+            "uq_model_versions_global_default",
+            "is_global_default",
+            unique=True,
+            postgresql_where=text("is_global_default"),
+            sqlite_where=text("is_global_default = 1"),
+        ),
+    )
     id = Column(Integer, primary_key=True, autoincrement=True)
     scene_id = Column(Integer, ForeignKey("detection_scenes.id"), nullable=False, index=True, comment="所属场景")
     training_task_id = Column(Integer, ForeignKey("training_tasks.id"), nullable=True, comment="来源训练任务（可为空，支持手动上传）")
@@ -256,6 +265,12 @@ class ModelVersion(Base):
     description = Column(Text, nullable=True, comment="版本描述/变更说明")
     file_size = Column(BigInteger, nullable=True, comment="模型文件大小（字节）")
     is_default = Column(Boolean, default=False, comment="是否为该场景的默认模型")
+    is_global_default = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="是否为全局检测启用模型（全系统最多一个）",
+    )
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     # 关联
     scene = relationship("DetectionScene", back_populates="model_versions")

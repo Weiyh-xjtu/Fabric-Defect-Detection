@@ -1006,7 +1006,13 @@ class TrainingService:
                     ModelVersion.scene_id == task.scene_id,
                     ModelVersion.id != model_version.id,
                 ).update({"is_default": False}, synchronize_session=False)
+                db.query(ModelVersion).filter(
+                    ModelVersion.id != model_version.id,
+                    ModelVersion.is_global_default.is_(True),
+                ).update({"is_global_default": False}, synchronize_session=False)
+                db.flush()
                 model_version.is_default = True
+                model_version.is_global_default = True
 
             db.commit()
             db.refresh(model_version)
@@ -1023,6 +1029,7 @@ class TrainingService:
                     "per_class": per_class,
                 },
                 "is_default": model_version.is_default,
+                "is_global_default": model_version.is_global_default,
                 "message": f"模型已导出为版本 {version}",
             }
         except Exception as e:
