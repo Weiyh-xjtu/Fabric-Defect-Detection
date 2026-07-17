@@ -292,7 +292,7 @@ async def get_model_evaluation_status(
             "error": "该模型没有关联训练任务，无法定位评估数据集",
         }
     return {
-        **training_service.get_validation_status(item.training_task_id),
+        **training_service.get_validation_status(item.training_task_id, db=db),
         "model_version_id": item.id,
         "model_version": item.version,
     }

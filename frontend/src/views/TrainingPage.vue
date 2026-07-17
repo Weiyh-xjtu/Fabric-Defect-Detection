@@ -121,6 +121,10 @@
         </el-space>
 
         <div v-if="evalReport" class="evaluation-report">
+          <div class="evaluation-meta">
+            <el-tag v-if="evalReport.cached" type="info">复用历史评估</el-tag>
+            <span v-if="evalReport.evaluated_at">评估时间：{{ formatEvaluationTime(evalReport.evaluated_at) }}</span>
+          </div>
           <el-row :gutter="16" class="evaluation-metrics">
             <el-col v-for="metric in evaluationCards" :key="metric.label" :xs="12" :sm="6">
               <div class="evaluation-metric">
@@ -149,6 +153,17 @@
               <template #default="{ row }">{{ row.instances ?? '-' }}</template>
             </el-table-column>
           </el-table>
+          <div v-if="evaluationArtifacts.length" class="evaluation-artifacts">
+            <h4>评估图表</h4>
+            <el-space wrap>
+              <el-button
+                v-for="artifact in evaluationArtifacts"
+                :key="artifact.name"
+                size="small"
+                @click="openEvaluationArtifact(artifact)"
+              >{{ artifact.name }}</el-button>
+            </el-space>
+          </div>
         </div>
       </el-card>
     </el-card>
@@ -447,6 +462,28 @@ const perClassMetrics = computed(() => {
     .map(([className, metrics]) => ({ className, ...metrics }))
     .sort((a, b) => b.ap50 - a.ap50)
 })
+const evaluationArtifacts = computed(() => Object.entries(evalReport.value?.artifacts || {}).map(
+  ([name, url]) => ({ name, url }),
+))
+
+function formatEvaluationTime(value) {
+  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+}
+
+async function openEvaluationArtifact(artifact) {
+  try {
+    const requestPath = artifact.url.startsWith('/api')
+      ? artifact.url.slice(4)
+      : artifact.url
+    const blob = await request.get(requestPath, { responseType: 'blob' })
+    const objectUrl = URL.createObjectURL(blob)
+    window.open(objectUrl, '_blank', 'noopener,noreferrer')
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000)
+  } catch (error) {
+    console.error('打开评估图表失败', error)
+    ElMessage.error('评估图表加载失败')
+  }
+}
 
 function formatPercent(value) {
   return value == null ? '-' : `${(value * 100).toFixed(1)}%`
@@ -719,11 +756,17 @@ async function validateModel() {
   const taskId = selectedTask.value.id
   validating.value = true
   try {
-    await request.post(`/training/validate/${taskId}`, {
+    const result = await request.post(`/training/validate/${taskId}`, {
       split: 'val',
       conf: 0.001,
       iou: 0.6,
     })
+    if (result.status === 'completed' && result.report) {
+      validating.value = false
+      evalReport.value = result.report
+      ElMessage.success('已复用匹配的历史评估结果')
+      return
+    }
     ElMessage.info('评估任务已启动，正在后台执行...')
     scheduleEvalPoll(taskId)
   } catch (e) {
@@ -970,6 +1013,19 @@ onBeforeUnmount(() => {
 
 .evaluation-report {
   margin-top: 20px;
+}
+
+.evaluation-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  color: #909399;
+  font-size: 13px;
+}
+
+.evaluation-artifacts {
+  margin-top: 18px;
 }
 
 .evaluation-report h4 {

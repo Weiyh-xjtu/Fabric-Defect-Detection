@@ -41,6 +41,7 @@ from app.core.logger import get_logger
 from app.database.session import SessionLocal
 from app.entity.db_models import (
     DetectionScene,
+    ModelEvaluation,
     ModelVersion,
     TrainingMetric,
     TrainingTask,
@@ -649,13 +650,28 @@ class TrainingService:
         if task.status != "completed":
             return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能评估"}
 
-        weights_path = _task_output_dir(task.task_uuid) / "weights" / "best.pt"
-        if not weights_path.exists():
-            return {"error": f"模型权重不存在: {weights_path}"}
-
-        data_yaml = _resolve_data_yaml(task)
-        if not data_yaml:
+        cached_evaluation, signature = _find_cached_evaluation(
+            db,
+            task,
+            split=split,
+            conf=conf,
+            iou=iou,
+        )
+        if cached_evaluation is not None:
+            logger.info(
+                "复用模型评估缓存: task_id=%d, evaluation_id=%d",
+                task_id,
+                cached_evaluation.id,
+            )
+            return _evaluation_report(cached_evaluation, task)
+        if signature is None:
+            weights_path = _task_output_dir(task.task_uuid) / "weights" / "best.pt"
+            if not weights_path.exists():
+                return {"error": f"模型权重不存在: {weights_path}"}
             return {"error": "data.yaml 不存在"}
+
+        weights_path = signature["weights_path"]
+        data_yaml = signature["data_yaml"]
 
         scene = (
             db.query(DetectionScene)
@@ -737,8 +753,33 @@ class TrainingService:
             model_version.recall = overall["recall"]
             model_version.per_class_ap = per_class
             model_version.file_size = weights_path.stat().st_size
+            db.flush()
+
+            artifact_paths = _collect_evaluation_artifacts(
+                task.task_uuid,
+                signature,
+                split=split,
+                conf=conf,
+                iou=iou,
+            )
+            evaluation_record = ModelEvaluation(
+                training_task_id=task.id,
+                model_version_id=model_version.id,
+                weight_sha256=signature["weight_sha256"],
+                dataset_fingerprint=signature["dataset_fingerprint"],
+                split=split,
+                conf=float(conf),
+                iou=float(iou),
+                imgsz=signature["imgsz"],
+                overall=overall,
+                per_class=per_class,
+                artifact_paths=artifact_paths,
+                evaluated_at=datetime.now(),
+            )
+            db.add(evaluation_record)
             db.commit()
             db.refresh(model_version)
+            db.refresh(evaluation_record)
 
             report = {
                 "task_id": task_id,
@@ -748,6 +789,13 @@ class TrainingService:
                 "per_class": per_class,
                 "model_version_id": model_version.id,
                 "model_version": model_version.version,
+                "evaluation_id": evaluation_record.id,
+                "evaluated_at": evaluation_record.evaluated_at.isoformat(),
+                "cached": False,
+                "artifacts": {
+                    name: f"/api/training/validate/{task.id}/artifacts/{name}"
+                    for name in artifact_paths
+                },
             }
             logger.info(
                 "模型评估完成: task_id=%d, mAP50=%.4f, mAP50-95=%.4f",
@@ -786,10 +834,43 @@ class TrainingService:
         if task.status != "completed":
             return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能评估"}
 
-        weights_path = _task_output_dir(task.task_uuid) / "weights" / "best.pt"
-        if not weights_path.exists():
-            return {"error": f"模型权重不存在: {weights_path}"}
-        if not _resolve_data_yaml(task):
+        cached_evaluation, signature = _find_cached_evaluation(
+            db,
+            task,
+            split=split,
+            conf=conf,
+            iou=iou,
+        )
+        if cached_evaluation is not None:
+            report = _evaluation_report(cached_evaluation, task)
+            completed_at = (
+                cached_evaluation.evaluated_at.isoformat()
+                if cached_evaluation.evaluated_at
+                else datetime.now().isoformat()
+            )
+            with _eval_lock:
+                _running_evaluations[task_id] = {
+                    "status": "completed",
+                    "split": split,
+                    "report": report,
+                    "error": None,
+                    "started_at": completed_at,
+                    "completed_at": completed_at,
+                    "thread": None,
+                    "cached": True,
+                }
+            return {
+                "task_id": task_id,
+                "status": "completed",
+                "split": split,
+                "message": "已复用匹配的历史评估结果",
+                "cached": True,
+                "report": report,
+            }
+        if signature is None:
+            weights_path = _task_output_dir(task.task_uuid) / "weights" / "best.pt"
+            if not weights_path.exists():
+                return {"error": f"模型权重不存在: {weights_path}"}
             return {"error": "data.yaml 不存在"}
 
         with _eval_lock:
@@ -804,6 +885,7 @@ class TrainingService:
                 "started_at": datetime.now().isoformat(),
                 "completed_at": None,
                 "thread": None,
+                "cached": False,
             }
             _running_evaluations[task_id] = entry
 
@@ -858,10 +940,12 @@ class TrainingService:
             "status": "running",
             "split": split,
             "message": "评估任务已启动，请轮询评估状态获取结果",
+            "cached": False,
+            "report": None,
         }
 
     @staticmethod
-    def get_validation_status(task_id: int) -> dict:
+    def get_validation_status(task_id: int, db=None) -> dict:
         """查询后台评估状态；completed 时返回评估报告。
 
         注册表在进程内存中，服务重启后为空，此时返回 idle，
@@ -870,7 +954,36 @@ class TrainingService:
         with _eval_lock:
             entry = _running_evaluations.get(task_id)
             if entry is None:
-                return {"task_id": task_id, "status": "idle"}
+                if db is not None:
+                    task = db.query(TrainingTask).filter(
+                        TrainingTask.id == task_id
+                    ).first()
+                    latest = (
+                        db.query(ModelEvaluation)
+                        .filter(ModelEvaluation.training_task_id == task_id)
+                        .order_by(
+                            ModelEvaluation.evaluated_at.desc(),
+                            ModelEvaluation.id.desc(),
+                        )
+                        .first()
+                    )
+                    if task is not None and latest is not None:
+                        completed_at = (
+                            latest.evaluated_at.isoformat()
+                            if latest.evaluated_at
+                            else None
+                        )
+                        return {
+                            "task_id": task_id,
+                            "status": "completed",
+                            "split": latest.split,
+                            "error": None,
+                            "report": _evaluation_report(latest, task),
+                            "started_at": completed_at,
+                            "completed_at": completed_at,
+                            "cached": True,
+                        }
+                return {"task_id": task_id, "status": "idle", "cached": False}
             return {
                 "task_id": task_id,
                 "status": entry["status"],
@@ -879,6 +992,7 @@ class TrainingService:
                 "report": entry["report"],
                 "started_at": entry["started_at"],
                 "completed_at": entry["completed_at"],
+                "cached": entry.get("cached", False),
             }
 
     @staticmethod
@@ -936,15 +1050,22 @@ class TrainingService:
             shutil.copy2(weights_path, exported_weight)
 
             task_output_dir = _task_output_dir(task.task_uuid)
-            for plot_name in (
-                "confusion_matrix.png",
-                "PR_curve.png",
-                "F1_curve.png",
-                "results.png",
+            evaluation_record = (
+                db.query(ModelEvaluation)
+                .filter(ModelEvaluation.id == evaluation.get("evaluation_id"))
+                .first()
+            )
+            for plot_name, plot_path_value in (
+                evaluation_record.artifact_paths.items()
+                if evaluation_record and evaluation_record.artifact_paths
+                else []
             ):
-                plot_path = task_output_dir / plot_name
-                if plot_path.exists():
+                plot_path = Path(plot_path_value)
+                if plot_path.is_file():
                     shutil.copy2(plot_path, export_dir / plot_name)
+            training_plot = task_output_dir / "results.png"
+            if training_plot.is_file():
+                shutil.copy2(training_plot, export_dir / training_plot.name)
 
             overall = evaluation["overall"]
             per_class = evaluation["per_class"]
@@ -1431,6 +1552,163 @@ def _resolve_data_yaml(task: TrainingTask):
         if convention.exists():
             return convention.resolve()
     return None
+
+
+_DATASET_FINGERPRINT_SUFFIXES = {
+    ".yaml", ".yml", ".txt", ".jpg", ".jpeg", ".png", ".bmp", ".webp"
+}
+_EVALUATION_ARTIFACT_NAMES = (
+    "confusion_matrix.png",
+    "confusion_matrix_normalized.png",
+    "F1_curve.png",
+    "P_curve.png",
+    "R_curve.png",
+    "PR_curve.png",
+    "predictions.json",
+)
+
+
+def _sha256_file(path: Path) -> str:
+    """流式计算文件 SHA-256。"""
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _dataset_fingerprint(data_yaml: Path) -> str:
+    """根据数据配置、标签内容和图像元数据生成稳定的数据集指纹。"""
+    root = data_yaml.parent.resolve()
+    digest = hashlib.sha256()
+    digest.update(data_yaml.read_bytes())
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        if not path.is_file() or path.suffix.lower() not in _DATASET_FINGERPRINT_SUFFIXES:
+            continue
+        relative_path = path.relative_to(root)
+        if any(
+            part.startswith("task_") or part in {"runs", "models"}
+            for part in relative_path.parts
+        ):
+            continue
+        relative = relative_path.as_posix()
+        stat = path.stat()
+        digest.update(relative.encode("utf-8"))
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+        # 标签与 YAML 较小，额外哈希内容，避免时间戳被保留时漏判修改。
+        if path.suffix.lower() in {".txt", ".yaml", ".yml"}:
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _evaluation_signature(task: TrainingTask) -> dict | None:
+    """返回当前权重和数据集对应的完整评估指纹。"""
+    weights_path = _task_output_dir(task.task_uuid) / "weights" / "best.pt"
+    data_yaml = _resolve_data_yaml(task)
+    if not weights_path.exists() or not data_yaml:
+        return None
+    return {
+        "weights_path": weights_path,
+        "data_yaml": data_yaml,
+        "weight_sha256": _sha256_file(weights_path),
+        "dataset_fingerprint": _dataset_fingerprint(data_yaml),
+        "imgsz": int(task.img_size),
+    }
+
+
+def _collect_evaluation_artifacts(
+    task_uuid: str,
+    signature: dict,
+    *,
+    split: str,
+    conf: float,
+    iou: float,
+) -> dict[str, str]:
+    """把本次评估图表快照到独立目录，避免后续评估覆盖缓存产物。"""
+    task_dir = _task_output_dir(task_uuid)
+    cache_key = hashlib.sha256(
+        json.dumps(
+            {
+                "weight_sha256": signature["weight_sha256"],
+                "dataset_fingerprint": signature["dataset_fingerprint"],
+                "split": split,
+                "conf": float(conf),
+                "iou": float(iou),
+                "imgsz": signature["imgsz"],
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    snapshot_dir = task_dir / "evaluations" / cache_key
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    sources = [
+        task_dir / name
+        for name in _EVALUATION_ARTIFACT_NAMES
+        if (task_dir / name).is_file()
+    ]
+    for path in sorted(task_dir.glob("val_batch*_pred.jpg")):
+        sources.append(path)
+    artifacts = {}
+    for source in sources:
+        target = snapshot_dir / source.name
+        shutil.copy2(source, target)
+        artifacts[source.name] = str(target)
+    return artifacts
+
+
+def _evaluation_report(item: ModelEvaluation, task: TrainingTask) -> dict:
+    """将持久化评估记录转换为 API 报告。"""
+    artifacts = {
+        name: f"/api/training/validate/{task.id}/artifacts/{name}"
+        for name, path in (item.artifact_paths or {}).items()
+        if Path(path).is_file()
+    }
+    return {
+        "task_id": task.id,
+        "task_uuid": task.task_uuid,
+        "split": item.split,
+        "overall": item.overall,
+        "per_class": item.per_class,
+        "model_version_id": item.model_version_id,
+        "model_version": (
+            item.model_version.version if item.model_version is not None else None
+        ),
+        "evaluation_id": item.id,
+        "evaluated_at": item.evaluated_at.isoformat() if item.evaluated_at else None,
+        "cached": True,
+        "artifacts": artifacts,
+    }
+
+
+def _find_cached_evaluation(
+    db,
+    task: TrainingTask,
+    *,
+    split: str,
+    conf: float,
+    iou: float,
+    signature: dict | None = None,
+) -> tuple[ModelEvaluation | None, dict | None]:
+    """按完整评估条件查找可复用记录。"""
+    signature = signature or _evaluation_signature(task)
+    if signature is None:
+        return None, None
+    item = (
+        db.query(ModelEvaluation)
+        .filter(
+            ModelEvaluation.training_task_id == task.id,
+            ModelEvaluation.weight_sha256 == signature["weight_sha256"],
+            ModelEvaluation.dataset_fingerprint == signature["dataset_fingerprint"],
+            ModelEvaluation.split == split,
+            ModelEvaluation.conf == float(conf),
+            ModelEvaluation.iou == float(iou),
+            ModelEvaluation.imgsz == signature["imgsz"],
+        )
+        .order_by(ModelEvaluation.evaluated_at.desc(), ModelEvaluation.id.desc())
+        .first()
+    )
+    return item, signature
 
 
 def _get_augmentation_kwargs(augment_config) -> dict:

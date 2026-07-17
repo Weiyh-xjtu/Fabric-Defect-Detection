@@ -209,6 +209,9 @@ class TrainingTask(Base):
     scene = relationship("DetectionScene", back_populates="training_tasks")
     metrics = relationship("TrainingMetric", back_populates="task", cascade="all, delete-orphan")
     model_versions = relationship("ModelVersion", back_populates="training_task")
+    model_evaluations = relationship(
+        "ModelEvaluation", back_populates="training_task", cascade="all, delete-orphan"
+    )
 
 
 class TrainingMetric(Base):
@@ -231,6 +234,41 @@ class TrainingMetric(Base):
     created_at = Column(DateTime, default=datetime.now)
     # 关联
     task = relationship("TrainingTask", back_populates="metrics")
+
+
+class ModelEvaluation(Base):
+    """模型评估缓存 — 用完整评估指纹判断结果是否可以复用。"""
+    __tablename__ = "model_evaluations"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    training_task_id = Column(
+        Integer,
+        ForeignKey("training_tasks.id"),
+        nullable=False,
+        index=True,
+        comment="关联训练任务",
+    )
+    model_version_id = Column(
+        Integer,
+        ForeignKey("model_versions.id"),
+        nullable=True,
+        index=True,
+        comment="关联模型版本",
+    )
+    weight_sha256 = Column(String(64), nullable=False, index=True, comment="权重 SHA-256")
+    dataset_fingerprint = Column(
+        String(64), nullable=False, index=True, comment="数据集指纹"
+    )
+    split = Column(String(20), nullable=False, comment="评估数据集划分")
+    conf = Column(Float, nullable=False, comment="置信度阈值")
+    iou = Column(Float, nullable=False, comment="NMS IoU 阈值")
+    imgsz = Column(Integer, nullable=False, comment="评估图像尺寸")
+    overall = Column(JSON, nullable=False, comment="总体评估指标")
+    per_class = Column(JSON, nullable=False, comment="分类评估指标")
+    artifact_paths = Column(JSON, nullable=True, comment="评估图表文件清单")
+    evaluated_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
+    training_task = relationship("TrainingTask", back_populates="model_evaluations")
+    model_version = relationship("ModelVersion", back_populates="evaluations")
 
 
 class ModelVersion(Base):
@@ -283,6 +321,7 @@ class ModelVersion(Base):
     scene = relationship("DetectionScene", back_populates="model_versions")
     training_task = relationship("TrainingTask", back_populates="model_versions")
     detection_tasks = relationship("DetectionTask", back_populates="model_version")
+    evaluations = relationship("ModelEvaluation", back_populates="model_version")
 
 
 # ══════════════════════════════════════════════════════════════

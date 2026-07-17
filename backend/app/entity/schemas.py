@@ -310,14 +310,20 @@ class ModelValidateResponse(BaseModel):
     per_class: dict
     model_version_id: Optional[int] = None
     model_version: Optional[str] = None
+    evaluation_id: Optional[int] = None
+    evaluated_at: Optional[str] = None
+    cached: bool = False
+    artifacts: dict = Field(default_factory=dict)
 
 
 class ModelValidateStartResponse(BaseModel):
     """模型评估启动响应（评估在后台异步执行）"""
     task_id: int
-    status: Literal["running"]
+    status: Literal["running", "completed"]
     split: str
     message: str
+    cached: bool = False
+    report: Optional[ModelValidateResponse] = None
 
 
 class ModelValidateStatusResponse(BaseModel):
@@ -329,6 +335,7 @@ class ModelValidateStatusResponse(BaseModel):
     report: Optional[ModelValidateResponse] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    cached: bool = False
 
 
 class ModelExportResponse(BaseModel):
