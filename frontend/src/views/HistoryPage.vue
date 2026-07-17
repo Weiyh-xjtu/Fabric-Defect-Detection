@@ -41,7 +41,7 @@
           />
         </el-form-item>
         <el-form-item>
-          <el-input v-model="filters.keyword" clearable placeholder="任务 ID / 场景" style="width: 160px" @keyup.enter="search" />
+          <el-input v-model="filters.keyword" clearable placeholder="任务 ID / 场景 / 发起人" style="width: 210px" @keyup.enter="search" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="search">搜索</el-button>
@@ -62,6 +62,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="scene_name" label="场景" min-width="150" show-overflow-tooltip />
+        <el-table-column label="发起人" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ initiatorName(row) }}</template>
+        </el-table-column>
         <el-table-column prop="total_images" label="图像数" width="90" align="right" />
         <el-table-column prop="total_objects" label="目标数" width="90" align="right" />
         <el-table-column label="总耗时" width="120" align="right">
@@ -101,6 +104,7 @@
               <el-tag :type="statusTag(detail.task.status)">{{ statusName(detail.task.status) }}</el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="场景">{{ detail.task.scene_name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="检测发起人">{{ initiatorName(detail.task) }}</el-descriptions-item>
             <el-descriptions-item label="图像 / 目标">{{ detail.task.total_images }} / {{ detail.task.total_objects }}</el-descriptions-item>
             <el-descriptions-item label="总耗时">{{ formatDuration(detail.task.total_inference_time) }}</el-descriptions-item>
             <el-descriptions-item label="置信度阈值 / NMS IoU阈值">{{ formatThreshold(detail.task.conf_threshold) }} / {{ formatThreshold(detail.task.iou_threshold) }}</el-descriptions-item>
@@ -205,6 +209,11 @@ function statusTag(value) {
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+}
+
+function initiatorName(task) {
+  if (task?.initiator_username) return task.initiator_username
+  return task?.initiator_user_id ? `用户 #${task.initiator_user_id}` : '-'
 }
 
 function formatDuration(value) {

@@ -5,7 +5,7 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import String, cast, desc, func, or_
 from sqlalchemy.orm import Session, joinedload
 
-from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask
+from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask, User
 
 
 class HistoryService:
@@ -28,7 +28,11 @@ class HistoryService:
         query = (
             db.query(DetectionTask)
             .outerjoin(DetectionScene, DetectionTask.scene_id == DetectionScene.id)
-            .options(joinedload(DetectionTask.scene))
+            .outerjoin(User, DetectionTask.user_id == User.id)
+            .options(
+                joinedload(DetectionTask.scene),
+                joinedload(DetectionTask.user),
+            )
         )
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
@@ -54,6 +58,8 @@ class HistoryService:
                     cast(DetectionTask.id, String).ilike(pattern),
                     DetectionScene.name.ilike(pattern),
                     DetectionScene.display_name.ilike(pattern),
+                    User.username.ilike(pattern),
+                    User.email.ilike(pattern),
                 )
             )
 
@@ -81,6 +87,8 @@ class HistoryService:
             "status": task.status,
             "scene_id": task.scene_id,
             "scene_name": task.scene.display_name if task.scene else None,
+            "initiator_user_id": task.user_id,
+            "initiator_username": task.user.username if task.user else None,
             "total_images": int(task.total_images or 0),
             "total_objects": int(task.total_objects or 0),
             "total_inference_time": round(float(task.total_inference_time or 0), 2),
@@ -98,7 +106,10 @@ class HistoryService:
         """获取当前用户的任务详情和全部检测结果。"""
         task = (
             db.query(DetectionTask)
-            .options(joinedload(DetectionTask.scene))
+            .options(
+                joinedload(DetectionTask.scene),
+                joinedload(DetectionTask.user),
+            )
             .filter(DetectionTask.id == task_id)
             .first()
         )
