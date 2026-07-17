@@ -42,6 +42,7 @@ from app.database.session import SessionLocal
 from app.services.detection_service import detection_service
 from app.services.user_service import user_service
 from app.agent.memory import conversation_memory
+from app.agent.attachment_store import ensure_session_attachment_history
 from app.rag.retriever import knowledge_retriever
 from app.entity.db_models import DetectionResult, DetectionTask, User
 
@@ -279,9 +280,8 @@ def list_session_attachments(attachment_type: str = "") -> str:
     rounds = []
     existing_paths = set()
     missing_paths = set()
-    for index, attachments in enumerate(
-        conversation_memory.load_attachment_history(session_id, user_id), start=1
-    ):
+    attachment_history = ensure_session_attachment_history(session_id, user_id)
+    for index, attachments in enumerate(attachment_history, start=1):
         items = []
         for item in attachments:
             path = item.get("path") if isinstance(item, dict) else None

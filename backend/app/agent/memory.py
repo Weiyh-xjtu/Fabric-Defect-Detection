@@ -103,6 +103,34 @@ class ConversationMemory:
             self.ttl,
         )
 
+    def replace_attachment_history(
+        self,
+        session_id: str | int | None,
+        attachment_history: list[list[dict]],
+        user_id: int | str | None = None,
+    ) -> None:
+        """用持久化来源重建完整附件轮次，不影响同会话的文本记忆。"""
+        if not session_id:
+            return
+        rounds = []
+        for attachments in attachment_history:
+            normalized = [
+                dict(item)
+                for item in attachments
+                if isinstance(item, dict) and item.get("path")
+            ]
+            if normalized:
+                rounds.append({"attachments": normalized})
+        key = self._attachment_key(str(session_id), user_id)
+        if not rounds:
+            redis_client.delete(key)
+            return
+        redis_client.set(
+            key,
+            json.dumps(rounds[-self.max_attachment_rounds:], ensure_ascii=False),
+            self.ttl,
+        )
+
     def load_attachment_history(
         self,
         session_id: str | int | None,

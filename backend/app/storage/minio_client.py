@@ -3,6 +3,8 @@ MinIO 对象存储客户端封装
 用于存储检测图像、训练模型等文件
 """
 import io
+import os
+import uuid
 
 from minio import Minio
 from minio.error import S3Error
@@ -78,6 +80,25 @@ class MinIOClient:
             content_type=content_type,
         )
         return self.get_presigned_url(object_name)
+
+    def download_file(self, object_name: str, file_path: str) -> str:
+        """把 MinIO 对象原子下载到指定本地路径。"""
+        target_path = os.path.abspath(file_path)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        temporary_path = f"{target_path}.{uuid.uuid4().hex}.part"
+        try:
+            self.client.fget_object(
+                bucket_name=self.bucket_name,
+                object_name=object_name,
+                file_path=temporary_path,
+            )
+            os.replace(temporary_path, target_path)
+        finally:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+        return target_path
 
     def get_presigned_url(self, object_name: str) -> str:
         """获取对象的预签名访问 URL（有效期 7 天）"""
