@@ -17,11 +17,12 @@ export function toolDisplayName(tool) {
   return TOOL_NAME_MAP[tool] || tool;
 }
 
-/** 记录一次工具调用开始，追加进行中的步骤 */
+/** 记录一次工具调用开始，追加进行中的步骤（保留事件中的专家归属） */
 export function beginToolStep(chain, event) {
   chain.push({
     tool: event.tool,
     input: event.input,
+    agent: event.agent,
     status: "running",
     summary: "",
   });
@@ -81,13 +82,21 @@ export function parseToolResult(tool, rawResult) {
 
 /**
  * 记录一次工具调用结束：定位对应的进行中步骤并写入状态与结果。
- * 优先匹配同名工具的最近一个 running 步骤，兼容后端并行调用场景。
+ * 匹配优先级：同工具+同专家 → 同工具 → 任意进行中步骤。
+ * 并行多专家时用 agent 消歧；旧事件无 agent 字段时退回按工具名匹配。
  */
 export function completeToolStep(chain, event) {
   const info = parseToolResult(event.tool, event.result);
+  const reversed = [...chain].reverse();
   const step =
-    [...chain].reverse().find((item) => item.tool === event.tool && item.status === "running") ||
-    [...chain].reverse().find((item) => item.status === "running");
+    reversed.find(
+      (item) =>
+        item.status === "running" &&
+        item.tool === event.tool &&
+        (!event.agent || !item.agent || item.agent === event.agent),
+    ) ||
+    reversed.find((item) => item.status === "running" && item.tool === event.tool) ||
+    reversed.find((item) => item.status === "running");
   if (step) {
     step.status = info.error ? "error" : "done";
     step.summary = info.summary;

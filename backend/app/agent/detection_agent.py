@@ -818,6 +818,7 @@ class DetectionAgent:
         user_id: int = None,
         scene_id: int = None,
         session_id: str | int = None,
+        record_memory: bool = True,
     ) -> dict:
         """
         处理用户对话消息
@@ -829,6 +830,8 @@ class DetectionAgent:
             user_id: 当前登录用户 ID，用于检测记录归属
             scene_id: 检测场景 ID（可选）
             session_id: 会话 ID，用于对话与附件记忆（可选）
+            record_memory: 是否写入会话记忆。并行编排下由编排器统一写一次，
+                各专家应传 False，避免重复追加同一会话历史。
 
         Returns:
             Agent 响应字典
@@ -848,8 +851,9 @@ class DetectionAgent:
         try:
             history = conversation_memory.load(session_id, user_id)
             result = await self.executor.ainvoke({"input": message, "chat_history": history})
-            conversation_memory.append(session_id, "user", message, user_id)
-            conversation_memory.append(session_id, "assistant", result["output"], user_id)
+            if record_memory:
+                conversation_memory.append(session_id, "user", message, user_id)
+                conversation_memory.append(session_id, "assistant", result["output"], user_id)
 
             return {
                 "output": result["output"],
@@ -875,6 +879,7 @@ class DetectionAgent:
         user_id: int = None,
         scene_id: int = None,
         session_id: str | int = None,
+        record_memory: bool = True,
     ) -> AsyncGenerator:
         """
         流式处理对话消息（用于 SSE）
@@ -888,6 +893,8 @@ class DetectionAgent:
             user_id: 当前登录用户 ID，用于检测记录归属
             scene_id: 检测场景 ID（可选）
             session_id: 会话 ID，用于对话与附件记忆（可选）
+            record_memory: 是否写入会话记忆。并行编排下由编排器统一写一次，
+                各专家应传 False，避免重复追加同一会话历史。
 
         Yields:
             SSE 事件数据字典
@@ -973,9 +980,10 @@ class DetectionAgent:
                         "result": frontend_result,
                     }
 
-            conversation_memory.append(session_id, "user", message, user_id)
-            if response_chunks:
-                conversation_memory.append(session_id, "assistant", "".join(response_chunks), user_id)
+            if record_memory:
+                conversation_memory.append(session_id, "user", message, user_id)
+                if response_chunks:
+                    conversation_memory.append(session_id, "assistant", "".join(response_chunks), user_id)
 
         except Exception as e:
             logger.error("Agent 流式执行异常: %s", str(e), exc_info=True)

@@ -151,6 +151,54 @@ def test_chat_stream_passes_structured_attachments(
             os.unlink(attachment_path)
 
 
+def test_chat_stream_persists_comma_agent_used(chat_client, monkeypatch):
+    """并行 agent_route 携带 agents 列表时，assistant 落库为逗号连接的多专家名，
+    且 tool_call 的 agent 归属被持久化，供历史徽标还原。"""
+    from tests.conftest import TestSessionLocal
+    from app.entity.db_models import ChatMessage, ChatSession
+
+    monkeypatch.setattr(chat_api, "SessionLocal", TestSessionLocal)
+    monkeypatch.setattr(chat_api, "_upload_user_attachment_refs", lambda user_id, attachments: [])
+    monkeypatch.setattr(chat_api, "_extract_attachment_refs", lambda tool_results: [])
+
+    session_uuid = "parallel-agent-used-uuid-1"
+
+    async def fake_chat_stream(**kwargs):
+        yield {"type": "agent_route", "agent": "detection", "agents": ["detection", "qa"]}
+        yield {"type": "tool_call", "tool": "detect_single_image", "input": {}, "agent": "detection"}
+        yield {"type": "tool_result", "tool": "detect_single_image", "result": '{"total_objects":1}', "agent": "detection"}
+        yield {"type": "text_chunk", "content": "#### 🔍 检测专家\n\n检出1个目标", "agent": "detection"}
+        yield {"type": "text_chunk", "content": "\n\n---\n\n#### 📖 知识问答\n\nYOLO是单阶段检测算法", "agent": "qa"}
+
+    monkeypatch.setattr(chat_api.detection_agent, "chat_stream", fake_chat_stream)
+
+    response = chat_client.post(
+        "/api/chat/stream",
+        json={"message": "检测这张图片，并告诉我什么是YOLO", "session_id": session_uuid},
+    )
+    assert response.status_code == 200
+    assert "检测专家" in response.text
+    assert "知识问答" in response.text
+
+    db = TestSessionLocal()
+    try:
+        session = db.query(ChatSession).filter(
+            ChatSession.session_uuid == session_uuid
+        ).first()
+        assert session is not None
+        assistant = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.session_id == session.id, ChatMessage.role == "assistant")
+            .order_by(ChatMessage.id.desc())
+            .first()
+        )
+        assert assistant is not None
+        assert assistant.agent_used == "detection,qa"
+        assert assistant.tool_calls[0]["agent"] == "detection"
+    finally:
+        db.close()
+
+
 def test_agent_builds_attachment_tool_context():
     batch_message = _append_attachment_context(
         "请检测",

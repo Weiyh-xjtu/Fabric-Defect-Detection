@@ -69,10 +69,16 @@
             v-else-if="msg.role === 'assistant'"
             class="message-bubble assistant-bubble"
           >
-            <!-- 处理该消息的专家 Agent -->
-            <div v-if="msg.agent" class="agent-route">
-              <el-tag size="small" effect="plain" type="warning">
-                🤖 {{ agentLabel(msg.agent) }}
+            <!-- 处理该消息的专家 Agent（并行时并列多个） -->
+            <div v-if="agentTags(msg).length" class="agent-route">
+              <el-tag
+                v-for="a in agentTags(msg)"
+                :key="a"
+                size="small"
+                effect="plain"
+                type="warning"
+              >
+                🤖 {{ agentLabel(a) }}
               </el-tag>
             </div>
 
@@ -105,6 +111,14 @@
                     "
                   >
                     🔧 {{ toolDisplayName(step.tool) }}
+                  </el-tag>
+                  <el-tag
+                    v-if="step.agent && agentTags(msg).length > 1"
+                    size="small"
+                    effect="plain"
+                    type="warning"
+                  >
+                    {{ agentLabel(step.agent) }}
                   </el-tag>
                   <span :class="['tool-chain-status', `status-${step.status}`]">
                     {{
@@ -147,10 +161,11 @@
               </div>
             </div>
 
-            <!-- 检测结果卡片 -->
+            <!-- 检测结果卡片（并行时可能多张） -->
             <DetectionResultCard
-              v-if="msg.detectionResult"
-              :result="msg.detectionResult"
+              v-for="(res, cardIndex) in detectionCards(msg)"
+              :key="cardIndex"
+              :result="res"
             />
             <el-button
               v-if="msg.retryData"
@@ -444,6 +459,7 @@ async function sendMessage() {
         agentStore.setCurrentSessionId(data.session_id);
       } else if (data.type === "agent_route") {
         assistantMessage.agent = data.agent;
+        assistantMessage.agents = data.agents || (data.agent ? [data.agent] : []);
       } else if (data.type === "tool_call") {
         // 工具调用开始：追加到该消息的调用链
         if (!assistantMessage.toolChain) assistantMessage.toolChain = [];
@@ -454,7 +470,9 @@ async function sendMessage() {
         if (!assistantMessage.toolChain) assistantMessage.toolChain = [];
         const info = completeToolStep(assistantMessage.toolChain, data);
         if (info.detection) {
-          assistantMessage.detectionResult = info.detection;
+          // 并行多专家一轮可能产生多张检测卡片，逐一追加避免互相覆盖
+          if (!assistantMessage.detectionResults) assistantMessage.detectionResults = [];
+          assistantMessage.detectionResults.push(info.detection);
           assistantMessage.loading = false;
         }
         scrollToBottom();
@@ -743,6 +761,18 @@ function ensureChatSession() {
 /** 专家 Agent 显示名 */
 function agentLabel(agent) {
   return AGENT_NAME_MAP[agent] || agent;
+}
+
+/** 消息涉及的专家列表：优先并行 agents 数组，回退单 agent 字段（旧数据兼容） */
+function agentTags(msg) {
+  if (msg.agents?.length) return msg.agents;
+  return msg.agent ? [msg.agent] : [];
+}
+
+/** 消息的检测结果卡片列表：优先并行数组，回退单结果字段（快捷检测/旧历史兼容） */
+function detectionCards(msg) {
+  if (msg.detectionResults?.length) return msg.detectionResults;
+  return msg.detectionResult ? [msg.detectionResult] : [];
 }
 
 /** 相关度展示：向量检索为 0-1 相似度，词法检索为整数得分 */

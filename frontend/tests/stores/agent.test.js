@@ -283,4 +283,78 @@ describe('agent store 历史还原', () => {
     expect(store.messages[0].detectionResult.total_objects).toBe(1)
     expect(store.messages[0].detectionResult.annotated_image_url).toBeUndefined()
   })
+
+  it('逗号分隔的 agent_used 还原为 agents 数组', async () => {
+    getChatSessionHistory.mockResolvedValue({
+      messages: [
+        {
+          role: 'assistant',
+          content: '并行回答',
+          agent_used: 'detection,qa',
+          tool_calls: [{ tool: 'detect_single_image', agent: 'detection' }],
+          tool_result: JSON.stringify([
+            { tool: 'detect_single_image', result: JSON.stringify({ total_objects: 1 }) },
+          ]),
+          attachments: [],
+        },
+      ],
+    })
+
+    const store = useAgentStore()
+    await store.loadSession('uuid-multi-agent')
+
+    const msg = store.messages[0]
+    expect(msg.agents).toEqual(['detection', 'qa'])
+    expect(msg.agent).toBe('detection')
+    // 工具链步骤还原专家归属徽标
+    expect(msg.toolChain[0].agent).toBe('detection')
+  })
+
+  it('单个 agent_used 仍还原为单元素兼容旧渲染', async () => {
+    getChatSessionHistory.mockResolvedValue({
+      messages: [
+        { role: 'assistant', content: '答', agent_used: 'detection', attachments: [] },
+      ],
+    })
+    const store = useAgentStore()
+    await store.loadSession('uuid-single-agent')
+    expect(store.messages[0].agent).toBe('detection')
+    expect(store.messages[0].agents).toEqual(['detection'])
+  })
+
+  it('多个检测结果还原为数组并按工具匹配各自 URL', async () => {
+    getChatSessionHistory.mockResolvedValue({
+      messages: [
+        {
+          role: 'assistant',
+          content: '并行检测',
+          agent_used: 'detection',
+          tool_calls: [
+            { tool: 'detect_single_image', agent: 'detection' },
+            { tool: 'detect_video_file', agent: 'detection' },
+          ],
+          tool_result: JSON.stringify([
+            { tool: 'detect_single_image', result: JSON.stringify({ total_objects: 2 }) },
+            { tool: 'detect_video_file', result: JSON.stringify({ type: 'video', total_objects: 5 }) },
+          ]),
+          attachments: [
+            { tool: 'detect_single_image', type: 'image', url: 'http://minio/rsod/a.jpg?fresh=1' },
+            { tool: 'detect_video_file', type: 'video', url: 'http://minio/rsod/v.mp4?fresh=1' },
+          ],
+        },
+      ],
+    })
+
+    const store = useAgentStore()
+    await store.loadSession('uuid-multi-detection')
+
+    const msg = store.messages[0]
+    expect(msg.detectionResults).toHaveLength(2)
+    const image = msg.detectionResults.find((d) => d.total_objects === 2)
+    const video = msg.detectionResults.find((d) => d.type === 'video')
+    expect(image.annotated_image_url).toBe('http://minio/rsod/a.jpg?fresh=1')
+    expect(video.annotated_video_url).toBe('http://minio/rsod/v.mp4?fresh=1')
+    // detectionResult 保留为首个，兼容单结果渲染
+    expect(msg.detectionResult).toEqual(msg.detectionResults[0])
+  })
 })
