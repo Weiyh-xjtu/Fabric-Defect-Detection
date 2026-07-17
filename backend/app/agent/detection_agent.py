@@ -541,13 +541,16 @@ def query_detection_statistics(
         today: 是否严格按今天 00:00 至当前时间统计。
         start_date: 自定义起始日期（含），格式 YYYY-MM-DD；优先于 days/today。
         end_date: 自定义结束日期（含），格式 YYYY-MM-DD；默认今天。
-        defect: 缺陷类别（如 "hole" 或中文名 "破洞"）。给定后只统计该缺陷，
-            返回命中该缺陷的任务数、图片数与目标（缺陷）总数。
+        defect: 缺陷类别，可用英文 code（如 "hole"）或中文名（如 "破洞"），
+            大小写不敏感，系统会自动做中英互认。给定后只统计该缺陷，返回
+            命中该缺陷的任务数、图片数与目标（缺陷）总数。
 
     Returns:
         JSON 字符串。未过滤缺陷时包含任务数、状态分布、图片数、目标数、
         平均推理耗时和各任务类型数量；过滤缺陷时包含该缺陷的任务/图片/目标数。
-        摄像头等无法统计的类型会返回 error，调用方应如实说明无法查询。
+        若该缺陷在时间段内 0 命中，会附带 available_defects（实际存在的缺陷
+        类别列表），此时应结合它判断是否用词有误，必要时改用列表中的名称重查，
+        不要直接断言“没有该缺陷”。摄像头等无法统计的类型会返回 error。
     """
     if error := _tool_permission_error(DASHBOARD_READ_ANY):
         return error
@@ -566,31 +569,40 @@ def query_detection_statistics(
         db = SessionLocal()
         try:
             if parsed_start or parsed_end:
-                result = dashboard_service.get_statistics(
-                    db, None, days, parsed_start, parsed_end, defect_filter
-                )
+                win_start, win_end = parsed_start, parsed_end
             elif today:
                 today_date = datetime.now().date()
-                result = dashboard_service.get_statistics(
-                    db, None, days, today_date, today_date, defect_filter
-                )
+                win_start, win_end = today_date, today_date
             else:
-                result = dashboard_service.get_statistics(
-                    db, None, days, None, None, defect_filter
-                )
-            return json.dumps(
-                {
-                    "defect": defect.strip(),
-                    "from": result.get("start_at"),
-                    "to": result.get("end_at"),
-                    "matched_tasks": result.get("total_tasks", 0),
-                    "matched_images": result.get("total_images", 0),
-                    "defect_count": result.get("total_objects", 0),
-                    "growth": result.get("growth", {}),
-                    "note": "以上为该缺陷类别的目标级统计",
-                },
-                ensure_ascii=False,
+                win_start, win_end = None, None
+            result = dashboard_service.get_statistics(
+                db, None, days, win_start, win_end, defect_filter
             )
+            defect_count = result.get("total_objects", 0)
+            payload = {
+                "defect": defect.strip(),
+                "from": result.get("start_at"),
+                "to": result.get("end_at"),
+                "matched_tasks": result.get("total_tasks", 0),
+                "matched_images": result.get("matched_images", result.get("total_images", 0)),
+                "defect_count": defect_count,
+                "growth": result.get("growth", {}),
+                "note": "以上为该缺陷类别的目标级统计",
+            }
+            # 0 命中时附上该时间段实际存在的缺陷类别，便于纠正用词歧义。
+            if defect_count == 0:
+                options = dashboard_service.get_defect_options(
+                    db, None, days, win_start, win_end
+                )
+                payload["available_defects"] = [
+                    {"name": item["name"], "name_cn": item["name_cn"]}
+                    for item in options.get("options", [])
+                ]
+                payload["note"] = (
+                    "该时间段内未匹配到此缺陷。available_defects 为实际存在的缺陷类别，"
+                    "若用户用词与之相近，请据此确认或改用其中的名称重新查询。"
+                )
+            return json.dumps(payload, ensure_ascii=False)
         finally:
             db.close()
 
@@ -709,11 +721,14 @@ def query_detection_trends(
         days: 最近天数，1-365；提供 start_date/end_date 时忽略。
         start_date: 自定义起始日期（含），格式 YYYY-MM-DD；优先于 days。
         end_date: 自定义结束日期（含），格式 YYYY-MM-DD；默认今天。
-        defect: 缺陷类别（如 "hole" 或中文名 "破洞"）。给定后 daily 返回该缺陷
+        defect: 缺陷类别，可用英文 code（如 "hole"）或中文名（如 "破洞"），
+            大小写不敏感，系统会自动做中英互认。给定后 daily 返回该缺陷
             每天的检测数量趋势，用于回答“某缺陷在某时间段的变化趋势”。
 
     Returns:
         JSON 字符串，包含 daily 每日趋势与 class_distribution 缺陷类别分布。
+        若指定缺陷在时间段内 0 命中，会附带 available_defects（实际存在的缺陷
+        类别列表），应据此判断是否用词有误，必要时改用列表中的名称重查。
     """
     if error := _tool_permission_error(DASHBOARD_READ_ANY):
         return error
@@ -756,6 +771,19 @@ def query_detection_trends(
         if defect_filter:
             payload["defect"] = defect.strip()
             payload["note"] = "daily.objects 为该缺陷每日检测数量"
+            # 0 命中时附上可选缺陷类别，帮助纠正用词歧义。
+            if sum(item["objects"] for item in daily) == 0:
+                options = dashboard_service.get_defect_options(
+                    db, None, days, parsed_start, parsed_end
+                )
+                payload["available_defects"] = [
+                    {"name": item["name"], "name_cn": item["name_cn"]}
+                    for item in options.get("options", [])
+                ]
+                payload["note"] = (
+                    "该时间段内未匹配到此缺陷。available_defects 为实际存在的缺陷类别，"
+                    "若用户用词与之相近，请据此确认或改用其中的名称重新查询。"
+                )
         return json.dumps(payload, ensure_ascii=False)
     finally:
         db.close()
