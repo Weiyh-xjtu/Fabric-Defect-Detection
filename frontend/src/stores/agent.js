@@ -26,14 +26,24 @@ function normalizeHistoryMessage(item) {
   if (item.role === 'user') {
     restoreUserAttachments(message, item.attachments)
   } else if (item.role === 'assistant') {
-    if (item.agent_used) message.agent = item.agent_used
+    if (item.agent_used) {
+      // 并行历史消息 agent_used 为逗号连接的多专家名
+      message.agents = item.agent_used
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean)
+      message.agent = message.agents[0]
+    }
     // 还原工具调用链摘要。
     const chain = buildToolChainFromHistory(item)
     if (chain.length) message.toolChain = chain
     // 还原检测结果卡片：统计信息来自 tool_result（已剥离 base64），
-    // 标注图/视频用后端换签的 MinIO 短期 URL 还原。
-    const detection = buildDetectionFromHistory(item)
-    if (detection) message.detectionResult = detection
+    // 标注图/视频用后端换签的 MinIO 短期 URL 还原。并行一轮可能多张卡片。
+    const detections = buildDetectionsFromHistory(item)
+    if (detections.length) {
+      message.detectionResults = detections
+      message.detectionResult = detections[0] // 兼容单结果渲染回退
+    }
   }
   return message
 }
@@ -89,6 +99,7 @@ function buildToolChainFromHistory(item) {
   return calls.map((call) => {
     const tool = call.tool || call.name || 'unknown'
     const step = { tool, status: 'done', summary: '' }
+    if (call.agent) step.agent = call.agent // 并行历史还原步骤的专家归属徽标
     // 按顺序匹配同名工具的首个未消费结果，兼容同一工具被多次调用。
     const idx = results.findIndex(
       (entry, i) => !consumed.has(i) && entry.tool === tool,
@@ -108,8 +119,9 @@ function buildToolChainFromHistory(item) {
   })
 }
 
-/** 解析历史消息的 tool_result，取出首个检测结果对象。 */
-function parseHistoryDetection(item) {
+/** 解析历史消息的 tool_result，取出全部检测结果对象（记住各自来源工具）。 */
+function parseHistoryDetections(item) {
+  const found = []
   for (const entry of parseHistoryToolResults(item)) {
     let result
     try {
@@ -118,42 +130,58 @@ function parseHistoryDetection(item) {
       continue
     }
     if (result && typeof result === 'object' && 'total_objects' in result) {
-      return result
+      found.push({ tool: entry.tool, detection: result })
     }
   }
-  return null
+  return found
 }
 
 /**
  * 重建检测结果卡片数据：合并 tool_result 的统计信息与 attachments 的 MinIO URL。
  *
- * 后端 attachments 已把 object_name 实时换签为短期 URL：
+ * 后端 attachments 已把 object_name 实时换签为短期 URL，且每条引用带来源 tool：
  *   - type=image  → 单图 annotated_image_url
  *   - type=images → 批量，按 image_path 匹配回每张图的 annotated_image_url
  *   - type=video  → annotated_video_url
+ * 并行一轮可能有多个检测结果，按 tool + 顺序（consumed-set）逐一匹配对应引用，
+ * 避免多张卡片抢用同一 URL。返回卡片数组（无检测结果时为空数组）。
  */
-function buildDetectionFromHistory(item) {
-  const detection = parseHistoryDetection(item)
-  if (!detection) return null
+function buildDetectionsFromHistory(item) {
+  const found = parseHistoryDetections(item)
+  if (!found.length) return []
   const attachments = Array.isArray(item.attachments) ? item.attachments : []
-
-  const video = attachments.find((a) => a.type === 'video')
-  if (video?.url) detection.annotated_video_url = video.url
-
-  const single = attachments.find((a) => a.type === 'image')
-  if (single?.url) detection.annotated_image_url = single.url
-
-  const batch = attachments.find((a) => a.type === 'images')
-  if (batch && Array.isArray(detection.annotated_images)) {
-    const urlByPath = new Map(
-      (batch.images || []).map((img) => [img.image_path, img.url]),
+  const consumed = new Set()
+  const takeRef = (tool, type) => {
+    const idx = attachments.findIndex(
+      (a, i) =>
+        !consumed.has(i) &&
+        a.type === type &&
+        (!a.tool || !tool || a.tool === tool),
     )
-    detection.annotated_images = detection.annotated_images.map((img) => ({
-      ...img,
-      annotated_image_url: urlByPath.get(img.image_path) || img.annotated_image_url || null,
-    }))
+    if (idx === -1) return null
+    consumed.add(idx)
+    return attachments[idx]
   }
-  return detection
+  return found.map(({ tool, detection }) => {
+    const video = takeRef(tool, 'video')
+    if (video?.url) detection.annotated_video_url = video.url
+
+    const single = takeRef(tool, 'image')
+    if (single?.url) detection.annotated_image_url = single.url
+
+    const batch = takeRef(tool, 'images')
+    if (batch && Array.isArray(detection.annotated_images)) {
+      const urlByPath = new Map(
+        (batch.images || []).map((img) => [img.image_path, img.url]),
+      )
+      detection.annotated_images = detection.annotated_images.map((img) => ({
+        ...img,
+        annotated_image_url:
+          urlByPath.get(img.image_path) || img.annotated_image_url || null,
+      }))
+    }
+    return detection
+  })
 }
 
 export const useAgentStore = defineStore('agent', {

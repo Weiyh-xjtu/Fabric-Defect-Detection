@@ -70,6 +70,50 @@ def test_supervisor_falls_back_on_invalid_llm_output():
     assert result["next_agent"] == "detection"
 
 
+def test_supervisor_plans_multiple_agents_from_json():
+    """LLM 输出 JSON 子任务数组时应拆出多专家并行计划。"""
+    llm = _FakeRouteLLM(
+        '[{"agent":"detection","task":"检测这张图片"},{"agent":"qa","task":"什么是YOLO"}]'
+    )
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route(
+        {"messages": [HumanMessage(content="检测这张图片，并告诉我什么是YOLO")]}
+    )
+    assert result["next_agent"] == "detection"
+    assert result["next_agents"] == ["detection", "qa"]
+    assert result["plan"][0]["task"] == "检测这张图片"
+    assert result["plan"][1]["task"] == "什么是YOLO"
+
+
+def test_supervisor_plan_parses_fenced_json():
+    """带 ```json 围栏的输出也应正确解析。"""
+    llm = _FakeRouteLLM('```json\n[{"agent":"analysis","task":"今日检测次数"}]\n```')
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route({"messages": [HumanMessage(content="今日检测次数")]})
+    assert result["next_agents"] == ["analysis"]
+    assert result["plan"] == [{"agent": "analysis", "task": "今日检测次数"}]
+
+
+def test_supervisor_plan_merges_duplicate_agents():
+    """同一专家的多条子任务应合并为一条，保持每个专家最多执行一次。"""
+    llm = _FakeRouteLLM(
+        '[{"agent":"qa","task":"什么是IoU"},{"agent":"qa","task":"什么是mAP"}]'
+    )
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route({"messages": [HumanMessage(content="解释两个概念")]})
+    assert result["next_agents"] == ["qa"]
+    assert result["plan"] == [{"agent": "qa", "task": "什么是IoU；什么是mAP"}]
+
+
+def test_supervisor_plan_rejects_invalid_agent():
+    """计划含非法专家名时整体作废，降级到关键词单选。"""
+    llm = _FakeRouteLLM('[{"agent":"pilot","task":"驾驶飞机"}]')
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route({"messages": [HumanMessage(content="请检测这张图片")]})
+    assert result["next_agents"] == ["detection"]
+    assert result["plan"] == [{"agent": "detection", "task": "请检测这张图片"}]
+
+
 def test_graph_executes_selected_node():
     graph = build_agent_graph(
         None,
@@ -80,6 +124,38 @@ def test_graph_executes_selected_node():
     result = graph.invoke({"messages": [HumanMessage(content="检测图片")]})
     assert result["next_agent"] == "detection"
     assert result["final_response"] == "detected"
+
+
+def test_graph_fans_out_to_parallel_specialists():
+    """复合意图规划应让多个专家节点并行执行并在汇总节点合并。"""
+    planning_llm = _FakeRouteLLM(
+        '[{"agent":"detection","task":"检测图片"},{"agent":"qa","task":"什么是YOLO"}]'
+    )
+    graph = build_agent_graph(
+        planning_llm,
+        lambda state: {"detection_result": "detected"},
+        lambda state: {"analysis_result": "analysed"},
+        lambda state: {"qa_result": "answered"},
+    )
+    result = graph.invoke({"messages": [HumanMessage(content="检测图片并解释YOLO")]})
+    assert result["next_agents"] == ["detection", "qa"]
+    assert result["detection_result"] == "detected"
+    assert result["qa_result"] == "answered"
+    assert not result.get("analysis_result")
+    assert "detected" in result["final_response"]
+    assert "answered" in result["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_plan_forces_detection_for_attachments(monkeypatch):
+    """带附件但规划漏掉 detection 时应在首位强制补上检测子任务。"""
+    async def _qa_only(_state):
+        return {"next_agent": "qa", "next_agents": ["qa"], "plan": [{"agent": "qa", "task": "什么是YOLO"}]}
+
+    monkeypatch.setattr(multi_agent.graph, "ainvoke", _qa_only)
+    plan = await multi_agent.plan("什么是YOLO", attachments=[{"type": "image", "path": "/tmp/x.jpg"}])
+    assert plan[0]["agent"] == "detection"
+    assert any(entry["agent"] == "qa" for entry in plan)
 
 def test_memory_appends_in_fallback_or_redis():
     memory = ConversationMemory(max_messages=3)

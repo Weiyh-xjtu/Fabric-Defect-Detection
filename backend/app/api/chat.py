@@ -642,13 +642,19 @@ async def chat_stream(
                 if event.get("type") == "text_chunk":
                     assistant_chunks.append(str(event.get("content", "")))
                 elif event.get("type") == "tool_call":
-                    tool_calls.append({"tool": event.get("tool"), "input": event.get("input")})
+                    tool_calls.append({
+                        "tool": event.get("tool"),
+                        "input": event.get("input"),
+                        "agent": event.get("agent"),  # 记录步骤归属，供历史工具链还原专家徽标
+                    })
                 elif event.get("type") == "tool_result":
                     # 保留完整结果（含 base64/URL）供后续提取 MinIO 引用，
                     # 落库前再由 _slim_tool_result 剥离 base64。
                     tool_results.append({"tool": event.get("tool"), "result": str(event.get("result", ""))})
                 elif event.get("type") == "agent_route":
-                    agent_used = event.get("agent")
+                    # 并行模式下携带 agents 列表；落库为逗号连接的多专家名（单专家结果相同）
+                    route_agents = event.get("agents")
+                    agent_used = ",".join(route_agents) if route_agents else event.get("agent")
                 # 将事件序列化为 SSE 格式
                 event_data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {event_data}\n\n"

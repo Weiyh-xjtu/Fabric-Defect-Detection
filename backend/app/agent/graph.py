@@ -2,7 +2,11 @@
 LangGraph 状态图 — 多 Agent 工作流编排
 
 架构：
-  用户输入 → Supervisor（路由）→ Detection/Analysis/QA Agent → 汇总 → 回复
+  用户输入 → Supervisor（规划）→ Detection/Analysis/QA Agent（可并行）→ 汇总 → 回复
+
+Supervisor 的 decide_next 可返回节点名列表：复合意图时多个专家节点在同一
+superstep 并行执行，各自写入独立的 *_result 状态键，随后 summarize 汇聚一次。
+单意图时列表长度为 1，行为与单选路由一致。
 """
 
 from langgraph.graph import END, StateGraph
@@ -42,7 +46,8 @@ def build_agent_graph(llm, detection_agent_node, analysis_agent_node, qa_agent_n
     # 设置入口
     workflow.set_entry_point("supervisor")
 
-    # Supervisor 条件路由
+    # Supervisor 条件路由：decide_next 返回节点名列表，langgraph 对每一项映射到
+    # 对应节点并在同一步并行触发，实现复合意图的并行扇出。
     workflow.add_conditional_edges(
         "supervisor",
         supervisor.decide_next,
@@ -53,7 +58,7 @@ def build_agent_graph(llm, detection_agent_node, analysis_agent_node, qa_agent_n
         },
     )
 
-    # 各 Agent 执行后进入汇总
+    # 各 Agent 执行后进入汇总；即使多个专家并行触发，summarize 也只在其后执行一次。
     workflow.add_edge("detection", "summarize")
     workflow.add_edge("analysis", "summarize")
     workflow.add_edge("qa", "summarize")

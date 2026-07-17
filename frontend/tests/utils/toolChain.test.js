@@ -94,4 +94,43 @@ describe('工具调用链', () => {
     expect(toolDisplayName('unknown_tool')).toBe('unknown_tool')
     expect(AGENT_NAME_MAP.qa).toBe('知识问答')
   })
+
+  it('beginToolStep 记录事件中的专家归属', () => {
+    const chain = []
+    beginToolStep(chain, { tool: 'detect_single_image', input: {}, agent: 'detection' })
+    expect(chain[0].agent).toBe('detection')
+  })
+
+  it('并行事件按专家加工具名匹配运行中的步骤', () => {
+    const chain = []
+    beginToolStep(chain, { tool: 'detect_single_image', input: {}, agent: 'detection' })
+    beginToolStep(chain, { tool: 'search_knowledge', input: {}, agent: 'qa' })
+
+    // 乱序完成：qa 先返回
+    completeToolStep(chain, {
+      tool: 'search_knowledge',
+      agent: 'qa',
+      result: JSON.stringify({ retrieval_mode: 'pgvector', results: [] }),
+    })
+    expect(chain[1].status).toBe('done')
+    expect(chain[0].status).toBe('running')
+
+    completeToolStep(chain, {
+      tool: 'detect_single_image',
+      agent: 'detection',
+      result: JSON.stringify({ total_objects: 1 }),
+    })
+    expect(chain[0].status).toBe('done')
+  })
+
+  it('无 agent 字段的旧事件仍按工具名匹配', () => {
+    const chain = []
+    beginToolStep(chain, { tool: 'detect_single_image', input: {}, agent: 'detection' })
+    completeToolStep(chain, {
+      tool: 'detect_single_image',
+      result: JSON.stringify({ total_objects: 2 }),
+    })
+    expect(chain[0].status).toBe('done')
+    expect(chain[0].summary).toBe('检出 2 个目标')
+  })
 })
