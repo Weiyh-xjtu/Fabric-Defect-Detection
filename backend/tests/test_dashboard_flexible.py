@@ -329,3 +329,75 @@ class TestChatToolDefectHints:
         assert payload["defect_count"] == 0
         names = {item["name"] for item in payload["available_defects"]}
         assert "hole" in names
+
+
+class TestToolDateParsing:
+    """工具日期解析：仅月日按服务端当前年份补齐，杜绝 LLM 猜错年份。"""
+
+    def test_parse_month_day_fills_current_year(self):
+        from datetime import datetime as _dt
+
+        from app.agent.detection_agent import _parse_tool_date
+
+        today = _dt.now().date()
+        # 取一个不晚于今天的月日，确保落在当年。
+        assert _parse_tool_date("01-05") == date(today.year, 1, 5)
+        assert _parse_tool_date("1/5") == date(today.year, 1, 5)
+
+    def test_parse_future_month_day_rolls_back_one_year(self):
+        from datetime import datetime as _dt
+
+        from app.agent.detection_agent import _parse_tool_date
+
+        today = _dt.now().date()
+        # 12-31 相对 7 月今天属于未来 → 归上一年。
+        parsed = _parse_tool_date("12-31")
+        assert parsed == date(today.year - 1, 12, 31)
+
+    def test_parse_full_date_preserved(self):
+        from app.agent.detection_agent import _parse_tool_date
+
+        assert _parse_tool_date("2025-07-15") == date(2025, 7, 15)
+        assert _parse_tool_date("") is None
+        assert _parse_tool_date("abc") is None
+
+    def test_year_less_range_hits_real_data(self, db_session, monkeypatch):
+        """回归用户报障：只给月日的区间应命中当年数据，而不是 0。"""
+        import app.agent.detection_agent as agent_module
+        from datetime import datetime as _dt
+        from sqlalchemy.orm import sessionmaker
+
+        _clear_detection(db_session)
+        scene = DetectionScene(
+            name="yearless_scene",
+            display_name="遥感目标检测",
+            category="remote_sensing",
+            class_names=["aircraft"],
+            class_names_cn={"aircraft": "飞机"},
+            is_active=False,
+        )
+        db_session.add(scene)
+        db_session.commit()
+        db_session.refresh(scene)
+        user = _ensure_user(db_session, "yearless_user")
+        today = _dt.now().date()
+        # 在当年、不晚于今天的一天写入 aircraft 数据。
+        seeded_day = _dt(today.year, 1, 6, 9, 0)
+        _make_task_with_defects(
+            db_session, user.id, scene.id, seeded_day,
+            [("aircraft", "飞机", "a.jpg"), ("aircraft", "飞机", "a.jpg")],
+        )
+
+        factory = sessionmaker(
+            autocommit=False, autoflush=False, bind=db_session.get_bind()
+        )
+        monkeypatch.setattr(agent_module, "SessionLocal", factory)
+        monkeypatch.setattr(
+            agent_module, "_tool_permission_error", lambda _permission: None
+        )
+
+        raw = agent_module.query_detection_statistics.invoke(
+            {"start_date": "01-05", "end_date": "01-07", "defect": "飞机"}
+        )
+        payload = json.loads(raw)
+        assert payload["defect_count"] == 2
