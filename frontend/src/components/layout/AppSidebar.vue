@@ -1,23 +1,25 @@
 <template>
-  <aside class="app-sidebar">
-    <el-menu
-      :default-active="activeMenu"
-      :router="true"
-      background-color="#f3f4f6"
-      text-color="#303133"
-      active-text-color="#303133"
-    >
-      <el-menu-item
-        v-for="item in menuItems"
-        :key="item.path"
-        :index="item.path"
+  <aside :class="['app-sidebar', { 'has-chat-history': isChatRoute }]">
+    <div class="menu-scroll-area">
+      <el-menu
+        :default-active="activeMenu"
+        :router="true"
+        background-color="#f3f4f6"
+        text-color="#303133"
+        active-text-color="#303133"
       >
-        <el-icon>
-          <component :is="item.icon" />
-        </el-icon>
-        <span>{{ item.title }}</span>
-      </el-menu-item>
-    </el-menu>
+        <el-menu-item
+          v-for="item in menuItems"
+          :key="item.path"
+          :index="item.path"
+        >
+          <el-icon>
+            <component :is="item.icon" />
+          </el-icon>
+          <span>{{ item.title }}</span>
+        </el-menu-item>
+      </el-menu>
+    </div>
 
     <section v-if="isChatRoute" class="chat-history-section">
       <div class="history-header">
@@ -198,12 +200,6 @@ onMounted(() => {
   background: #f3f4f6;
   border-right: 1px solid #e5e7eb;
 
-  .el-menu {
-    flex-shrink: 0;
-    padding: 8px;
-    border-right: none;
-  }
-
   .el-menu-item {
     height: 50px;
     margin-bottom: 4px;
@@ -220,6 +216,24 @@ onMounted(() => {
       background-color: #fff !important;
     }
   }
+}
+
+.menu-scroll-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+
+  .el-menu {
+    padding: 8px;
+    border-right: none;
+  }
+}
+
+.app-sidebar.has-chat-history .menu-scroll-area {
+  flex: 0 1 auto;
+  max-height: 52%;
 }
 
 .chat-history-section {
@@ -263,6 +277,8 @@ onMounted(() => {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 0 8px 12px;
 }
 
