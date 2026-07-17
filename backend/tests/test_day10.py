@@ -130,7 +130,9 @@ class TestDashboardApi:
         class_dist = client.get("/api/dashboard/class-dist", headers=headers)
         type_dist = client.get("/api/dashboard/type-dist", headers=headers)
         scene_dist = client.get("/api/dashboard/scene-dist", headers=headers)
-        assert class_dist.json()["distribution"] == [{"name": "hole", "value": 2}]
+        assert class_dist.json()["distribution"] == [
+            {"name": "hole", "name_cn": "破洞", "value": 2}
+        ]
         assert {
             item["name"]: item["value"]
             for item in type_dist.json()["distribution"]
