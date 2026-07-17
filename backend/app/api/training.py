@@ -41,7 +41,11 @@ from app.entity.schemas import (
     TrainingTaskCreate,
     TrainingTaskResponse,
 )
-from app.training.training_service import _task_output_dir, training_service
+from app.training.training_service import (
+    MODEL_READY_TASK_STATUSES,
+    _task_output_dir,
+    training_service,
+)
 from app.services.model_management_service import model_management_service
 
 logger = get_logger(__name__)
@@ -455,14 +459,14 @@ async def predict_test_image(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
-    """上传测试图片并使用已完成任务的模型进行预测。"""
+    """上传测试图片并使用训练任务产出的模型进行预测。"""
     allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp"}
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {file.content_type}")
 
     task = _get_owned_task(db, task_id, current_user)
-    if task.status != "completed":
-        raise HTTPException(status_code=400, detail="训练任务未完成，无法进行预测")
+    if task.status not in MODEL_READY_TASK_STATUSES:
+        raise HTTPException(status_code=400, detail="训练任务当前状态无法进行模型预测")
 
     weight_result = training_service.get_model_download_path(db, task_id)
     if "error" in weight_result:
