@@ -74,17 +74,70 @@ class DashboardService:
             seen.setdefault(name, None)
         return list(seen) or None
 
+    @staticmethod
+    def _scene_alias_map(db: Session) -> dict[str, set[str]]:
+        """构建「小写别名 → 英文类别 code 集合」映射，用于中英/大小写归一。
+
+        数据来源是所有场景的 class_names / class_names_cn：
+          - 英文 code 本身（小写）指向自己；
+          - 中文名（小写化，中文无大小写影响，仅为统一 key）指向对应英文 code。
+        这样用户用中文、英文或不同大小写都能解析回英文 code 精确匹配。
+        """
+        alias_map: dict[str, set[str]] = {}
+        scenes = db.query(DetectionScene).all()
+        for scene in scenes:
+            class_names = scene.class_names if isinstance(scene.class_names, list) else []
+            for code in class_names:
+                if code:
+                    alias_map.setdefault(str(code).strip().lower(), set()).add(str(code))
+            cn_map = scene.class_names_cn if isinstance(scene.class_names_cn, dict) else {}
+            for code, cn in cn_map.items():
+                if code and cn:
+                    alias_map.setdefault(str(cn).strip().lower(), set()).add(str(code))
+                    # 英文名同样登记，保证 code→code。
+                    alias_map.setdefault(str(code).strip().lower(), set()).add(str(code))
+        return alias_map
+
     @classmethod
-    def _apply_class_filter(
-        cls, query: "Query", class_names: list[str] | None
-    ) -> "Query":
-        """按缺陷类别过滤，命中 DetectionResult.class_name 或其中文名。"""
+    def _resolve_class_terms(
+        cls, db: Session, class_names: list[str] | None
+    ) -> tuple[set[str], list[str]] | None:
+        """把用户输入的类别词解析成 (英文 code 小写集合, 原始词列表)。
+
+        返回 None 表示无过滤。英文 code 集合用于对 class_name 做大小写不敏感匹配；
+        原始词列表用于对 class_name_cn 做直接匹配（兜底老数据/未登记映射的场景）。
+        """
         normalized = cls._normalize_classes(class_names)
         if not normalized:
+            return None
+        alias_map = cls._scene_alias_map(db)
+        code_terms: set[str] = set()
+        for term in normalized:
+            key = term.lower()
+            if key in alias_map:
+                code_terms.update(code.lower() for code in alias_map[key])
+            else:
+                # 未登记的词也按原样纳入，保证精确写法仍可命中。
+                code_terms.add(key)
+        return code_terms, normalized
+
+    @classmethod
+    def _apply_class_filter(
+        cls, db: Session, query: "Query", class_names: list[str] | None
+    ) -> "Query":
+        """按缺陷类别过滤，支持中英互认与大小写不敏感。
+
+        匹配任一条件即命中：
+          - class_name 小写化后落在解析出的英文 code 集合里；
+          - class_name_cn 精确等于用户原始输入（兜底未建立映射的历史数据）。
+        """
+        resolved = cls._resolve_class_terms(db, class_names)
+        if resolved is None:
             return query
+        code_terms, raw_terms = resolved
         return query.filter(
-            (DetectionResult.class_name.in_(normalized))
-            | (DetectionResult.class_name_cn.in_(normalized))
+            (func.lower(DetectionResult.class_name).in_(code_terms))
+            | (DetectionResult.class_name_cn.in_(raw_terms))
         )
 
     def _statistics_for_period(
@@ -148,7 +201,7 @@ class DashboardService:
         )
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
-        query = self._apply_class_filter(query, normalized)
+        query = self._apply_class_filter(db, query, normalized)
         result = query.one()
         return {
             "total_tasks": int(result.total_tasks or 0),
@@ -263,7 +316,7 @@ class DashboardService:
                     DetectionTask.created_at < end_at,
                 )
             )
-            query = self._apply_class_filter(query, normalized)
+            query = self._apply_class_filter(db, query, normalized)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
         rows = query.group_by(day_expression).order_by(day_expression).all()
@@ -373,7 +426,7 @@ class DashboardService:
             .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
             .filter(*base_filters)
         )
-        query = self._apply_class_filter(query, selected_classes)
+        query = self._apply_class_filter(db, query, selected_classes)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
         rows = (
@@ -491,7 +544,7 @@ class DashboardService:
                 DetectionTask.created_at < end_at,
             )
         )
-        query = self._apply_class_filter(query, class_names)
+        query = self._apply_class_filter(db, query, class_names)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
         rows = (

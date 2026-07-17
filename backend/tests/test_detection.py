@@ -319,6 +319,32 @@ def test_zip_history_remains_batch_and_uses_archive_relative_path(
     assert saved_result.image_path == "roll-a/defect-01.jpg"
 
 
+def test_single_detection_persists_chinese_class_name(
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """落库时应按场景映射补全 class_name_cn，供中文检索命中。"""
+    user, scene = prepare_persistence_test(db_session, monkeypatch, "cn")
+    # 场景登记英文→中文映射；FakeDetectionModel 只产出英文名 hole。
+    scene.class_names_cn = {"hole": "破洞"}
+    db_session.commit()
+
+    result = detection_service.detect_single(
+        image_path=r"C:\Temp\fabric.jpg",
+        scene_id=scene.id,
+        user_id=user.id,
+    )
+
+    db_session.expire_all()
+    saved_result = (
+        db_session.query(DetectionResult)
+        .filter(DetectionResult.task_id == result["task_id"])
+        .one()
+    )
+    assert saved_result.class_name == "hole"
+    assert saved_result.class_name_cn == "破洞"
+
+
 def test_ip_camera_url_accepts_private_lan_http_url() -> None:
     assert (
         _validate_ip_camera_url(" http://192.168.1.23:8080/video ")

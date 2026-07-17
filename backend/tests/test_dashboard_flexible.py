@@ -1,5 +1,6 @@
 """灵活数据看板（自定义时间段 + 缺陷类别过滤）服务与接口测试。"""
 
+import json
 from datetime import date, datetime, timedelta
 
 from app.entity.db_models import (
@@ -196,6 +197,61 @@ class TestFlexibleDashboardService:
         assert by_name["stain"]["count"] == 1
 
 
+class TestDefectNameMatching:
+    """缺陷类别的中英互认与大小写不敏感匹配。"""
+
+    def test_chinese_query_matches_english_only_records(self, db_session):
+        # 老数据：class_name 为英文，class_name_cn 为空（NULL）。
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "match_legacy_scene")
+        user = _ensure_user(db_session)
+        _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime(2026, 6, 10, 9, 0),
+            [("hole", None, "a.jpg"), ("hole", None, "b.jpg")],
+        )
+        # 用中文“破洞”查询，应经场景映射解析回英文 code hole 命中。
+        stats = dashboard_service.get_statistics(
+            db_session, None,
+            start_date=date(2026, 6, 1), end_date=date(2026, 6, 30),
+            class_names=["破洞"],
+        )
+        assert stats["total_objects"] == 2
+
+    def test_case_insensitive_match(self, db_session):
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "match_case_scene")
+        user = _ensure_user(db_session)
+        # 存入大小写不一致的英文名。
+        _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime(2026, 6, 10, 9, 0),
+            [("Hole", None, "a.jpg"), ("HOLE", None, "b.jpg")],
+        )
+        stats = dashboard_service.get_statistics(
+            db_session, None,
+            start_date=date(2026, 6, 1), end_date=date(2026, 6, 30),
+            class_names=["hole"],
+        )
+        assert stats["total_objects"] == 2
+
+    def test_english_query_still_matches(self, db_session):
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "match_en_scene")
+        user = _ensure_user(db_session)
+        _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime(2026, 6, 10, 9, 0),
+            [("hole", "破洞", "a.jpg"), ("stain", "污渍", "a.jpg")],
+        )
+        stats = dashboard_service.get_statistics(
+            db_session, None,
+            start_date=date(2026, 6, 1), end_date=date(2026, 6, 30),
+            class_names=["hole"],
+        )
+        assert stats["total_objects"] == 1
+
+
 class TestFlexibleDashboardApi:
     """接口层：自定义时间段、缺陷过滤参数与校验。"""
 
@@ -234,3 +290,42 @@ class TestFlexibleDashboardApi:
             headers=headers,
         )
         assert bad.status_code == 400
+
+
+class TestChatToolDefectHints:
+    """对话分析工具：缺陷 0 命中时返回可选类别，避免误判“没有”。"""
+
+    def test_statistics_tool_returns_available_defects_on_zero_match(
+        self, db_session, monkeypatch
+    ):
+        import app.agent.detection_agent as agent_module
+        from sqlalchemy.orm import sessionmaker
+
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "chat_hint_scene")
+        user = _ensure_user(db_session, "chat_hint_user")
+        _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime(2026, 6, 10, 9, 0), [("hole", "破洞", "a.jpg")],
+        )
+
+        # 工具内部用 SessionLocal() 开新会话，指向测试库；并放行权限。
+        factory = sessionmaker(
+            autocommit=False, autoflush=False, bind=db_session.get_bind()
+        )
+        monkeypatch.setattr(agent_module, "SessionLocal", factory)
+        monkeypatch.setattr(
+            agent_module, "_tool_permission_error", lambda _permission: None
+        )
+
+        raw = agent_module.query_detection_statistics.invoke(
+            {
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-30",
+                "defect": "不存在的缺陷",
+            }
+        )
+        payload = json.loads(raw)
+        assert payload["defect_count"] == 0
+        names = {item["name"] for item in payload["available_defects"]}
+        assert "hole" in names

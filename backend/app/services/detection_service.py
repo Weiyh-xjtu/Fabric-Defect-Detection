@@ -129,6 +129,35 @@ class DetectionService:
         )
 
     @staticmethod
+    def _build_class_cn_map(db: Session, scene_id: int | None) -> dict[str, str]:
+        """读取场景的英文类别→中文名映射，用于给检测结果补中文名。
+
+        场景表 class_names_cn 形如 {"hole":"破洞"}；场景缺失或无映射时返回空 dict。
+        """
+        if not scene_id:
+            return {}
+        scene = db.query(DetectionScene).filter(DetectionScene.id == scene_id).first()
+        mapping = getattr(scene, "class_names_cn", None) if scene else None
+        if not isinstance(mapping, dict):
+            return {}
+        # 统一成 str→str，忽略异常值。
+        return {
+            str(en): str(cn)
+            for en, cn in mapping.items()
+            if en is not None and cn
+        }
+
+    @staticmethod
+    def _resolve_class_name_cn(
+        det: dict, cn_map: dict[str, str]
+    ) -> str | None:
+        """确定单条检测结果的中文名：优先推理层已给出的，其次查场景映射。"""
+        existing = det.get("class_name_cn")
+        if existing:
+            return existing
+        return cn_map.get(det.get("class_name")) or None
+
+    @staticmethod
     def _save_task_and_results(
         db: Session,
         user_id: int,
@@ -178,13 +207,14 @@ class DetectionService:
             logger.warning("MinIO 上传失败（不影响检测结果）: %s", str(e))
 
         # ── 保存每条检测结果 ──
+        cn_map = DetectionService._build_class_cn_map(db, scene_id)
         for det in detections:
             result = DetectionResult(
                 task_id=task.id,
                 image_path=original_filename,
                 annotated_image_url=annotated_image_url,
                 class_name=det["class_name"],
-                class_name_cn=det.get("class_name_cn"),
+                class_name_cn=DetectionService._resolve_class_name_cn(det, cn_map),
                 class_id=det["class_id"],
                 confidence=det["confidence"],
                 bbox=det["bbox"],
@@ -501,12 +531,14 @@ class DetectionService:
                         self._upload_batch_annotated_images(task.id, annotated_images)
                     )
 
+                    cn_map = self._build_class_cn_map(db, scene_id)
                     for det in all_detections:
                         db_result = DetectionResult(
                             task_id=task.id,
                             image_path=det["image_path"],
                             annotated_image_url=url_by_image.get(det["image_path"]),
                             class_name=det["class_name"],
+                            class_name_cn=self._resolve_class_name_cn(det, cn_map),
                             class_id=det["class_id"],
                             confidence=det["confidence"],
                             bbox=det["bbox"],
@@ -738,6 +770,9 @@ class DetectionService:
                 task.scene_id = scene_id or task.scene_id
                 task.model_version_id = model_version_id or task.model_version_id
 
+            # 结果落库时用于补中文名的英文类别→中文名映射。
+            cn_map = self._build_class_cn_map(db, task.scene_id if task else scene_id)
+
             # ── 计算需要采样的帧索引 ──
             # 根据视频总帧数和 max_frames 动态计算采样间隔，
             # 确保帧均匀分布在整个视频时长内，避免密集采样导致重复帧
@@ -892,6 +927,7 @@ class DetectionService:
                             task_id=task_id,
                             image_path=f"frame_{frame_idx}.jpg",
                             class_name=det["class_name"],
+                            class_name_cn=self._resolve_class_name_cn(det, cn_map),
                             class_id=det["class_id"],
                             confidence=det["confidence"],
                             bbox=det["bbox"],
