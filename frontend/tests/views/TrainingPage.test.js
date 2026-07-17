@@ -37,6 +37,13 @@ const completedTask = {
   created_at: '2026-07-17 10:00:00',
 }
 
+const cancelledTask = {
+  ...completedTask,
+  status: 'cancelled',
+  current_epoch: 3,
+  progress: 6,
+}
+
 const sampleReport = {
   task_id: 1,
   task_uuid: 'abc12345',
@@ -49,6 +56,7 @@ const sampleReport = {
 
 // 评估状态接口的返回队列：每次轮询取出一个，最后一个保留复用
 let evalStatusResponses = []
+let currentTask = completedTask
 
 function mountPage() {
   return mount(TrainingPage, { global: { plugins: [ElementPlus] } })
@@ -74,18 +82,19 @@ describe('TrainingPage 异步模型评估', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
+    currentTask = { ...completedTask }
 
     getMock.mockImplementation((url) => {
       if (url === '/training/scenes') return Promise.resolve({ items: [] })
       if (url === '/training/tasks') {
-        return Promise.resolve({ items: [{ ...completedTask }] })
+        return Promise.resolve({ items: [{ ...currentTask }] })
       }
       if (url.startsWith('/training/metrics/')) {
         return Promise.resolve({ metrics: [] })
       }
       if (url.startsWith('/training/status/')) {
         return Promise.resolve({
-          task: { ...completedTask },
+          task: { ...currentTask },
           latest_metric: null,
           is_running: false,
         })
@@ -174,6 +183,26 @@ describe('TrainingPage 异步模型评估', () => {
     expect(wrapper.text()).toContain('defect')
     // 静默恢复历史报告，不重复弹"评估完成"
     expect(ElMessage.success).not.toHaveBeenCalled()
+  })
+
+  it('中断任务显示与完成任务相同的模型操作并恢复评估状态', async () => {
+    currentTask = { ...cancelledTask }
+    evalStatusResponses = [
+      { task_id: 1, status: 'completed', split: 'val', report: sampleReport },
+    ]
+
+    const wrapper = mountPage()
+    await flushAll()
+    await selectFirstTask(wrapper)
+
+    expect(findButton(wrapper, '模型评估')).toBeDefined()
+    expect(findButton(wrapper, '导出模型')).toBeDefined()
+    expect(findButton(wrapper, '下载权重')).toBeDefined()
+    expect(findButton(wrapper, '测试验证')).toBeDefined()
+    expect(getMock).toHaveBeenCalledWith('/training/validate/1/status', {
+      skipGlobalError: true,
+    })
+    expect(wrapper.text()).toContain('83.0%')
   })
 
   it('启动评估失败时提示错误且不进入轮询', async () => {
