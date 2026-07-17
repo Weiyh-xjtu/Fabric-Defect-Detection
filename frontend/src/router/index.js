@@ -48,6 +48,12 @@ const routes = [
         meta: { title: '模型训练', icon: 'Cpu', permission: 'model:manage' },
       },
       {
+        path: 'models',
+        name: 'ModelManagement',
+        component: () => import('@/views/ModelManagementPage.vue'),
+        meta: { title: '模型管理', icon: 'Box', permission: 'model:manage' },
+      },
+      {
         path: 'history',
         name: 'History',
         component: () => import('@/views/HistoryPage.vue'),

@@ -32,6 +32,7 @@ class HistoryService:
             .options(
                 joinedload(DetectionTask.scene),
                 joinedload(DetectionTask.user),
+                joinedload(DetectionTask.model_version),
             )
         )
         if user_id is not None:
@@ -87,6 +88,13 @@ class HistoryService:
             "status": task.status,
             "scene_id": task.scene_id,
             "scene_name": task.scene.display_name if task.scene else None,
+            "model_version_id": task.model_version_id,
+            "model_version": (
+                task.model_version.version if task.model_version else None
+            ),
+            "model_name": (
+                task.model_version.model_name if task.model_version else None
+            ),
             "initiator_user_id": task.user_id,
             "initiator_username": task.user.username if task.user else None,
             "total_images": int(task.total_images or 0),
@@ -109,6 +117,7 @@ class HistoryService:
             .options(
                 joinedload(DetectionTask.scene),
                 joinedload(DetectionTask.user),
+                joinedload(DetectionTask.model_version),
             )
             .filter(DetectionTask.id == task_id)
             .first()

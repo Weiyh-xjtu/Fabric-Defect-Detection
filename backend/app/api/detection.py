@@ -28,6 +28,7 @@ from fastapi import (
     Depends,
     File,
     Form,
+    HTTPException,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -46,6 +47,7 @@ from app.core.logger import get_logger
 from app.database.session import SessionLocal
 from app.entity.db_models import DetectionTask, User
 from app.services.detection_service import detection_service
+from app.services.model_management_service import model_management_service
 from app.agent.memory import conversation_memory
 from app.api.chat import persist_quick_detection
 
@@ -323,6 +325,21 @@ async def detect_video_api(
     支持格式：mp4, avi, mov, mkv, wmv, flv
     文件大小限制：50MB
     """
+    selection_db = SessionLocal()
+    try:
+        try:
+            selected_model = model_management_service.get_global_model_version(
+                selection_db
+            )
+        except (FileNotFoundError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if selected_model is None:
+            raise HTTPException(status_code=409, detail="尚未配置可用的全局检测模型")
+        selected_model_id = selected_model.id
+        selected_scene_id = selected_model.scene_id
+    finally:
+        selection_db.close()
+
     # ── 校验文件格式 ──
     allowed_video_types = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv"}
     suffix = os.path.splitext(file.filename or "")[1].lower()
@@ -370,7 +387,8 @@ async def detect_video_api(
     try:
         task = DetectionTask(
             user_id=user_id,
-            scene_id=scene_id or 1,
+            scene_id=selected_scene_id,
+            model_version_id=selected_model_id,
             task_type="video",
             status="processing",
             conf_threshold=conf,
@@ -399,7 +417,7 @@ async def detect_video_api(
                 iou=iou,
                 frame_sample_rate=frame_sample_rate,
                 max_frames=max_frames,
-                scene_id=scene_id,
+                scene_id=selected_scene_id,
                 user_id=user_id,
                 task_id=task_id,
             )
@@ -778,6 +796,8 @@ async def camera_detection_ws(websocket: WebSocket):
                     "source": source,
                     "mode": mode,
                     "message": f"配置成功，模式: {mode}",
+                    "model_version_id": getattr(model, "_platform_model_version_id", None),
+                    "model_version": getattr(model, "_platform_model_version", None),
                 }
 
                 if source == "ip_webcam":

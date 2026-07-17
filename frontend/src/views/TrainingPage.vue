@@ -270,7 +270,7 @@
         <el-form-item label="版本描述">
           <el-input v-model="exportForm.description" type="textarea" :rows="3" maxlength="1000" show-word-limit />
         </el-form-item>
-        <el-form-item label="设为默认">
+        <el-form-item label="设为全局模型">
           <el-switch v-model="exportForm.set_default" />
         </el-form-item>
         <el-form-item label="上传 MinIO">
