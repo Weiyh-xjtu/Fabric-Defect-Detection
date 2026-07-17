@@ -3,7 +3,7 @@
     <!-- 左侧：Logo + 平台名称 -->
     <div class="header-left">
       <img :src="productAvatar" alt="logo" class="header-logo" />
-      <span class="header-title">RSOD Agent Platform</span>
+      <span class="header-title">FIRESIGHT</span>
     </div>
 
     <!-- 右侧：用户信息 + 退出按钮 -->
@@ -92,8 +92,8 @@ function handleCommand(command) {
 
 .header-title {
   font-size: 17px;
-  font-weight: 600;
-  color: $text-primary;
+  font-weight: 700;
+  color: #b71c1c;
 }
 
 .header-right {

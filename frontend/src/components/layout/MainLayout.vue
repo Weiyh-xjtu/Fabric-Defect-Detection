@@ -8,7 +8,7 @@
       <AppSidebar />
 
       <!-- 页面内容区 -->
-      <main class="layout-content">
+      <main :class="['layout-content', { 'layout-content-chat': isChatRoute }]">
         <router-view />
       </main>
     </div>
@@ -16,8 +16,13 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
+
+const route = useRoute()
+const isChatRoute = computed(() => route.path.startsWith('/chat'))
 </script>
 
 <style lang="scss" scoped>
@@ -39,5 +44,10 @@ import AppSidebar from './AppSidebar.vue'
   background: $bg-color;
   overflow-y: auto;
   padding: $spacing-lg;
+}
+
+.layout-content-chat {
+  background: #fff;
+  padding: 0;
 }
 </style>

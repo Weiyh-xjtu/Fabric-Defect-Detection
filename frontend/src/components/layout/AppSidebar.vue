@@ -3,9 +3,9 @@
     <el-menu
       :default-active="activeMenu"
       :router="true"
-      background-color="#ffffff"
+      background-color="#f3f4f6"
       text-color="#303133"
-      active-text-color="#409eff"
+      active-text-color="#303133"
     >
       <el-menu-item
         v-for="item in menuItems"
@@ -22,7 +22,7 @@
     <section v-if="isChatRoute" class="chat-history-section">
       <div class="history-header">
         <span class="history-title">历史对话</span>
-        <el-button size="small" type="primary" plain @click="handleNewChat">
+        <el-button size="small" class="new-chat-button" @click="handleNewChat">
           + 新对话
         </el-button>
       </div>
@@ -195,25 +195,29 @@ onMounted(() => {
   height: 100%;
   overflow: hidden;
   font-size: 15px;
-  background: #fff;
-  border-right: 1px solid #ebeef5;
+  background: #f3f4f6;
+  border-right: 1px solid #e5e7eb;
 
   .el-menu {
     flex-shrink: 0;
+    padding: 8px;
     border-right: none;
   }
 
   .el-menu-item {
     height: 50px;
+    margin-bottom: 4px;
+    border-radius: 12px;
     font-size: 15px;
     line-height: 50px;
 
     &.is-active {
-      background-color: #ecf5ff !important;
+      font-weight: 700;
+      background-color: #fff !important;
     }
 
     &:hover {
-      background-color: #f5f7fa !important;
+      background-color: #fff !important;
     }
   }
 }
@@ -239,6 +243,20 @@ onMounted(() => {
   color: #606266;
   font-size: 14px;
   font-weight: 600;
+}
+
+.new-chat-button {
+  color: #303133;
+  font-weight: 600;
+  background: #fff;
+  border-color: #dcdfe6;
+
+  &:hover,
+  &:focus {
+    color: #303133;
+    background: #fff;
+    border-color: #c0c4cc;
+  }
 }
 
 .session-list {
@@ -270,7 +288,8 @@ onMounted(() => {
 
   &.active {
     color: #303133;
-    background: #ecf5ff;
+    font-weight: 700;
+    background: #fff;
   }
 }
 
