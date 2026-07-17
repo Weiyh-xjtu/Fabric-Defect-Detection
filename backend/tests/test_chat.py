@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import tempfile
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -590,3 +591,119 @@ def test_list_session_attachments_requires_session_context(monkeypatch):
     )
     listing = json.loads(list_session_attachments.invoke({}))
     assert "无法查询历史附件" in listing["error"]
+
+
+def test_list_session_attachments_restores_minio_original_after_cache_loss(
+    monkeypatch,
+    tmp_path,
+):
+    """Redis/临时路径丢失后，应从当前用户的数据库引用和 MinIO 原图恢复。"""
+    from app.agent import attachment_store
+    from app.entity.db_models import ChatMessage, ChatSession, User
+    from tests.conftest import TestSessionLocal
+
+    marker = uuid.uuid4().hex
+    session_uuid = f"restore-attachment-{marker}"
+    db = TestSessionLocal()
+    try:
+        user = User(
+            username=f"restore_user_{marker}",
+            email=f"restore_{marker}@example.com",
+            hashed_password="test-hash",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        user_id = user.id
+        session = ChatSession(
+            user_id=user_id,
+            session_uuid=session_uuid,
+            title="历史附件恢复",
+        )
+        db.add(session)
+        db.flush()
+        object_name = f"chat-originals/{user_id}/{marker}_fabric.jpg"
+        db.add(
+            ChatMessage(
+                session_id=session.id,
+                role="user",
+                content="请检测这张图片",
+                attachments=[
+                    {
+                        "source": "user",
+                        "type": "image",
+                        "filename": "fabric.jpg",
+                        "object_name": object_name,
+                    }
+                ],
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    downloaded = []
+
+    class _DownloadingMinio:
+        def download_file(self, stored_object_name: str, file_path: str) -> str:
+            downloaded.append(stored_object_name)
+            with open(file_path, "wb") as output:
+                output.write(b"restored-image")
+            return file_path
+
+    monkeypatch.setattr(attachment_store, "SessionLocal", TestSessionLocal)
+    monkeypatch.setattr(attachment_store, "MinIOClient", _DownloadingMinio)
+    monkeypatch.setattr(attachment_store, "RESTORED_UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "app.agent.detection_agent._tool_permission_error", lambda _permission: None
+    )
+    conversation_memory.clear(session_uuid, user_id)
+
+    # 相同 session_uuid 不能被其他用户恢复，避免跨用户读取 MinIO 原件。
+    token_session = _current_session_id.set(session_uuid)
+    token_user = _current_user_id.set(user_id + 100000)
+    try:
+        other_user_listing = json.loads(list_session_attachments.invoke({}))
+    finally:
+        _current_session_id.reset(token_session)
+        _current_user_id.reset(token_user)
+    assert other_user_listing["total_rounds"] == 0
+    assert downloaded == []
+
+    name_map = {}
+    token_session = _current_session_id.set(session_uuid)
+    token_user = _current_user_id.set(user_id)
+    token_names = _current_attachment_names.set(name_map)
+    try:
+        listing = json.loads(
+            list_session_attachments.invoke({"attachment_type": "image"})
+        )
+    finally:
+        _current_session_id.reset(token_session)
+        _current_user_id.reset(token_user)
+        _current_attachment_names.reset(token_names)
+
+    try:
+        assert listing["total_rounds"] == 1
+        assert listing["available_files"] == 1
+        restored = listing["rounds"][0]["attachments"][0]
+        assert restored["filename"] == "fabric.jpg"
+        assert restored["file_exists"] is True
+        assert os.path.isfile(restored["path"])
+        assert downloaded == [object_name]
+        assert name_map[restored["path"]] == "fabric.jpg"
+        assert conversation_memory.load_attachment_history(
+            session_uuid, user_id
+        )[0][0]["path"] == restored["path"]
+    finally:
+        conversation_memory.clear(session_uuid, user_id)
+        cleanup_db = TestSessionLocal()
+        try:
+            stored_session = cleanup_db.query(ChatSession).filter(
+                ChatSession.session_uuid == session_uuid
+            ).first()
+            if stored_session is not None:
+                cleanup_db.delete(stored_session)
+            cleanup_db.commit()
+        finally:
+            cleanup_db.close()
