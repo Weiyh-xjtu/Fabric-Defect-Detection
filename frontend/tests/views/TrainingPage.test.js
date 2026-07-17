@@ -203,4 +203,39 @@ describe('TrainingPage 异步模型评估', () => {
     ).length
     expect(statusCallsAfter).toBe(statusCallsBefore)
   })
+
+  it('导出模型使用长超时，并由后端后台执行备份', async () => {
+    evalStatusResponses = [{ task_id: 1, status: 'idle' }]
+    postMock.mockImplementation((url) => {
+      if (url === '/training/export/1') {
+        return Promise.resolve({
+          message: '模型已导出，备份将在后台完成',
+          evaluation: { map50: 0.83, per_class: {} },
+        })
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mountPage()
+    await flushAll()
+    await selectFirstTask(wrapper)
+    await findButton(wrapper, '导出模型').trigger('click')
+    await flushAll()
+    await findButton(wrapper, '确认导出').trigger('click')
+    await flushAll()
+
+    expect(postMock).toHaveBeenCalledWith(
+      '/training/export/1',
+      {
+        version: null,
+        description: null,
+        set_default: false,
+        upload_minio: true,
+      },
+      {
+        timeout: 600000,
+        skipGlobalError: true,
+      },
+    )
+  })
 })

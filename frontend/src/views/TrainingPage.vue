@@ -273,7 +273,7 @@
         <el-form-item label="设为全局模型">
           <el-switch v-model="exportForm.set_default" />
         </el-form-item>
-        <el-form-item label="上传 MinIO">
+        <el-form-item label="同时备份">
           <el-switch v-model="exportForm.upload_minio" />
         </el-form-item>
       </el-form>
@@ -386,6 +386,7 @@ let mapChart = null
 let pollTimer = null
 let evalPollTimer = null
 let evalPollFailures = 0
+let metricsPolling = false
 
 // ── 训练表单 ──
 const trainForm = ref({
@@ -542,14 +543,19 @@ function initCharts() {
 
 // ── 获取训练指标并更新图表 ──
 async function fetchMetrics() {
-  if (!selectedTask.value) return
+  if (!selectedTask.value || metricsPolling) return
+  metricsPolling = true
   try {
     const taskId = selectedTask.value.id || selectedTask.value.task?.id
-    const res = await request.get(`/training/metrics/${taskId}`)
+    const res = await request.get(`/training/metrics/${taskId}`, {
+      skipGlobalError: true,
+    })
     const metrics = res.metrics || []
 
     // 更新任务状态
-    const statusRes = await request.get(`/training/status/${taskId}`)
+    const statusRes = await request.get(`/training/status/${taskId}`, {
+      skipGlobalError: true,
+    })
     if (statusRes) {
       selectedTask.value = {
         ...selectedTask.value,
@@ -564,6 +570,8 @@ async function fetchMetrics() {
     }
   } catch (e) {
     console.error('获取训练指标失败', e)
+  } finally {
+    metricsPolling = false
   }
 }
 
@@ -801,13 +809,25 @@ async function exportModel() {
       version: exportForm.value.version.trim() || null,
       description: exportForm.value.description.trim() || null,
     }
-    const result = await request.post(`/training/export/${selectedTask.value.id}`, payload)
+    const result = await request.post(
+      `/training/export/${selectedTask.value.id}`,
+      payload,
+      {
+        timeout: 600000,
+        skipGlobalError: true,
+      },
+    )
     const { per_class, ...overall } = result.evaluation
     evalReport.value = { overall, per_class }
     showExportDialog.value = false
     ElMessage.success(result.message)
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '模型导出失败')
+    const timedOut = e.code === 'ECONNABORTED' || String(e.message || '').toLowerCase().includes('timeout')
+    ElMessage.error(
+      timedOut
+        ? '模型导出处理超时，请稍后刷新训练任务和模型列表确认结果'
+        : e.response?.data?.detail || '模型导出失败',
+    )
   } finally {
     exporting.value = false
   }
