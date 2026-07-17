@@ -8,6 +8,7 @@ import app.api.training as training_api
 from app.config.settings import settings
 from app.entity.db_models import (
     DetectionScene,
+    ModelEvaluation,
     ModelVersion,
     Role,
     TrainingMetric,
@@ -265,6 +266,7 @@ def test_validate_export_and_download_model(db_session, tmp_path, monkeypatch):
 
     class FakeYOLO:
         names = {0: "defect"}
+        val_calls = 0
 
         def __init__(self, weights):
             assert weights.endswith("best.pt")
@@ -274,6 +276,7 @@ def test_validate_export_and_download_model(db_session, tmp_path, monkeypatch):
             self.callbacks[event] = callback
 
         def val(self, **kwargs):
+            type(self).val_calls += 1
             assert kwargs["data"] == str(data_yaml)
             assert kwargs["plots"] is True
             validator = types.SimpleNamespace(nt_per_class=[12])
@@ -287,12 +290,27 @@ def test_validate_export_and_download_model(db_session, tmp_path, monkeypatch):
     assert validation["per_class"] == {
         "defect": {"ap50": 0.83, "ap50_95": 0.51, "instances": 12}
     }
+    assert "confusion_matrix.png" in validation["artifacts"]
     model_version = (
         db_session.query(ModelVersion)
         .filter(ModelVersion.training_task_id == task.id)
         .one()
     )
     assert model_version.map50 == 0.83
+    evaluation_record = db_session.query(ModelEvaluation).filter_by(
+        training_task_id=task.id
+    ).one()
+    assert evaluation_record.weight_sha256
+    assert evaluation_record.dataset_fingerprint
+    assert evaluation_record.split == "val"
+    assert evaluation_record.conf == 0.001
+    assert evaluation_record.iou == 0.6
+    assert evaluation_record.imgsz == 640
+
+    cached_validation = TrainingService.validate_model(db_session, task.id)
+    assert cached_validation["cached"] is True
+    assert cached_validation["evaluation_id"] == evaluation_record.id
+    assert FakeYOLO.val_calls == 1
 
     exported = TrainingService.export_model(
         db_session,
@@ -309,6 +327,19 @@ def test_validate_export_and_download_model(db_session, tmp_path, monkeypatch):
     report = json.loads((export_dir / "eval_report.json").read_text(encoding="utf-8"))
     assert report["training_config"]["augment_config"] == {"mosaic": 0.5}
     assert exported["is_default"] is True
+    # 导出应复用完全匹配的评估记录，不再次执行 model.val()。
+    assert FakeYOLO.val_calls == 1
+
+    data_yaml.write_text(
+        "path: .\ntrain: images/train\nval: images/val\nnames: [defect]\n# changed\n",
+        encoding="utf-8",
+    )
+    refreshed_validation = TrainingService.validate_model(db_session, task.id)
+    assert refreshed_validation["cached"] is False
+    assert FakeYOLO.val_calls == 2
+    assert db_session.query(ModelEvaluation).filter_by(
+        training_task_id=task.id
+    ).count() == 2
 
     download = TrainingService.get_model_download_path(db_session, task.id)
     assert download["filename"] == "best_day7-eval.pt"
@@ -439,6 +470,8 @@ def test_start_validation_runs_in_background_and_reports_status(
         "status": "running",
         "split": "val",
         "message": "评估任务已启动，请轮询评估状态获取结果",
+        "cached": False,
+        "report": None,
     }
 
     _running_evaluations[task.id]["thread"].join(timeout=10)
@@ -452,6 +485,16 @@ def test_start_validation_runs_in_background_and_reports_status(
     assert status["started_at"] is not None
     assert status["completed_at"] is not None
     _running_evaluations.pop(task.id, None)
+
+    cached_start = TrainingService.start_validation(db_session, task.id)
+    assert cached_start["status"] == "completed"
+    assert cached_start["cached"] is True
+    assert cached_start["report"]["overall"]["map50"] == 0.83
+    _running_evaluations.pop(task.id, None)
+
+    persisted_status = TrainingService.get_validation_status(task.id, db=db_session)
+    assert persisted_status["status"] == "completed"
+    assert persisted_status["cached"] is True
 
 
 def test_start_validation_rejects_duplicate_and_invalid_tasks(
@@ -488,4 +531,5 @@ def test_get_validation_status_defaults_to_idle():
     assert TrainingService.get_validation_status(424242) == {
         "task_id": 424242,
         "status": "idle",
+        "cached": False,
     }

@@ -17,6 +17,7 @@ import asyncio
 import base64
 import os
 import tempfile
+from pathlib import Path
 
 import cv2
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
@@ -29,7 +30,7 @@ from app.core.rbac import MODEL_MANAGE
 from app.config.settings import settings
 from app.core.logger import get_logger
 from app.database.session import SessionLocal, get_db
-from app.entity.db_models import DetectionScene, TrainingTask
+from app.entity.db_models import DetectionScene, ModelEvaluation, TrainingTask
 from app.entity.schemas import (
     ModelExportRequest,
     ModelExportResponse,
@@ -40,7 +41,7 @@ from app.entity.schemas import (
     TrainingTaskCreate,
     TrainingTaskResponse,
 )
-from app.training.training_service import training_service
+from app.training.training_service import _task_output_dir, training_service
 from app.services.model_management_service import model_management_service
 
 logger = get_logger(__name__)
@@ -354,7 +355,42 @@ async def get_validation_status(
 ):
     """查询模型评估状态；completed 时携带评估报告。"""
     _get_owned_task(db, task_id, current_user)
-    return training_service.get_validation_status(task_id)
+    return training_service.get_validation_status(task_id, db=db)
+
+
+@router.get("/validate/{task_id}/artifacts/{filename}")
+async def get_validation_artifact(
+    task_id: int,
+    filename: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
+):
+    """返回持久化评估记录关联的图表文件。"""
+    task = _get_owned_task(db, task_id, current_user)
+    safe_name = Path(filename).name
+    if safe_name != filename:
+        raise HTTPException(status_code=400, detail="评估文件名无效")
+    evaluations = (
+        db.query(ModelEvaluation)
+        .filter(ModelEvaluation.training_task_id == task_id)
+        .order_by(ModelEvaluation.evaluated_at.desc(), ModelEvaluation.id.desc())
+        .all()
+    )
+    artifact_path = next(
+        (
+            Path(item.artifact_paths[safe_name])
+            for item in evaluations
+            if item.artifact_paths and safe_name in item.artifact_paths
+        ),
+        None,
+    )
+    if artifact_path is None or not artifact_path.is_file():
+        raise HTTPException(status_code=404, detail="评估图表不存在")
+    try:
+        artifact_path.resolve().relative_to(_task_output_dir(task.task_uuid).resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="评估图表路径无效")
+    return FileResponse(path=str(artifact_path), filename=safe_name)
 
 
 @router.post("/export/{task_id}", response_model=ModelExportResponse)

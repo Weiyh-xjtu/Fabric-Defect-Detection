@@ -204,6 +204,41 @@ describe('TrainingPage 异步模型评估', () => {
     expect(statusCallsAfter).toBe(statusCallsBefore)
   })
 
+  it('评估条件完全匹配时直接展示缓存报告且不启动轮询', async () => {
+    evalStatusResponses = [{ task_id: 1, status: 'idle' }]
+    postMock.mockResolvedValue({
+      task_id: 1,
+      status: 'completed',
+      split: 'val',
+      cached: true,
+      message: '已复用匹配的历史评估结果',
+      report: {
+        ...sampleReport,
+        cached: true,
+        evaluated_at: '2026-07-17T12:00:00',
+        artifacts: {},
+      },
+    })
+
+    const wrapper = mountPage()
+    await flushAll()
+    await selectFirstTask(wrapper)
+    const statusCallsBefore = getMock.mock.calls.filter(
+      ([url]) => url === '/training/validate/1/status',
+    ).length
+
+    await findButton(wrapper, '模型评估').trigger('click')
+    await flushAll()
+    expect(wrapper.text()).toContain('复用历史评估')
+    expect(wrapper.text()).toContain('83.0%')
+
+    await flushAll(10000)
+    const statusCallsAfter = getMock.mock.calls.filter(
+      ([url]) => url === '/training/validate/1/status',
+    ).length
+    expect(statusCallsAfter).toBe(statusCallsBefore)
+  })
+
   it('导出模型使用长超时，并由后端后台执行备份', async () => {
     evalStatusResponses = [{ task_id: 1, status: 'idle' }]
     postMock.mockImplementation((url) => {
