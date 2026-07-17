@@ -20,6 +20,49 @@ logger = get_logger(__name__)
 _VALID_AGENTS = {"detection", "analysis", "qa"}
 
 
+def _has_cycle(plan: list[dict]) -> bool:
+    """Kahn 逐层消解：无法全部消解则存在依赖环。"""
+    deps = {entry["agent"]: set(entry.get("depends_on") or []) for entry in plan}
+    resolved: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for agent, agent_deps in deps.items():
+            if agent not in resolved and agent_deps <= resolved:
+                resolved.add(agent)
+                changed = True
+    return len(resolved) != len(deps)
+
+
+def sanitize_dependencies(plan: list[dict]) -> list[dict]:
+    """规整每个子任务的 depends_on，保证其合法且无环。
+
+    - 只保留指向计划内其它专家的引用（丢弃自引用、指向不存在专家的悬空引用）；
+    - 去重并保持首现顺序；
+    - 若出现依赖环，整体降级为并行（清空所有 depends_on），避免调度死锁。
+
+    就地修改并返回同一 plan 列表。
+    """
+    present = {entry["agent"] for entry in plan}
+    for entry in plan:
+        raw = entry.get("depends_on")
+        raw = raw if isinstance(raw, list) else []
+        clean: list[str] = []
+        for dep in raw:
+            dep = str(dep).strip().lower()
+            if dep in present and dep != entry["agent"] and dep not in clean:
+                clean.append(dep)
+        entry["depends_on"] = clean
+    if _has_cycle(plan):
+        logger.warning(
+            "规划存在依赖环，降级为并行执行: %s",
+            [(entry["agent"], entry["depends_on"]) for entry in plan],
+        )
+        for entry in plan:
+            entry["depends_on"] = []
+    return plan
+
+
 class SupervisorAgent:
     """主管 Agent"""
 
@@ -78,13 +121,18 @@ class SupervisorAgent:
             task = str(item.get("task", "")).strip()
             if agent not in _VALID_AGENTS or not task:
                 return None
+            raw_deps = item.get("depends_on")
+            deps = [str(d).strip().lower() for d in raw_deps] if isinstance(raw_deps, list) else []
             if agent in merged:
                 # 同一专家的多条子任务合并为一条，保持每个专家最多执行一次
                 merged[agent]["task"] += "；" + task
+                merged[agent]["depends_on"].extend(deps)
             else:
-                merged[agent] = {"agent": agent, "task": task}
+                merged[agent] = {"agent": agent, "task": task, "depends_on": deps}
                 plan.append(merged[agent])
-        return plan or None
+        if not plan:
+            return None
+        return sanitize_dependencies(plan)
 
     @staticmethod
     def _parse_llm_route(content: object) -> str | None:

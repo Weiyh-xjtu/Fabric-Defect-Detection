@@ -260,3 +260,98 @@ async def test_detection_agent_record_memory_flag(monkeypatch):
     async for _ in agent.chat_stream(message="x", user_id=1, session_id="s"):
         pass
     assert [role for role, _ in appends] == ["user", "assistant"]
+
+
+def _dep_plan(plan):
+    async def _plan(message, attachments=None):
+        return plan
+
+    return _plan
+
+
+@pytest.mark.asyncio
+async def test_parallel_stream_injects_upstream_output_into_dependent(orchestrator, monkeypatch):
+    """依赖递进：下游专家应等上游完成，并把上游输出注入自己的任务 prompt。"""
+    detection = _FakeSpecialist([{"type": "text_chunk", "content": "检出破洞缺陷"}], delay=0.02)
+    analysis = _FakeSpecialist([{"type": "text_chunk", "content": "破洞本周共3次"}])
+    orchestrator.specialists = {"detection": detection, "analysis": analysis, "qa": None}
+    monkeypatch.setattr(
+        orchestrator,
+        "plan",
+        _dep_plan([
+            {"agent": "detection", "task": "检测这张图片", "depends_on": []},
+            {"agent": "analysis", "task": "统计这类缺陷本周次数", "depends_on": ["detection"]},
+        ]),
+    )
+
+    events = await _collect(
+        orchestrator.chat_stream(
+            message="检测这张图并统计这类缺陷本周次数",
+            attachments=[{"type": "image", "path": "/tmp/x.jpg"}],
+            user_id=1,
+            session_id="dep1",
+        )
+    )
+    assert not any(e["type"] == "error" for e in events)
+    # 上游输出被注入下游任务
+    assert "检出破洞缺陷" in analysis.received["message"]
+    assert "检测这张图片" not in analysis.received["message"]  # 下游 message 用自己的 task
+    assert "统计这类缺陷本周次数" in analysis.received["message"]
+    merged = "".join(e["content"] for e in events if e["type"] == "text_chunk")
+    assert merged.index("检出破洞缺陷") < merged.index("破洞本周共3次")
+
+
+@pytest.mark.asyncio
+async def test_parallel_stream_skips_dependent_when_upstream_fails(orchestrator, monkeypatch):
+    """上游失败时下游跳过执行，标记为依赖缺失，且不启动下游专家。"""
+    detection = _FakeSpecialist([{"type": "error", "content": "模型加载失败"}])
+    analysis = _FakeSpecialist([{"type": "text_chunk", "content": "不应执行"}])
+    orchestrator.specialists = {"detection": detection, "analysis": analysis, "qa": None}
+    monkeypatch.setattr(
+        orchestrator,
+        "plan",
+        _dep_plan([
+            {"agent": "detection", "task": "检测这张图片", "depends_on": []},
+            {"agent": "analysis", "task": "统计这类缺陷", "depends_on": ["detection"]},
+        ]),
+    )
+
+    events = await _collect(
+        orchestrator.chat_stream(message="x", user_id=1, session_id="dep2")
+    )
+    # 下游专家未被真正调用
+    assert analysis.received == {}
+    merged = "".join(e["content"] for e in events if e["type"] == "text_chunk")
+    assert "⚠️ 检测专家处理失败：模型加载失败" in merged
+    assert "数据分析" in merged  # 下游节以依赖缺失说明呈现
+    assert "不应执行" not in merged
+
+
+@pytest.mark.asyncio
+async def test_chat_honors_dependencies_with_waves(orchestrator, monkeypatch):
+    """非流式 chat() 应按波执行：上游先跑、输出注入下游。"""
+    class _FakeChatSpecialist:
+        def __init__(self, output):
+            self.output = output
+            self.received = {}
+
+        async def chat(self, **kwargs):
+            self.received = kwargs
+            return {"output": self.output, "intermediate_steps": []}
+
+    detection = _FakeChatSpecialist("检出污渍缺陷")
+    analysis = _FakeChatSpecialist("污渍本周5次")
+    orchestrator.specialists = {"detection": detection, "analysis": analysis, "qa": None}
+    monkeypatch.setattr(
+        orchestrator,
+        "plan",
+        _dep_plan([
+            {"agent": "detection", "task": "检测", "depends_on": []},
+            {"agent": "analysis", "task": "统计这类缺陷", "depends_on": ["detection"]},
+        ]),
+    )
+
+    result = await orchestrator.chat(message="x", user_id=1, session_id="dep3")
+    assert result["agent_used"] == "detection,analysis"
+    assert "检出污渍缺陷" in analysis.received["message"]
+    assert result["output"].index("检出污渍缺陷") < result["output"].index("污渍本周5次")
