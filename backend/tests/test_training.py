@@ -4,6 +4,8 @@ import json
 import sys
 import types
 
+import pytest
+
 import app.api.training as training_api
 from app.config.settings import settings
 from app.entity.db_models import (
@@ -144,6 +146,79 @@ def test_export_api_schedules_backup_after_response_work(
     assert captured == {"upload_minio": False, "backup_id": 99}
 
 
+def test_cancelled_task_can_predict_with_saved_weights(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """中断任务保存的权重可以通过训练页图片测试接口推理。"""
+    username = "cancelled_predict_admin"
+    headers = _auth_headers(client, db_session, username)
+    user = db_session.query(User).filter_by(username=username).one()
+    scene = DetectionScene(
+        name="cancelled_predict_scene",
+        display_name="中断模型测试场景",
+        category="industry",
+        class_names=["defect"],
+        is_active=True,
+    )
+    db_session.add(scene)
+    db_session.flush()
+    task = TrainingTask(
+        user_id=user.id,
+        scene_id=scene.id,
+        task_uuid="cancelled-predict-task",
+        status="cancelled",
+        img_size=640,
+    )
+    db_session.add(task)
+    db_session.commit()
+
+    weights_dir = tmp_path / f"task_{task.task_uuid}" / "weights"
+    weights_dir.mkdir(parents=True)
+    (weights_dir / "best.pt").write_bytes(b"model-weights")
+    monkeypatch.setattr(settings, "TRAIN_OUTPUT_DIR", str(tmp_path))
+
+    class FakeResult:
+        boxes = None
+        speed = {"inference": 12.34}
+
+        @staticmethod
+        def plot() -> object:
+            return object()
+
+    class FakeYOLO:
+        names = {0: "defect"}
+
+        def __init__(self, weights: str) -> None:
+            assert weights.endswith("best.pt")
+
+        @staticmethod
+        def predict(**kwargs: object) -> list[FakeResult]:
+            assert kwargs["imgsz"] == 640
+            return [FakeResult()]
+
+    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO))
+    monkeypatch.setattr(
+        training_api.cv2,
+        "imencode",
+        lambda *_args, **_kwargs: (True, b"annotated-image"),
+    )
+
+    response = client.post(
+        "/api/training/predict",
+        headers=headers,
+        data={"task_id": task.id, "conf": 0.25, "iou": 0.45},
+        files={"file": ("sample.jpg", b"image-content", "image/jpeg")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["task_id"] == task.id
+    assert response.json()["total_objects"] == 0
+    assert response.json()["inference_time"] == 12.34
+
+
 def test_parse_final_results_does_not_add_an_extra_epoch(db_session, tmp_path):
     """Ultralytics 的 results.csv 使用从 1 开始的 epoch 编号。"""
     task_id = 1
@@ -211,10 +286,18 @@ def test_augmentation_config_only_applies_supported_keys():
     ) == {"mosaic": 0.8, "mixup": 0.1, "fliplr": 0.5}
 
 
-def test_validate_export_and_download_model(db_session, tmp_path, monkeypatch):
-    """评估指标应入库，导出目录应包含权重和报告，下载优先 best.pt。"""
+@pytest.mark.parametrize("task_status", ["completed", "cancelled"])
+def test_validate_export_and_download_model(
+    db_session,
+    tmp_path,
+    monkeypatch,
+    task_status: str,
+) -> None:
+    """完成和中断任务均可评估、导出，且下载优先 best.pt。"""
+    scene_name = f"day7_fdd_{task_status}"
+    task_uuid = f"day7-eval-{task_status}"
     scene = DetectionScene(
-        name="day7_fdd",
+        name=scene_name,
         display_name="Day7 织物缺陷检测",
         category="industry",
         class_names=["defect"],
@@ -228,8 +311,8 @@ def test_validate_export_and_download_model(db_session, tmp_path, monkeypatch):
     task = TrainingTask(
         user_id=1,
         scene_id=scene.id,
-        task_uuid="day7-eval",
-        status="completed",
+        task_uuid=task_uuid,
+        status=task_status,
         model_name="yolo11n",
         epochs=5,
         img_size=640,
@@ -321,7 +404,7 @@ def test_validate_export_and_download_model(db_session, tmp_path, monkeypatch):
         upload_minio=False,
     )
     assert "error" not in exported
-    export_dir = tmp_path.parent / "models" / "day7_fdd_v1.1.0"
+    export_dir = tmp_path.parent / "models" / f"{scene_name}_v1.1.0"
     assert (export_dir / "best.pt").read_bytes() == b"model-weights"
     assert (export_dir / "confusion_matrix.png").exists()
     report = json.loads((export_dir / "eval_report.json").read_text(encoding="utf-8"))
@@ -342,7 +425,7 @@ def test_validate_export_and_download_model(db_session, tmp_path, monkeypatch):
     ).count() == 2
 
     download = TrainingService.get_model_download_path(db_session, task.id)
-    assert download["filename"] == "best_day7-eval.pt"
+    assert download["filename"] == f"best_{task_uuid}.pt"
 
 
 def test_resolve_eval_device_follows_training_device_with_cpu_fallback(monkeypatch):
@@ -382,8 +465,14 @@ def test_resolve_eval_device_follows_training_device_with_cpu_fallback(monkeypat
     assert _resolve_eval_device("0") == "cpu"
 
 
-def _make_completed_task(db_session, tmp_path, monkeypatch, task_uuid):
-    """构造一个带权重与 data.yaml 的已完成训练任务。"""
+def _make_completed_task(
+    db_session,
+    tmp_path,
+    monkeypatch,
+    task_uuid: str,
+    status: str = "completed",
+) -> TrainingTask:
+    """构造一个带权重与 data.yaml 的可用训练任务。"""
     scene = DetectionScene(
         name=f"scene_{task_uuid}",
         display_name="异步评估场景",
@@ -403,7 +492,7 @@ def _make_completed_task(db_session, tmp_path, monkeypatch, task_uuid):
         user_id=1,
         scene_id=scene.id,
         task_uuid=task_uuid,
-        status="completed",
+        status=status,
         model_name="yolo11n",
         epochs=5,
         img_size=640,
@@ -424,11 +513,21 @@ def _make_completed_task(db_session, tmp_path, monkeypatch, task_uuid):
     return task
 
 
+@pytest.mark.parametrize("task_status", ["completed", "cancelled"])
 def test_start_validation_runs_in_background_and_reports_status(
-    db_session, tmp_path, monkeypatch
-):
-    """异步评估：启动立即返回 running，线程完成后状态携带评估报告。"""
-    task = _make_completed_task(db_session, tmp_path, monkeypatch, "async-eval")
+    db_session,
+    tmp_path,
+    monkeypatch,
+    task_status: str,
+) -> None:
+    """完成和中断任务的异步评估均能返回报告。"""
+    task = _make_completed_task(
+        db_session,
+        tmp_path,
+        monkeypatch,
+        f"async-eval-{task_status}",
+        status=task_status,
+    )
 
     class BoxMetrics:
         mp = 0.81
@@ -519,7 +618,7 @@ def test_start_validation_rejects_duplicate_and_invalid_tasks(
     task.status = "running"
     db_session.commit()
     not_completed = TrainingService.start_validation(db_session, task.id)
-    assert "只有已完成的任务才能评估" in not_completed["error"]
+    assert "当前状态不能评估模型" in not_completed["error"]
 
     missing = TrainingService.start_validation(db_session, task_id=987654)
     assert missing == {"error": "训练任务不存在"}

@@ -106,7 +106,7 @@
           <div ref="mapChartRef" style="height: 350px"></div>
         </el-col>
       </el-row>
-      <el-card v-if="selectedTask.status === 'completed'" class="model-actions" shadow="never">
+      <el-card v-if="isModelReadyTask(selectedTask)" class="model-actions" shadow="never">
         <template #header>
           <div class="card-header">
             <span>模型评估与导出</span>
@@ -364,6 +364,8 @@ import { Plus, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import request from '@/utils/request'
 
+const MODEL_READY_TASK_STATUSES = new Set(['completed', 'cancelled'])
+
 // ── 状态变量 ──
 const taskList = ref([])
 const loadingTasks = ref(false)
@@ -514,6 +516,10 @@ function statusText(status) {
     cancelled: '已取消',
   }
   return map[status] || status
+}
+
+function isModelReadyTask(task) {
+  return MODEL_READY_TASK_STATUSES.has(task?.status)
 }
 
 async function openCreateDialog() {
@@ -826,7 +832,7 @@ async function pollEvalStatus(taskId) {
 
 // 选中任务时恢复评估状态：评估进行中则继续轮询，已完成则直接展示上次报告
 async function restoreEvalState(task) {
-  if (task.status !== 'completed') return
+  if (!isModelReadyTask(task)) return
   try {
     const res = await request.get(`/training/validate/${task.id}/status`, {
       skipGlobalError: true,

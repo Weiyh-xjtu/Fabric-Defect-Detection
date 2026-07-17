@@ -50,6 +50,8 @@ from app.entity.db_models import (
 
 logger = get_logger(__name__)
 
+MODEL_READY_TASK_STATUSES = frozenset({"completed", "cancelled"})
+
 # ── 训练进程注册表 ────────────────────────────────────
 # 存储正在运行的训练任务的 model 引用，用于中途停止训练
 # key: task_uuid, value: YOLO model 实例
@@ -643,12 +645,12 @@ class TrainingService:
         conf: float = 0.001,
         iou: float = 0.6,
     ) -> dict:
-        """在指定数据集划分上评估已完成训练的最佳权重。"""
+        """在指定数据集划分上评估已产出模型的最佳权重。"""
         task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
         if not task:
             return {"error": "训练任务不存在"}
-        if task.status != "completed":
-            return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能评估"}
+        if task.status not in MODEL_READY_TASK_STATUSES:
+            return {"error": f"训练任务状态为 {task.status}，当前状态不能评估模型"}
 
         cached_evaluation, signature = _find_cached_evaluation(
             db,
@@ -831,8 +833,8 @@ class TrainingService:
         task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
         if not task:
             return {"error": "训练任务不存在"}
-        if task.status != "completed":
-            return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能评估"}
+        if task.status not in MODEL_READY_TASK_STATUSES:
+            return {"error": f"训练任务状态为 {task.status}，当前状态不能评估模型"}
 
         cached_evaluation, signature = _find_cached_evaluation(
             db,
@@ -1008,8 +1010,8 @@ class TrainingService:
         task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
         if not task:
             return {"error": "训练任务不存在"}
-        if task.status != "completed":
-            return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能导出"}
+        if task.status not in MODEL_READY_TASK_STATUSES:
+            return {"error": f"训练任务状态为 {task.status}，当前状态不能导出模型"}
 
         weights_path = _task_output_dir(task.task_uuid) / "weights" / "best.pt"
         if not weights_path.exists():
