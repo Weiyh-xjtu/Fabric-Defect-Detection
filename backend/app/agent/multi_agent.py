@@ -49,6 +49,27 @@ def _section_header(agent: str, first: bool) -> str:
     return ("" if first else "\n\n---\n\n") + f"#### {emoji} {label}\n\n"
 
 
+def _format_upstream_context(upstream_outputs: dict | None) -> str:
+    """把上游专家的输出整理成注入下游任务 prompt 的依赖上下文。
+
+    仅保留有实际文本的上游结果；全部为空时返回空串（视为无上下文）。
+    """
+    if not upstream_outputs:
+        return ""
+    parts: list[str] = []
+    for agent, output in upstream_outputs.items():
+        text = (output or "").strip()
+        if text:
+            parts.append(f"【{AGENT_LABELS.get(agent, agent)}的结果】\n{text}")
+    if not parts:
+        return ""
+    body = "\n\n".join(parts)
+    return (
+        "[以下是你所依赖的其它专家已完成的结果，请据此完成上面的任务，不要重复它们已给出的内容]\n"
+        + body
+    )
+
+
 class MultiAgentOrchestrator:
     def __init__(self, supervisor_llm=_USE_CONFIGURED_LLM):
         def mark(name):
@@ -126,10 +147,20 @@ class MultiAgentOrchestrator:
             plan.insert(0, {"agent": "detection", "task": "检测用户上传的附件"})
         return plan
 
-    def _specialist_kwargs(self, entry: dict, kwargs: dict) -> dict:
-        """构造并行模式下单个专家的调用参数。"""
+    def _specialist_kwargs(
+        self, entry: dict, kwargs: dict, upstream_outputs: dict | None = None
+    ) -> dict:
+        """构造并行模式下单个专家的调用参数。
+
+        upstream_outputs：{上游专家名: 其输出文本}。非空时把上游结论拼进 message，
+        使下游任务能基于上游结果继续（依赖递进）。
+        """
         sk = dict(kwargs)
-        sk["message"] = entry["task"]
+        task = entry["task"]
+        context = _format_upstream_context(upstream_outputs)
+        if context:
+            task = f"{task}\n\n{context}"
+        sk["message"] = task
         sk["record_memory"] = False  # 会话记忆由编排器统一写一次
         if entry["agent"] != "detection":
             # 附件只交给检测专家：其余专家不注册附件轮次，避免重复写入
@@ -151,10 +182,17 @@ class MultiAgentOrchestrator:
             yield event
 
     async def _parallel_chat_stream(self, plan: list[dict], **kwargs) -> AsyncGenerator[dict, None]:
-        """并行执行多个专家并把事件合并为单一有序流。
+        """按依赖关系执行多个专家并把事件合并为单一有序流。
 
-        合并策略：
-          - tool_call / tool_result 实时透传（带 agent 标签），工具并行过程可见；
+        执行模型（依赖递进）：
+          - 无 depends_on 的专家立即启动，天然并行；
+          - 有 depends_on 的专家先等待其全部上游完成，再把上游的输出文本注入
+            自己的任务 prompt（见 _specialist_kwargs 的 upstream_outputs），
+            从而“用上游结果继续下游”，实现含依赖的递进执行；
+          - 上游失败时下游不再执行，直接标记为失败（依赖缺失）。
+
+        合并策略（与纯并行版一致）：
+          - tool_call / tool_result 实时透传（带 agent 标签），工具过程可见；
           - 文本按计划顺序“有序渐进冲刷”：首位专家实时直出，其余按专家缓冲，
             前序专家完成后依序发分节标题、冲刷缓冲并转为实时；
           - 单专家失败转为该节 ⚠️ 文本；全部失败才对外发真正的 error 事件。
@@ -163,18 +201,47 @@ class MultiAgentOrchestrator:
         yield {"type": "agent_route", "agent": agents[0], "agents": agents, "plan": plan}
 
         queue: asyncio.Queue = asyncio.Queue()
+        # 每个专家一个完成事件 + 其输出文本，供下游 gating 与结果注入使用。
+        done_events: dict[str, asyncio.Event] = {a: asyncio.Event() for a in agents}
+        outputs: dict[str, str] = {}        # agent -> 已收集的输出文本
+        failed_agents: set[str] = set()      # 自身失败或上游失败而未执行的专家
 
         async def produce(entry: dict) -> None:
             agent_name = entry["agent"]
+            collected: list[str] = []
             try:
+                # 依赖递进：等待全部上游完成，再注入其输出继续本任务。
+                for dep in entry.get("depends_on") or []:
+                    await done_events[dep].wait()
+                missing = [d for d in (entry.get("depends_on") or []) if d in failed_agents]
+                if missing:
+                    failed_agents.add(agent_name)
+                    labels = "、".join(AGENT_LABELS.get(d, d) for d in missing)
+                    await queue.put({
+                        "type": "error",
+                        "agent": agent_name,
+                        "content": f"依赖的{labels}未成功完成，已跳过",
+                    })
+                    return
+                upstream = {dep: outputs.get(dep, "") for dep in (entry.get("depends_on") or [])}
                 async for event in self.specialists[agent_name].chat_stream(
-                    **self._specialist_kwargs(entry, kwargs)
+                    **self._specialist_kwargs(entry, kwargs, upstream)
                 ):
                     event["agent"] = agent_name
+                    etype = event.get("type")
+                    if etype == "text_chunk":
+                        collected.append(str(event.get("content", "")))
+                    elif etype == "error":
+                        # 专家以 error 事件（而非抛异常）报告失败时也要标记，
+                        # 否则依赖它的下游会误判上游成功而继续执行。
+                        failed_agents.add(agent_name)
                     await queue.put(event)
             except Exception as exc:  # chat_stream 自身兜错，这里是双保险
+                failed_agents.add(agent_name)
                 await queue.put({"type": "error", "agent": agent_name, "content": str(exc)})
             finally:
+                outputs[agent_name] = "".join(collected)
+                done_events[agent_name].set()  # 无论成功失败都释放下游，避免死等
                 await queue.put({"type": _SPECIALIST_DONE, "agent": agent_name})
 
         tasks = [asyncio.create_task(produce(entry)) for entry in plan]
@@ -266,18 +333,55 @@ class MultiAgentOrchestrator:
             result["agent_used"] = agent_name
             return result
 
-        # 并行执行；DetectionAgent.chat 自行捕获异常并返回错误文案，gather 不会抛出
-        results = await asyncio.gather(
-            *(
-                self.specialists[entry["agent"]].chat(**self._specialist_kwargs(entry, kwargs))
-                for entry in plan
+        # 依赖递进：按拓扑分波执行——同一波内相互独立可并行，波间串行；
+        # 下游专家把已完成上游的输出注入自己的任务 prompt。
+        by_agent = {entry["agent"]: entry for entry in plan}
+        outputs: dict[str, str] = {}
+        wave_steps: dict[str, list] = {}
+        failed: set[str] = set()
+        resolved: set[str] = set()
+        remaining = [entry["agent"] for entry in plan]
+        while remaining:
+            ready = [
+                a for a in remaining
+                if set(by_agent[a].get("depends_on") or []) <= resolved
+            ]
+            if not ready:  # sanitize 后不应发生；兜底防止死循环
+                ready = list(remaining)
+            wave_agents = [a for a in ready if not (set(by_agent[a].get("depends_on") or []) & failed)]
+            # 上游失败的下游直接标记失败，不再执行
+            for a in ready:
+                if a not in wave_agents:
+                    failed.add(a)
+                    outputs[a] = ""
+            wave_results = await asyncio.gather(
+                *(
+                    self.specialists[a].chat(
+                        **self._specialist_kwargs(
+                            by_agent[a],
+                            kwargs,
+                            {dep: outputs.get(dep, "") for dep in (by_agent[a].get("depends_on") or [])},
+                        )
+                    )
+                    for a in wave_agents
+                )
             )
-        )
+            for a, result in zip(wave_agents, wave_results):
+                outputs[a] = result.get("output", "")
+                wave_steps[a] = result.get("intermediate_steps", [])
+            resolved |= set(ready)
+            remaining = [a for a in remaining if a not in ready]
+
         sections: list[str] = []
         steps: list = []
-        for entry, result in zip(plan, results):
-            sections.append(_section_header(entry["agent"], first=not sections) + result.get("output", ""))
-            steps.extend(result.get("intermediate_steps", []))
+        for entry in plan:
+            agent_name = entry["agent"]
+            if agent_name in failed:
+                body = f"⚠️ {AGENT_LABELS.get(agent_name, agent_name)}处理失败：依赖未成功完成，已跳过"
+            else:
+                body = outputs.get(agent_name, "")
+                steps.extend(wave_steps.get(agent_name, []))
+            sections.append(_section_header(agent_name, first=not sections) + body)
         merged = "".join(sections)
 
         session_id = kwargs.get("session_id")

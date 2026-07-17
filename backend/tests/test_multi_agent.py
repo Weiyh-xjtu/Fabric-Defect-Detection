@@ -91,7 +91,7 @@ def test_supervisor_plan_parses_fenced_json():
     supervisor = SupervisorAgent(llm)
     result = supervisor.route({"messages": [HumanMessage(content="今日检测次数")]})
     assert result["next_agents"] == ["analysis"]
-    assert result["plan"] == [{"agent": "analysis", "task": "今日检测次数"}]
+    assert result["plan"] == [{"agent": "analysis", "task": "今日检测次数", "depends_on": []}]
 
 
 def test_supervisor_plan_merges_duplicate_agents():
@@ -102,7 +102,7 @@ def test_supervisor_plan_merges_duplicate_agents():
     supervisor = SupervisorAgent(llm)
     result = supervisor.route({"messages": [HumanMessage(content="解释两个概念")]})
     assert result["next_agents"] == ["qa"]
-    assert result["plan"] == [{"agent": "qa", "task": "什么是IoU；什么是mAP"}]
+    assert result["plan"] == [{"agent": "qa", "task": "什么是IoU；什么是mAP", "depends_on": []}]
 
 
 def test_supervisor_plan_rejects_invalid_agent():
@@ -112,6 +112,43 @@ def test_supervisor_plan_rejects_invalid_agent():
     result = supervisor.route({"messages": [HumanMessage(content="请检测这张图片")]})
     assert result["next_agents"] == ["detection"]
     assert result["plan"] == [{"agent": "detection", "task": "请检测这张图片"}]
+
+
+def test_supervisor_plan_parses_dependencies():
+    """含 depends_on 的规划应保留依赖，供编排器做递进执行。"""
+    llm = _FakeRouteLLM(
+        '[{"agent":"detection","task":"检测这张图片"},'
+        '{"agent":"analysis","task":"统计这类缺陷的历史次数","depends_on":["detection"]}]'
+    )
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route({"messages": [HumanMessage(content="检测并统计")]})
+    assert result["next_agents"] == ["detection", "analysis"]
+    plan = {entry["agent"]: entry for entry in result["plan"]}
+    assert plan["detection"]["depends_on"] == []
+    assert plan["analysis"]["depends_on"] == ["detection"]
+
+
+def test_supervisor_plan_drops_dangling_and_self_dependencies():
+    """指向不存在专家或自身的依赖应被剔除。"""
+    llm = _FakeRouteLLM(
+        '[{"agent":"qa","task":"解释","depends_on":["qa","detection"]}]'
+    )
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route({"messages": [HumanMessage(content="解释")]})
+    plan = {entry["agent"]: entry for entry in result["plan"]}
+    # 自引用与指向计划外的 detection 均被丢弃
+    assert plan["qa"]["depends_on"] == []
+
+
+def test_supervisor_plan_breaks_dependency_cycle():
+    """依赖成环时整体降级为并行（清空所有 depends_on），避免死锁。"""
+    llm = _FakeRouteLLM(
+        '[{"agent":"detection","task":"a","depends_on":["qa"]},'
+        '{"agent":"qa","task":"b","depends_on":["detection"]}]'
+    )
+    supervisor = SupervisorAgent(llm)
+    result = supervisor.route({"messages": [HumanMessage(content="环")]})
+    assert all(entry["depends_on"] == [] for entry in result["plan"])
 
 
 def test_graph_executes_selected_node():
