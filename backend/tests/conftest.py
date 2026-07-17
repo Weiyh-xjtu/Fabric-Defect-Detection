@@ -61,6 +61,13 @@ def setup_test_database():
     autouse=True：自动应用，无需在测试函数中显式引用
     """
     Base.metadata.create_all(bind=test_engine)
+    from app.core.rbac import initialize_rbac
+
+    seed_session = TestSessionLocal()
+    try:
+        initialize_rbac(seed_session)
+    finally:
+        seed_session.close()
     yield
     # 测试结束后清理
     Base.metadata.drop_all(bind=test_engine)
