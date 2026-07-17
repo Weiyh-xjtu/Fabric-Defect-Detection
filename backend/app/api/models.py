@@ -90,6 +90,117 @@ async def activate_model_version(
     }
 
 
+@router.post("/{model_version_id}/archive")
+async def archive_model_version(
+    model_version_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
+):
+    """归档模型版本，保留本地权重、MinIO 备份和历史任务引用。"""
+    try:
+        item = model_management_service.archive_model(db, model_version_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info("用户 %s 归档模型版本 %d", current_user.username, item.id)
+    return {
+        "message": f"模型版本 {item.version} 已归档",
+        "model": model_management_service.serialize_model_version(db, item),
+    }
+
+
+@router.post("/{model_version_id}/unarchive")
+async def unarchive_model_version(
+    model_version_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
+):
+    """将归档模型恢复为启用状态。"""
+    try:
+        item = model_management_service.unarchive_model(db, model_version_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info("用户 %s 恢复归档模型版本 %d", current_user.username, item.id)
+    return {
+        "message": f"模型版本 {item.version} 已恢复为启用状态",
+        "model": model_management_service.serialize_model_version(db, item),
+    }
+
+
+@router.post("/{model_version_id}/backup")
+async def backup_model_version(
+    model_version_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
+):
+    """立即将模型本地权重备份到 MinIO。"""
+    try:
+        item = model_management_service.backup_model(db, model_version_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("MinIO 模型备份失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="模型备份服务暂时不可用") from exc
+    logger.info("用户 %s 备份模型版本 %d", current_user.username, item.id)
+    return {
+        "message": f"模型版本 {item.version} 已完成备份",
+        "model": model_management_service.serialize_model_version(db, item),
+    }
+
+
+@router.post("/{model_version_id}/restore")
+async def restore_model_version(
+    model_version_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
+):
+    """从 MinIO 恢复模型到 backend/models，并校验文件完整性。"""
+    item = _get_model_version(db, model_version_id)
+    try:
+        item = model_management_service.restore_model(db, item)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("MinIO 模型恢复失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="模型恢复服务暂时不可用") from exc
+    logger.info("用户 %s 恢复模型版本 %d", current_user.username, item.id)
+    return {
+        "message": f"模型版本 {item.version} 已从备份恢复",
+        "model": model_management_service.serialize_model_version(db, item),
+    }
+
+
+@router.delete("/{model_version_id}")
+async def delete_model_version(
+    model_version_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
+):
+    """软删除模型，并清理正式导出副本与 MinIO 对象，保留训练任务产物。"""
+    try:
+        result = model_management_service.delete_model(db, model_version_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("模型删除失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"模型删除失败: {exc}") from exc
+    item = result["model"]
+    logger.info("用户 %s 删除模型版本 %d", current_user.username, item.id)
+    return {
+        "message": f"模型版本 {item.version} 已删除，训练任务产物未受影响",
+        "local_action": result["local_action"],
+        "minio_action": result["minio_action"],
+        "model": model_management_service.serialize_model_version(db, item),
+    }
+
+
 @router.post("/{model_version_id}/test")
 async def test_model_version(
     model_version_id: int,
@@ -114,6 +225,7 @@ async def test_model_version(
         tmp_path = tmp.name
     try:
         return model_management_service.predict_image(
+            db,
             item,
             tmp_path,
             filename=file.filename,

@@ -255,6 +255,11 @@ class ModelVersion(Base):
     # 模型文件
     model_path = Column(String(500), nullable=False, comment="本地模型文件路径")
     minio_url = Column(String(500), nullable=True, comment="MinIO 存储 URL")
+    minio_object_name = Column(
+        String(500), nullable=True, comment="MinIO 永久对象名，用于备份恢复"
+    )
+    file_sha256 = Column(String(64), nullable=True, comment="模型权重 SHA-256")
+    backed_up_at = Column(DateTime, nullable=True, comment="最近一次 MinIO 备份时间")
     # 评估指标（训练完成后写入）
     map50 = Column(Float, nullable=True, comment="mAP@0.50")
     map50_95 = Column(Float, nullable=True, comment="mAP@0.50:0.95")
@@ -271,6 +276,8 @@ class ModelVersion(Base):
         nullable=False,
         comment="是否为全局检测启用模型（全系统最多一个）",
     )
+    archived_at = Column(DateTime, nullable=True, comment="归档时间")
+    deleted_at = Column(DateTime, nullable=True, comment="软删除时间")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     # 关联
     scene = relationship("DetectionScene", back_populates="model_versions")
