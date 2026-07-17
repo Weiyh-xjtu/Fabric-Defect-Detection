@@ -24,6 +24,8 @@ from sqlalchemy.orm import Session
 from app.agent.multi_agent import multi_agent as detection_agent
 from app.agent.detection_agent import _strip_base64_for_llm
 from app.api.auth import get_current_user
+from app.core.permissions import require_permission
+from app.core.rbac import CHAT_USE
 from app.core.logger import get_logger
 from app.database.session import SessionLocal, get_db
 from app.entity.db_models import ChatMessage, ChatSession
@@ -404,7 +406,10 @@ def _resign_attachments(attachments: list[dict] | None) -> list[dict]:
 
 
 @router.get("/sessions", summary="获取当前用户会话列表")
-def list_sessions(current_user=Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+def list_sessions(
+    current_user=Depends(require_permission(CHAT_USE)),
+    db: Session = Depends(get_db),
+) -> list[dict]:
     sessions = db.query(ChatSession).filter(
         ChatSession.user_id == current_user.id,
         ChatSession.status == "active",
@@ -423,7 +428,11 @@ def list_sessions(current_user=Depends(get_current_user), db: Session = Depends(
 
 
 @router.get("/sessions/{session_uuid}", summary="获取会话历史")
-def get_session_history(session_uuid: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+def get_session_history(
+    session_uuid: str,
+    current_user=Depends(require_permission(CHAT_USE)),
+    db: Session = Depends(get_db),
+) -> dict:
     session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id, ChatSession.session_uuid == session_uuid).first()
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -446,7 +455,11 @@ def get_session_history(session_uuid: str, current_user=Depends(get_current_user
 
 
 @router.delete("/sessions/{session_uuid}", summary="删除会话")
-def delete_session(session_uuid: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+def delete_session(
+    session_uuid: str,
+    current_user=Depends(require_permission(CHAT_USE)),
+    db: Session = Depends(get_db),
+) -> dict:
     session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id, ChatSession.session_uuid == session_uuid).first()
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -463,7 +476,7 @@ def delete_session(session_uuid: str, current_user=Depends(get_current_user), db
 @router.post("/upload", summary="上传聊天检测附件")
 async def upload_attachments(
     files: list[UploadFile] = File(...),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(CHAT_USE)),
 ):
     """
     上传图片、ZIP 或视频到服务端临时目录。
@@ -537,7 +550,7 @@ async def upload_attachments(
 @router.post("/stream")
 async def chat_stream(
     request: Request,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(CHAT_USE)),
 ):
     """
     SSE 流式对话接口

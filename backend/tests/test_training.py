@@ -8,8 +8,11 @@ from app.config.settings import settings
 from app.entity.db_models import (
     DetectionScene,
     ModelVersion,
+    Role,
     TrainingMetric,
     TrainingTask,
+    User,
+    UserRole,
 )
 from app.training.training_service import (
     TrainingService,
@@ -20,7 +23,7 @@ from app.training.training_service import (
 )
 
 
-def _auth_headers(client):
+def _auth_headers(client, db_session):
     """注册并登录测试用户，返回认证请求头。"""
     client.post(
         "/api/auth/register",
@@ -30,6 +33,10 @@ def _auth_headers(client):
             "password": "123456",
         },
     )
+    user = db_session.query(User).filter_by(username="training_scene_user").one()
+    role = db_session.query(Role).filter_by(name="system_admin").one()
+    db_session.add(UserRole(user_id=user.id, role_id=role.id))
+    db_session.commit()
     response = client.post(
         "/api/auth/login",
         json={"username": "training_scene_user", "password": "123456"},
@@ -57,7 +64,9 @@ def test_list_training_scenes_returns_active_scenes(client, db_session):
     db_session.add_all([active_scene, inactive_scene])
     db_session.commit()
 
-    response = client.get("/api/training/scenes", headers=_auth_headers(client))
+    response = client.get(
+        "/api/training/scenes", headers=_auth_headers(client, db_session)
+    )
 
     assert response.status_code == 200
     assert response.json() == {

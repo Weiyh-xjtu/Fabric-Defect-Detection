@@ -180,6 +180,9 @@
 <script setup>
 import { ElMessage } from "element-plus";
 import { computed, onBeforeUnmount, ref } from "vue";
+import { useUserStore } from "@/stores/user";
+
+const userStore = useUserStore();
 
 const videoRef = ref(null);
 const canvasRef = ref(null);
@@ -347,6 +350,7 @@ function connectWebSocket() {
   socket.onopen = () => {
     const config = {
       type: "config",
+      access_token: userStore.token,
       source: cameraSource.value,
       mode: detectMode.value,
       conf: confThreshold.value,

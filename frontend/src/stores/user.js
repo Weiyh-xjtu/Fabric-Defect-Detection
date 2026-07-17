@@ -40,6 +40,23 @@ export const useUserStore = defineStore('user', {
     /** 用户角色列表 */
     roles: (state) => state.user?.roles || [],
 
+    /** 用户权限列表 */
+    permissions: (state) => state.user?.permissions || [],
+
+    /** 是否拥有指定权限 */
+    hasPermission: (state) => (permission) => (
+      !!state.user?.is_superuser
+      || (state.user?.permissions || []).includes(permission)
+    ),
+
+    /** 是否拥有任一指定权限 */
+    hasAnyPermission: (state) => (permissions) => (
+      !!state.user?.is_superuser
+      || permissions.some((permission) => (
+        (state.user?.permissions || []).includes(permission)
+      ))
+    ),
+
     /** 是否为管理员 */
     isSuperuser: (state) => state.user?.is_superuser || false,
   },
