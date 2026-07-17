@@ -503,16 +503,31 @@ def query_system_roles() -> str:
 def _parse_tool_date(value: str) -> date | None:
     """把 LLM 传入的日期字符串解析为 date，无法解析时返回 None。
 
-    仅接受 YYYY-MM-DD / YYYY/MM/DD 两种常见格式，避免歧义。
+    同时接受带年份和「只有月日」两类写法，避免 LLM 因不知当前年份而猜错：
+      - 带年份：YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+      - 仅月日：MM-DD / MM/DD / MM.DD —— 由服务端按当前年份补齐；
+        若补齐后是未来日期（如 1 月询问 12-15），回退到上一年。
     """
     if not value or not value.strip():
         return None
     text = value.strip()
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
         try:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
+    # 仅月日：用当前年份补齐，服务端时钟为准，杜绝模型猜年份。
+    today = datetime.now().date()
+    for fmt in ("%m-%d", "%m/%d", "%m.%d"):
+        try:
+            parsed = datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+        candidate = parsed.replace(year=today.year)
+        # 检测记录不可能在未来；未来日期说明应归属上一年。
+        if candidate > today:
+            candidate = candidate.replace(year=today.year - 1)
+        return candidate
     return None
 
 

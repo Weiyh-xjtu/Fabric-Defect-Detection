@@ -102,6 +102,11 @@ class MultiAgentOrchestrator:
                     ANALYSIS_PROMPT
                     + " 必须调用工具获取真实数据，禁止编造统计数字。"
                     "询问今日/今天时调用 query_detection_statistics 并设置 today=true。"
+                    "涉及具体日期区间时，把 start_date/end_date 传给工具即可。"
+                    "关键：当用户只说了月日（如“7.15到7.17”“6月1号”）而没有明确年份时，"
+                    "必须原样按“月-日”格式传参（如 start_date=\"07-15\"、end_date=\"07-17\"），"
+                    "绝对不要自己猜测或补全年份——服务端会按当前系统时间填充正确年份。"
+                    "只有用户明确写出年份时才传完整的 YYYY-MM-DD。"
                     "询问批量、单图或视频检测次数时，分别设置 task_type=batch、single 或 video；"
                     "询问每日趋势、缺陷类别分布或哪类缺陷最多时调用 query_detection_trends。"
                     "只能根据工具实际返回的字段回答；如果工具返回 error，或用户要求的统计维度"
