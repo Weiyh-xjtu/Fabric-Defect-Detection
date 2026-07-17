@@ -80,6 +80,20 @@ describe('Axios 请求封装', () => {
     ).toBe('邮箱格式错误')
   })
 
+  it('请求超时时应提示处理超时，而不是误报后端未启动', async () => {
+    const { default: request } = await import('@/utils/request')
+    const rejected = request.interceptors.response.handlers[0].rejected
+    const error = {
+      code: 'ECONNABORTED',
+      message: 'timeout of 30000ms exceeded',
+      config: { url: '/training/export/1' },
+    }
+
+    await expect(rejected(error)).rejects.toBe(error)
+    expect(ElMessage.error).toHaveBeenCalledWith('请求处理超时，请稍后重试')
+    expect(ElMessage.error).not.toHaveBeenCalledWith('网络连接异常，请检查后端服务是否启动')
+  })
+
   it('受保护请求遇到 401 时应该自动续期并重试一次', async () => {
     const { persistAuthSession } = await import('@/utils/authSession')
     const { useUserStore } = await import('@/stores/user')

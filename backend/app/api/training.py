@@ -13,12 +13,13 @@
   - GET    /api/training/validate/{task_id}/status   轮询评估状态与报告
 """
 
+import asyncio
 import base64
 import os
 import tempfile
 
 import cv2
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -27,7 +28,7 @@ from app.core.permissions import require_permission
 from app.core.rbac import MODEL_MANAGE
 from app.config.settings import settings
 from app.core.logger import get_logger
-from app.database.session import get_db
+from app.database.session import SessionLocal, get_db
 from app.entity.db_models import DetectionScene, TrainingTask
 from app.entity.schemas import (
     ModelExportRequest,
@@ -40,10 +41,50 @@ from app.entity.schemas import (
     TrainingTaskResponse,
 )
 from app.training.training_service import training_service
+from app.services.model_management_service import model_management_service
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/training", tags=["模型训练"])
+
+
+def _backup_exported_model(model_version_id: int) -> None:
+    """响应返回后在后台备份正式模型，避免远程上传阻塞导出请求。"""
+    db = SessionLocal()
+    try:
+        model_management_service.backup_model(db, model_version_id)
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "导出模型后台备份失败: model_version_id=%d, error=%s",
+            model_version_id,
+            exc,
+            exc_info=True,
+        )
+    finally:
+        db.close()
+
+
+def _export_model_in_worker(
+    task_id: int,
+    *,
+    version: str | None,
+    description: str | None,
+    set_default: bool,
+) -> dict:
+    """在工作线程内使用独立数据库会话执行耗时导出。"""
+    db = SessionLocal()
+    try:
+        return training_service.export_model(
+            db=db,
+            task_id=task_id,
+            version=version,
+            description=description,
+            set_default=set_default,
+            upload_minio=False,
+        )
+    finally:
+        db.close()
 
 
 def _get_owned_task(db: Session, task_id: int, _user) -> TrainingTask:
@@ -319,6 +360,7 @@ async def get_validation_status(
 @router.post("/export/{task_id}", response_model=ModelExportResponse)
 async def export_model(
     task_id: int,
+    background_tasks: BackgroundTasks,
     request: ModelExportRequest = None,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -326,13 +368,12 @@ async def export_model(
     """导出训练权重、评估报告和模型版本信息。"""
     _get_owned_task(db, task_id, current_user)
     request = request or ModelExportRequest()
-    result = training_service.export_model(
-        db=db,
-        task_id=task_id,
+    result = await asyncio.to_thread(
+        _export_model_in_worker,
+        task_id,
         version=request.version,
         description=request.description,
         set_default=request.set_default,
-        upload_minio=request.upload_minio,
     )
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -342,6 +383,12 @@ async def export_model(
         task_id,
         result["version"],
     )
+    if request.upload_minio:
+        background_tasks.add_task(
+            _backup_exported_model,
+            result["model_version_id"],
+        )
+        result["message"] = f"模型已导出为版本 {result['version']}，备份将在后台完成"
     return result
 
 

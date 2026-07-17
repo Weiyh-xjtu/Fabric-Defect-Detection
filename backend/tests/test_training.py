@@ -4,6 +4,7 @@ import json
 import sys
 import types
 
+import app.api.training as training_api
 from app.config.settings import settings
 from app.entity.db_models import (
     DetectionScene,
@@ -23,23 +24,23 @@ from app.training.training_service import (
 )
 
 
-def _auth_headers(client, db_session):
+def _auth_headers(client, db_session, username: str = "training_scene_user"):
     """注册并登录测试用户，返回认证请求头。"""
     client.post(
         "/api/auth/register",
         json={
-            "username": "training_scene_user",
-            "email": "training_scene@example.com",
+            "username": username,
+            "email": f"{username}@example.com",
             "password": "123456",
         },
     )
-    user = db_session.query(User).filter_by(username="training_scene_user").one()
+    user = db_session.query(User).filter_by(username=username).one()
     role = db_session.query(Role).filter_by(name="system_admin").one()
     db_session.add(UserRole(user_id=user.id, role_id=role.id))
     db_session.commit()
     response = client.post(
         "/api/auth/login",
-        json={"username": "training_scene_user", "password": "123456"},
+        json={"username": username, "password": "123456"},
     )
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -78,6 +79,68 @@ def test_list_training_scenes_returns_active_scenes(client, db_session):
             }
         ]
     }
+
+
+def test_export_api_schedules_backup_after_response_work(
+    client,
+    db_session,
+    monkeypatch,
+) -> None:
+    """导出接口不应同步等待远程备份，备份应交给后台任务。"""
+    username = "async_export_admin"
+    headers = _auth_headers(client, db_session, username)
+    user = db_session.query(User).filter_by(username=username).one()
+    scene = DetectionScene(
+        name="async_export_scene",
+        display_name="异步导出场景",
+        category="industry",
+        class_names=["defect"],
+        is_active=False,
+    )
+    db_session.add(scene)
+    db_session.flush()
+    task = TrainingTask(
+        user_id=user.id,
+        scene_id=scene.id,
+        task_uuid="async-export-task",
+        status="completed",
+    )
+    db_session.add(task)
+    db_session.commit()
+    captured = {}
+
+    def fake_export_model(**kwargs):
+        captured["upload_minio"] = kwargs["upload_minio"]
+        return {
+            "model_version_id": 99,
+            "version": "v1.0.0",
+            "model_name": "async-model",
+            "model_path": "models/async/best.pt",
+            "export_dir": "models/async",
+            "minio_url": None,
+            "file_size": 10,
+            "evaluation": {"map50": 0.8, "per_class": {}},
+            "is_default": False,
+            "is_global_default": False,
+            "message": "模型已导出",
+        }
+
+    monkeypatch.setattr(training_api.training_service, "export_model", fake_export_model)
+    monkeypatch.setattr(
+        training_api,
+        "_backup_exported_model",
+        lambda model_version_id: captured.update(backup_id=model_version_id),
+    )
+
+    response = client.post(
+        f"/api/training/export/{task.id}",
+        headers=headers,
+        json={"upload_minio": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"].endswith("备份将在后台完成")
+    assert captured == {"upload_minio": False, "backup_id": 99}
 
 
 def test_parse_final_results_does_not_add_an_extra_epoch(db_session, tmp_path):

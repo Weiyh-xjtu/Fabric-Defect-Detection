@@ -1011,6 +1011,10 @@ class TrainingService:
             model_version.per_class_ap = per_class
             model_version.file_size = exported_weight.stat().st_size
             model_version.description = description or f"训练任务 {task.task_uuid} 导出"
+            # 重新导出代表该版本重新进入可管理状态，避免已删除记录导致后台备份失败。
+            model_version.status = "active"
+            model_version.archived_at = None
+            model_version.deleted_at = None
 
             if set_default:
                 db.query(ModelVersion).filter(

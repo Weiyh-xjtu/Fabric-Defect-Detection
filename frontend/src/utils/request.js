@@ -161,8 +161,13 @@ request.interceptors.response.use(
         }
       }
     } else if (!error.config?.skipGlobalError) {
-      // 网络错误或请求超时
-      ElMessage.error('网络连接异常，请检查后端服务是否启动')
+      const timedOut = error.code === 'ECONNABORTED'
+        || String(error.message || '').toLowerCase().includes('timeout')
+      ElMessage.error(
+        timedOut
+          ? '请求处理超时，请稍后重试'
+          : '网络连接异常，请检查后端服务是否启动',
+      )
     }
 
     return Promise.reject(error)
