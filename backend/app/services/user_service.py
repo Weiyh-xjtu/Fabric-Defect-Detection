@@ -1,4 +1,5 @@
 """用户注册、认证、资料与角色查询服务。"""
+from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
@@ -88,6 +89,10 @@ class UserService:
             raise HTTPException(status_code=401, detail="用户名或密码错误")
         if not user.is_active:
             raise HTTPException(status_code=403, detail="账号已被禁用")
+
+        user.last_login_at = datetime.now()
+        db.commit()
+        db.refresh(user)
         return user
 
     @staticmethod
