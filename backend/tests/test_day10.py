@@ -158,9 +158,23 @@ class TestHistoryApi:
         assert task_list.status_code == 200
         assert task_list.json()["total"] == 1
         assert task_list.json()["items"][0]["scene_name"] == "织物缺陷检测"
+        assert task_list.json()["items"][0]["initiator_user_id"] == user.id
+        assert (
+            task_list.json()["items"][0]["initiator_username"]
+            == "day10_history_user"
+        )
+
+        initiator_search = client.get(
+            "/api/history/tasks",
+            params={"keyword": "day10_history_user"},
+            headers=headers,
+        )
+        assert initiator_search.status_code == 200
+        assert initiator_search.json()["total"] == 1
 
         detail = client.get(f"/api/history/tasks/{task.id}", headers=headers)
         assert detail.status_code == 200
+        assert detail.json()["task"]["initiator_username"] == "day10_history_user"
         assert detail.json()["class_counts"] == {"破洞": 1}
         assert detail.json()["results"][0]["bbox"] == [1, 2, 30, 40]
 
