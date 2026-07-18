@@ -77,7 +77,8 @@ export function parseToolResult(tool, rawResult) {
       error: null,
     };
   }
-  return { summary: "完成", detection: null, knowledge: null, error: null };
+  // 无可提炼信息时不给 summary，避免与状态文本（"完成"）重复展示
+  return { summary: "", detection: null, knowledge: null, error: null };
 }
 
 /**

@@ -70,8 +70,10 @@
             v-else-if="msg.role === 'assistant'"
             class="message-bubble assistant-bubble"
           >
-            <!-- 处理该消息的专家 Agent（并行时并列多个） -->
-            <div v-if="agentTags(msg).length" class="agent-route">
+            <!-- 处理该消息的专家 Agent。
+                 并行多专家时正文已有分节标题（#### 🔍 检测专家），
+                 顶部不再重复渲染标签行 -->
+            <div v-if="agentTags(msg).length === 1" class="agent-route">
               <el-tag
                 v-for="a in agentTags(msg)"
                 :key="a"
@@ -79,7 +81,7 @@
                 effect="plain"
                 type="warning"
               >
-                🤖 {{ agentLabel(a) }}
+                {{ agentLabel(a) }}
               </el-tag>
             </div>
 
@@ -1091,7 +1093,28 @@ onMounted(async () => {
 }
 
 .markdown-body {
-  /* markdown 渲染后的 HTML 样式 */
+  /* markdown 渲染后的 HTML 样式。
+     覆盖 .message-content 的 pre-wrap：markdown 已生成段落结构，
+     再保留源换行会叠加 <br> 与段间距，导致行距过大 */
+  white-space: normal;
+  line-height: 1.75;
+
+  p {
+    margin: 0 0 12px;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+  ul,
+  ol {
+    margin: 6px 0 12px;
+    padding-left: 1.5em;
+    list-style: revert;
+  }
+  li {
+    margin: 4px 0;
+  }
   h1,
   h2,
   h3 {
