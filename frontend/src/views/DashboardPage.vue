@@ -5,6 +5,7 @@
         <h2>数据看板</h2>
         <p>灵活查看全厂检测任务、缺陷类别与趋势</p>
       </div>
+      <el-button :icon="Download" @click="exportSummary">导出汇总</el-button>
     </div>
 
     <el-card shadow="never" class="filter-bar">
@@ -88,15 +89,67 @@
           <template #header>
             <div class="card-header">
               <span>{{ defectFilterActive ? '所选缺陷每日趋势' : '每日检测趋势' }}</span>
+              <div class="card-actions">
+                <el-radio-group v-model="viewModes.trend" size="small" @change="handleViewChange">
+                  <el-radio-button value="chart">图表</el-radio-button>
+                  <el-radio-button value="table">表格</el-radio-button>
+                </el-radio-group>
+                <el-button size="small" :icon="Download" text bg @click="exportTable('trend')">CSV</el-button>
+              </div>
             </div>
           </template>
-          <div ref="trendChartRef" class="chart-container" />
+          <div v-show="viewModes.trend === 'chart'" ref="trendChartRef" class="chart-container" />
+          <el-table
+            v-if="viewModes.trend === 'table'"
+            :data="tableConfigs.trend.rows"
+            size="small"
+            border
+            max-height="320"
+            class="data-table"
+          >
+            <el-table-column
+              v-for="col in tableConfigs.trend.columns"
+              :key="col.prop"
+              :prop="col.prop"
+              :label="col.label"
+              :width="col.width"
+              show-overflow-tooltip
+            />
+          </el-table>
         </el-card>
       </el-col>
       <el-col :xs="24" :xl="8">
         <el-card shadow="hover">
-          <template #header>类别分布</template>
-          <div ref="classChartRef" class="chart-container" />
+          <template #header>
+            <div class="card-header">
+              <span>类别分布</span>
+              <div class="card-actions">
+                <el-radio-group v-model="viewModes.classDist" size="small" @change="handleViewChange">
+                  <el-radio-button value="chart">图表</el-radio-button>
+                  <el-radio-button value="table">表格</el-radio-button>
+                </el-radio-group>
+                <el-button size="small" :icon="Download" text bg @click="exportTable('classDist')">CSV</el-button>
+              </div>
+            </div>
+          </template>
+          <div v-show="viewModes.classDist === 'chart'" ref="classChartRef" class="chart-container" />
+          <el-table
+            v-if="viewModes.classDist === 'table'"
+            :data="tableConfigs.classDist.rows"
+            size="small"
+            border
+            max-height="320"
+            class="data-table"
+          >
+            <el-table-column
+              v-for="col in tableConfigs.classDist.columns"
+              :key="col.prop"
+              :prop="col.prop"
+              :label="col.label"
+              :width="col.width"
+              show-overflow-tooltip
+            />
+          </el-table>
         </el-card>
       </el-col>
     </el-row>
@@ -107,12 +160,40 @@
           <template #header>
             <div class="card-header">
               <span>缺陷类别趋势对比</span>
-              <span class="card-hint">
-                {{ defectFilterActive ? '按所选缺陷拆分' : '默认展示目标数最多的类别' }}
-              </span>
+              <div class="card-actions">
+                <span class="card-hint">
+                  {{ defectFilterActive ? '按所选缺陷拆分' : '默认展示目标数最多的类别' }}
+                </span>
+                <el-radio-group v-model="viewModes.defectTrend" size="small" @change="handleViewChange">
+                  <el-radio-button value="chart">图表</el-radio-button>
+                  <el-radio-button value="table">表格</el-radio-button>
+                </el-radio-group>
+                <el-button size="small" :icon="Download" text bg @click="exportTable('defectTrend')">CSV</el-button>
+              </div>
             </div>
           </template>
-          <div ref="defectTrendChartRef" class="chart-container chart-container--tall" />
+          <div
+            v-show="viewModes.defectTrend === 'chart'"
+            ref="defectTrendChartRef"
+            class="chart-container chart-container--tall"
+          />
+          <el-table
+            v-if="viewModes.defectTrend === 'table'"
+            :data="tableConfigs.defectTrend.rows"
+            size="small"
+            border
+            max-height="360"
+            class="data-table"
+          >
+            <el-table-column
+              v-for="col in tableConfigs.defectTrend.columns"
+              :key="col.prop"
+              :prop="col.prop"
+              :label="col.label"
+              :width="col.width"
+              show-overflow-tooltip
+            />
+          </el-table>
         </el-card>
       </el-col>
     </el-row>
@@ -120,14 +201,70 @@
     <el-row :gutter="16" class="chart-row">
       <el-col :xs="24" :xl="12">
         <el-card shadow="hover">
-          <template #header>场景分布</template>
-          <div ref="sceneChartRef" class="chart-container" />
+          <template #header>
+            <div class="card-header">
+              <span>场景分布</span>
+              <div class="card-actions">
+                <el-radio-group v-model="viewModes.sceneDist" size="small" @change="handleViewChange">
+                  <el-radio-button value="chart">图表</el-radio-button>
+                  <el-radio-button value="table">表格</el-radio-button>
+                </el-radio-group>
+                <el-button size="small" :icon="Download" text bg @click="exportTable('sceneDist')">CSV</el-button>
+              </div>
+            </div>
+          </template>
+          <div v-show="viewModes.sceneDist === 'chart'" ref="sceneChartRef" class="chart-container" />
+          <el-table
+            v-if="viewModes.sceneDist === 'table'"
+            :data="tableConfigs.sceneDist.rows"
+            size="small"
+            border
+            max-height="320"
+            class="data-table"
+          >
+            <el-table-column
+              v-for="col in tableConfigs.sceneDist.columns"
+              :key="col.prop"
+              :prop="col.prop"
+              :label="col.label"
+              :width="col.width"
+              show-overflow-tooltip
+            />
+          </el-table>
         </el-card>
       </el-col>
       <el-col :xs="24" :xl="12">
         <el-card shadow="hover">
-          <template #header>任务类型分布</template>
-          <div ref="typeChartRef" class="chart-container" />
+          <template #header>
+            <div class="card-header">
+              <span>任务类型分布</span>
+              <div class="card-actions">
+                <el-radio-group v-model="viewModes.typeDist" size="small" @change="handleViewChange">
+                  <el-radio-button value="chart">图表</el-radio-button>
+                  <el-radio-button value="table">表格</el-radio-button>
+                </el-radio-group>
+                <el-button size="small" :icon="Download" text bg @click="exportTable('typeDist')">CSV</el-button>
+              </div>
+            </div>
+          </template>
+          <div v-show="viewModes.typeDist === 'chart'" ref="typeChartRef" class="chart-container" />
+          <el-table
+            v-if="viewModes.typeDist === 'table'"
+            :data="tableConfigs.typeDist.rows"
+            size="small"
+            border
+            max-height="320"
+            class="data-table"
+          >
+            <el-table-column
+              v-for="col in tableConfigs.typeDist.columns"
+              :key="col.prop"
+              :prop="col.prop"
+              :label="col.label"
+              :width="col.width"
+              show-overflow-tooltip
+            />
+          </el-table>
         </el-card>
       </el-col>
     </el-row>
@@ -144,9 +281,11 @@ import {
   getTrend,
   getTypeDistribution,
 } from '@/api/dashboard'
-import { Aim, Document, PictureFilled, Timer } from '@element-plus/icons-vue'
+import { exportCsv } from '@/utils/csv'
+import { Aim, Document, Download, PictureFilled, Timer } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 const preset = ref(30)
 const dateRange = ref(null)
@@ -159,6 +298,22 @@ const stats = ref({
   total_objects: 0,
   avg_inference_time: 0,
   growth: {},
+})
+
+// 各卡片原始数据，图表和表格共用同一份。
+const trendData = ref([])
+const defectTrendData = ref({ dates: [], series: [] })
+const classDistData = ref([])
+const sceneDistData = ref([])
+const typeDistData = ref([])
+
+// 各卡片的展示模式：chart | table。
+const viewModes = reactive({
+  trend: 'chart',
+  defectTrend: 'chart',
+  classDist: 'chart',
+  sceneDist: 'chart',
+  typeDist: 'chart',
 })
 
 const trendChartRef = ref(null)
@@ -229,6 +384,132 @@ const statCards = computed(() => [
     inverse: true,
   },
 ])
+
+/** 给分布数据补充占比列。 */
+function withShare(rows) {
+  const total = rows.reduce((sum, row) => sum + Number(row.value || 0), 0)
+  return rows.map((row) => ({
+    ...row,
+    share: total ? `${((Number(row.value || 0) / total) * 100).toFixed(1)}%` : '0%',
+  }))
+}
+
+/** 各卡片表格的列定义与行数据（与图表同源）。 */
+const tableConfigs = computed(() => {
+  const defectSeries = defectTrendData.value.series || []
+  return {
+    trend: {
+      title: defectFilterActive.value ? '所选缺陷每日趋势' : '每日检测趋势',
+      columns: [
+        { prop: 'date', label: '日期', width: 110 },
+        { prop: 'task_count', label: '任务数' },
+        { prop: 'image_count', label: '图片数' },
+        { prop: 'object_count', label: defectFilterActive.value ? '缺陷目标数' : '目标数' },
+      ],
+      rows: trendData.value,
+    },
+    defectTrend: {
+      title: '缺陷类别趋势对比',
+      columns: [
+        { prop: 'date', label: '日期', width: 110 },
+        ...defectSeries.map((series, index) => ({
+          prop: `c${index}`,
+          label: series.name_cn || series.name,
+        })),
+      ],
+      rows: (defectTrendData.value.dates || []).map((date, dateIndex) => {
+        const row = { date }
+        defectSeries.forEach((series, index) => {
+          row[`c${index}`] = series.data?.[dateIndex] ?? 0
+        })
+        return row
+      }),
+    },
+    classDist: {
+      title: '类别分布',
+      columns: [
+        { prop: 'name_cn', label: '缺陷类别' },
+        { prop: 'name', label: '标签名' },
+        { prop: 'value', label: '目标数' },
+        { prop: 'share', label: '占比', width: 80 },
+      ],
+      rows: withShare(classDistData.value),
+    },
+    sceneDist: {
+      title: '场景分布',
+      columns: [
+        { prop: 'name', label: '场景' },
+        { prop: 'value', label: '任务数' },
+        { prop: 'share', label: '占比', width: 80 },
+      ],
+      rows: withShare(sceneDistData.value),
+    },
+    typeDist: {
+      title: '任务类型分布',
+      columns: [
+        { prop: 'name', label: '任务类型' },
+        { prop: 'value', label: '任务数' },
+        { prop: 'share', label: '占比', width: 80 },
+      ],
+      rows: withShare(typeDistData.value),
+    },
+  }
+})
+
+/** 当前时间窗口的文件名后缀。 */
+function rangeLabel() {
+  if (preset.value === 'custom' && dateRange.value?.length === 2) {
+    return `${dateRange.value[0]}_${dateRange.value[1]}`
+  }
+  const days = preset.value === 'custom' ? 30 : preset.value
+  return `近${days}天`
+}
+
+/** 导出指定卡片的表格数据为 CSV。 */
+function exportTable(key) {
+  const config = tableConfigs.value[key]
+  if (!config.rows.length) {
+    ElMessage.warning('暂无数据可导出')
+    return
+  }
+  exportCsv(
+    `数据看板-${config.title}-${rangeLabel()}`,
+    config.columns.map((col) => col.label),
+    config.rows.map((row) => config.columns.map((col) => row[col.prop])),
+  )
+}
+
+/** 导出顶部统计卡片的汇总数据（含环比）。 */
+function exportSummary() {
+  const growth = stats.value.growth || {}
+  const formatRate = (value) =>
+    value === undefined || value === null ? '' : `${value}%`
+  exportCsv(
+    `数据看板-汇总统计-${rangeLabel()}`,
+    [
+      '统计周期', '检测任务', '处理图片',
+      defectFilterActive.value ? '缺陷目标' : '检测目标', '平均耗时(ms)',
+      '任务环比', '图片环比', '目标环比', '耗时环比',
+    ],
+    [[
+      rangeLabel(),
+      stats.value.total_tasks,
+      stats.value.total_images,
+      stats.value.total_objects,
+      Number(stats.value.avg_inference_time || 0).toFixed(2),
+      formatRate(growth.tasks),
+      formatRate(growth.images),
+      formatRate(growth.objects),
+      formatRate(growth.inference_time),
+    ]],
+  )
+}
+
+/** 切回图表模式后容器由隐藏变可见，需要重新计算尺寸。 */
+async function handleViewChange() {
+  await nextTick()
+  handleResize()
+}
 
 function formatNumber(value) {
   const number = Number(value || 0)
@@ -303,11 +584,19 @@ async function loadAllData() {
         getTypeDistribution(query),
       ])
     stats.value = statistics
-    renderTrendChart(trend.trend || [])
-    renderDefectTrendChart(defectTrend)
-    renderClassChart(classDist.distribution || [])
-    renderSceneChart(sceneDist.distribution || [])
-    renderTypeChart(typeDist.distribution || [])
+    trendData.value = trend.trend || []
+    defectTrendData.value = {
+      dates: defectTrend?.dates || [],
+      series: defectTrend?.series || [],
+    }
+    classDistData.value = classDist.distribution || []
+    sceneDistData.value = sceneDist.distribution || []
+    typeDistData.value = typeDist.distribution || []
+    renderTrendChart(trendData.value)
+    renderDefectTrendChart(defectTrendData.value)
+    renderClassChart(classDistData.value)
+    renderSceneChart(sceneDistData.value)
+    renderTypeChart(typeDistData.value)
   } catch (error) {
     console.error('[看板数据加载失败]', error)
   } finally {
@@ -504,10 +793,21 @@ onBeforeUnmount(() => {
 .defect-select { min-width: 260px; }
 .card-header {
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: space-between;
+  gap: 8px;
+}
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .card-hint { color: $text-secondary; font-size: 12px; }
+.data-table {
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
 .stat-cards { row-gap: 16px; margin-bottom: 16px; }
 .stat-card {
   position: relative;
