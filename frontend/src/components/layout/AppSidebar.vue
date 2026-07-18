@@ -50,10 +50,10 @@
             class="session-delete"
             size="small"
             text
+            :icon="Delete"
+            title="删除会话"
             @click.stop="handleDeleteSession(session)"
-          >
-            删除
-          </el-button>
+          />
         </div>
         <div v-if="!agentStore.sessions.length" class="session-empty">
           暂无历史对话
@@ -75,6 +75,7 @@ import {
   Clock,
   Collection,
   DataAnalysis,
+  Delete,
   Setting,
   UserFilled,
 } from '@element-plus/icons-vue'
@@ -356,7 +357,8 @@ onMounted(() => {
   color: #9aa3b2;
 
   &:hover {
-    color: #3f4a5f;
+    color: $signal-orange;
+    background: transparent;
   }
 }
 
