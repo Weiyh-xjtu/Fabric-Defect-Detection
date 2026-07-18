@@ -45,7 +45,13 @@ from app.services.user_service import user_service
 from app.agent.memory import conversation_memory
 from app.agent.attachment_store import ensure_session_attachment_history
 from app.rag.retriever import knowledge_retriever
-from app.entity.db_models import DetectionResult, DetectionTask, User
+from app.entity.db_models import (
+    DetectionResult,
+    DetectionScene,
+    DetectionTask,
+    ModelVersion,
+    User,
+)
 
 logger = get_logger(__name__)
 
@@ -538,6 +544,37 @@ def _resolve_defect_filter(defect: str) -> list[str] | None:
     return [defect.strip()]
 
 
+def _default_model_scene_id(db) -> int | None:
+    """取全局默认检测模型的归属场景 id，用于统计工具的场景隔离。
+
+    与检测执行的写入归属保持同一口径（模型 is_global_default → scene_id）。
+    只做轻量查询，不触发 ensure_model_available 的 MinIO 恢复副作用；
+    未配置全局模型时返回 None（统计回退为全场景）。
+    """
+    row = (
+        db.query(ModelVersion.scene_id)
+        .filter(ModelVersion.is_global_default.is_(True))
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _current_scene_context(db) -> tuple[int | None, str | None]:
+    """统计工具的场景上下文：(scene_id, 场景显示名)。
+
+    优先取请求注入的 _current_scene_id（预留），否则回退到全局默认模型场景。
+    """
+    scene_id = _current_scene_id.get() or _default_model_scene_id(db)
+    if not scene_id:
+        return None, None
+    row = (
+        db.query(DetectionScene.display_name)
+        .filter(DetectionScene.id == scene_id)
+        .first()
+    )
+    return scene_id, (row[0] if row else None)
+
+
 @tool
 def query_detection_statistics(
     days: int = 7,
@@ -547,7 +584,11 @@ def query_detection_statistics(
     end_date: str = "",
     defect: str = "",
 ) -> str:
-    """查询全厂检测任务统计，支持自定义时间段与按缺陷类别过滤。
+    """查询检测任务统计，支持自定义时间段与按缺陷类别过滤。
+
+    统计范围自动限定在当前检测场景（全局默认模型的归属场景）内，
+    与检测执行的写入口径一致；返回的 scene 字段为该场景名，
+    回答时应向用户说明统计所属场景。
 
     Args:
         days: 最近天数，1-365；当 today=true 或提供 start_date/end_date 时忽略。
@@ -590,24 +631,27 @@ def query_detection_statistics(
                 win_start, win_end = today_date, today_date
             else:
                 win_start, win_end = None, None
+            # 统计口径与检测执行一致：限定在全局默认模型的归属场景内。
+            scene_id, scene_name = _current_scene_context(db)
             result = dashboard_service.get_statistics(
-                db, None, days, win_start, win_end, defect_filter
+                db, None, days, win_start, win_end, defect_filter, scene_id
             )
             defect_count = result.get("total_objects", 0)
             payload = {
                 "defect": defect.strip(),
+                "scene": scene_name or "全部场景",
                 "from": result.get("start_at"),
                 "to": result.get("end_at"),
                 "matched_tasks": result.get("total_tasks", 0),
                 "matched_images": result.get("matched_images", result.get("total_images", 0)),
                 "defect_count": defect_count,
                 "growth": result.get("growth", {}),
-                "note": "以上为该缺陷类别的目标级统计",
+                "note": "以上为该缺陷类别在当前检测场景内的目标级统计",
             }
             # 0 命中时附上该时间段实际存在的缺陷类别，便于纠正用词歧义。
             if defect_count == 0:
                 options = dashboard_service.get_defect_options(
-                    db, None, days, win_start, win_end
+                    db, None, days, win_start, win_end, scene_id
                 )
                 payload["available_defects"] = [
                     {"name": item["name"], "name_cn": item["name_cn"]}
@@ -662,10 +706,14 @@ def query_detection_statistics(
         period_label = "recent_days"
     db = SessionLocal()
     try:
+        # 统计口径与检测执行一致：限定在全局默认模型的归属场景内。
+        scene_id, scene_name = _current_scene_context(db)
         time_base = db.query(DetectionTask).filter(
             DetectionTask.created_at >= since,
             DetectionTask.created_at < until,
         )
+        if scene_id:
+            time_base = time_base.filter(DetectionTask.scene_id == scene_id)
         type_rows = time_base.with_entities(
             DetectionTask.task_type,
             func.count(DetectionTask.id),
@@ -707,6 +755,7 @@ def query_detection_statistics(
                 "days": 1 if period_label == "today" else days,
                 "from": since.isoformat(timespec="seconds"),
                 "to": until.isoformat(timespec="seconds"),
+                "scene": scene_name or "全部场景",
                 "task_type": normalized_type,
                 "total_tasks": total_tasks,
                 "completed_tasks": completed,
@@ -730,7 +779,10 @@ def query_detection_trends(
     end_date: str = "",
     defect: str = "",
 ) -> str:
-    """查询全厂检测趋势与缺陷类别分布，支持自定义时间段与单缺陷趋势。
+    """查询检测趋势与缺陷类别分布，支持自定义时间段与单缺陷趋势。
+
+    统计范围自动限定在当前检测场景（全局默认模型的归属场景）内，
+    返回的 scene 字段为该场景名，回答时应向用户说明统计所属场景。
 
     Args:
         days: 最近天数，1-365；提供 start_date/end_date 时忽略。
@@ -759,11 +811,13 @@ def query_detection_trends(
 
     db = SessionLocal()
     try:
+        # 统计口径与检测执行一致：限定在全局默认模型的归属场景内。
+        scene_id, scene_name = _current_scene_context(db)
         trend = dashboard_service.get_trend(
-            db, None, days, parsed_start, parsed_end, defect_filter
+            db, None, days, parsed_start, parsed_end, defect_filter, scene_id
         )
         class_dist = dashboard_service.get_class_distribution(
-            db, None, days, parsed_start, parsed_end, defect_filter
+            db, None, days, parsed_start, parsed_end, defect_filter, scene_id
         )
         daily = [
             {
@@ -777,6 +831,7 @@ def query_detection_trends(
             "days": days,
             "from": trend.get("start_at"),
             "to": trend.get("end_at"),
+            "scene": scene_name or "全部场景",
             "daily": daily,
             "class_distribution": [
                 {"class_name": item["name"], "count": item["value"]}
@@ -789,7 +844,7 @@ def query_detection_trends(
             # 0 命中时附上可选缺陷类别，帮助纠正用词歧义。
             if sum(item["objects"] for item in daily) == 0:
                 options = dashboard_service.get_defect_options(
-                    db, None, days, parsed_start, parsed_end
+                    db, None, days, parsed_start, parsed_end, scene_id
                 )
                 payload["available_defects"] = [
                     {"name": item["name"], "name_cn": item["name_cn"]}

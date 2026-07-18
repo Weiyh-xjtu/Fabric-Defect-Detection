@@ -36,6 +36,9 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 
+from sqlalchemy.orm import Session, joinedload
+
+from app.api.auth import get_current_user
 from app.core.permissions import require_permission
 from app.core.rbac import (
     DETECTION_EXECUTE,
@@ -44,8 +47,8 @@ from app.core.rbac import (
 )
 from app.core.security import decode_access_token
 from app.core.logger import get_logger
-from app.database.session import SessionLocal
-from app.entity.db_models import DetectionTask, User
+from app.database.session import SessionLocal, get_db
+from app.entity.db_models import DetectionTask, ModelVersion, User
 from app.services.detection_service import detection_service
 from app.services.model_management_service import model_management_service
 from app.agent.memory import conversation_memory
@@ -140,6 +143,37 @@ def _remember_quick_detection(
         result,
         original_attachments=attachments,
     )
+
+
+@router.get("/current-scene", summary="当前检测场景")
+async def get_current_scene(
+    _current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """返回全局默认模型的归属场景，用于前端横幅显示当前场景。
+
+    仅需登录：智能对话页与检测工作台共用，属于非敏感元信息。
+    未配置全局模型时 scene 为 null，前端不显示胶囊。
+    """
+    model_version = (
+        db.query(ModelVersion)
+        .options(joinedload(ModelVersion.scene))
+        .filter(ModelVersion.is_global_default.is_(True))
+        .first()
+    )
+    if model_version is None or model_version.scene is None:
+        return {"scene": None}
+    scene = model_version.scene
+    return {
+        "scene": {
+            "id": scene.id,
+            "name": scene.name,
+            "display_name": scene.display_name,
+            "category": scene.category,
+        },
+        "model_version": model_version.version,
+        "model_name": model_version.model_name,
+    }
 
 
 @router.post("/single", summary="单图检测")

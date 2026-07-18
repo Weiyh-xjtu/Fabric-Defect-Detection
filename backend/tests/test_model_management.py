@@ -117,6 +117,42 @@ def test_model_management_requires_model_permission(client) -> None:
     assert client.get("/api/models", headers=headers).status_code == 403
 
 
+def test_current_scene_endpoint_follows_global_model(
+    client, db_session, tmp_path
+) -> None:
+    """current-scene 返回全局默认模型的归属场景；普通登录用户即可访问。"""
+    _clear_global_model(db_session)
+    version = _create_version(db_session, tmp_path, "scene-banner", global_default=True)
+    # 无需 model:manage 权限，注册用户（质检员）即可读取。
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "scene_banner_user",
+            "email": "scene_banner_user@example.com",
+            "password": "123456",
+        },
+    )
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "scene_banner_user", "password": "123456"},
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    try:
+        response = client.get("/api/detection/current-scene", headers=headers)
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["scene"]["id"] == version.scene_id
+        assert payload["scene"]["display_name"] == "模型场景 scene-banner"
+        assert payload["model_version"] == version.version
+    finally:
+        _clear_global_model(db_session)
+
+    # 清除全局模型后 scene 为 null。
+    response = client.get("/api/detection/current-scene", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["scene"] is None
+
+
 def test_activate_model_switches_single_global_version(client, db_session, tmp_path) -> None:
     _clear_global_model(db_session)
     first = _create_version(db_session, tmp_path, "activate-a", global_default=True)
