@@ -6,6 +6,10 @@
         <span class="brand-name">FIRESIGHT</span>
       </span>
       <span class="brand-tagline">布面缺陷检测平台</span>
+    </div>
+
+    <!-- 右侧：当前场景 + 用户信息 + 退出按钮 -->
+    <div class="header-right">
       <!-- 智能对话/检测工作台：显示当前检测场景（全局默认模型归属场景） -->
       <el-tooltip
         v-if="showScene && currentScene"
@@ -13,14 +17,12 @@
         placement="bottom"
       >
         <span class="scene-chip">
+          <span class="scene-chip-dot" />
           <span class="scene-chip-label">当前场景</span>
+          <span class="scene-chip-divider" />
           <span class="scene-chip-name">{{ currentScene.display_name }}</span>
         </span>
       </el-tooltip>
-    </div>
-
-    <!-- 右侧：用户信息 + 退出按钮 -->
-    <div class="header-right">
       <el-dropdown trigger="click" @command="handleCommand">
         <div class="user-info">
           <el-avatar :size="32" :src="userStore.avatar || undefined">
@@ -153,36 +155,49 @@ function handleCommand(command) {
   color: $text-regular;
 }
 
-// 当前检测场景胶囊：与品牌角标同语言，朱橙描边提示“检测上下文”
+// 当前检测场景胶囊：中性描边 + 朱橙状态点，弱化存在感、与右侧用户区同灰度语言
 .scene-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  align-self: center;
-  padding: 3px 10px;
-  border: 1px solid rgba(223, 107, 78, 0.45);
+  gap: 8px;
+  padding: 5px 12px;
+  border: 1px solid #e8ecf3;
   border-radius: 999px;
-  background: rgba(223, 107, 78, 0.06);
+  background: #fff;
   cursor: default;
   line-height: 1;
 }
 
+.scene-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: $signal-orange;
+  box-shadow: 0 0 0 3px rgba(223, 107, 78, 0.14);
+  flex-shrink: 0;
+}
+
 .scene-chip-label {
-  font-family: $font-mono;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  color: $signal-orange;
+  font-size: 12px;
+  color: $text-regular;
+}
+
+.scene-chip-divider {
+  width: 1px;
+  height: 10px;
+  background: #e8ecf3;
 }
 
 .scene-chip-name {
   font-size: 12px;
   font-weight: 600;
-  color: $text-primary;
+  color: $text-regular;
 }
 
 .header-right {
   display: flex;
   align-items: center;
+  gap: $spacing-md;
 }
 
 .user-info {
