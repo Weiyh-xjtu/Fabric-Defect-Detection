@@ -6,6 +6,17 @@
         <span class="brand-name">FIRESIGHT</span>
       </span>
       <span class="brand-tagline">布面缺陷检测平台</span>
+      <!-- 智能对话/检测工作台：显示当前检测场景（全局默认模型归属场景） -->
+      <el-tooltip
+        v-if="showScene && currentScene"
+        :content="`当前全局模型 ${currentModelLabel}，检测与统计均在此场景内进行`"
+        placement="bottom"
+      >
+        <span class="scene-chip">
+          <span class="scene-chip-label">当前场景</span>
+          <span class="scene-chip-name">{{ currentScene.display_name }}</span>
+        </span>
+      </el-tooltip>
     </div>
 
     <!-- 右侧：用户信息 + 退出按钮 -->
@@ -34,15 +45,47 @@
 </template>
 
 <script setup>
-import { useRouter } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ArrowDown, User, SwitchButton } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
+import { getCurrentScene } from '@/api/detection'
 import { useUserStore } from '@/stores/user'
 import { useAgentStore } from '@/stores/agent'
 
+const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const agentStore = useAgentStore()
+
+// 仅在智能对话与检测工作台显示场景胶囊。
+const SCENE_ROUTES = ['/chat', '/detection']
+const showScene = computed(() => SCENE_ROUTES.includes(route.path))
+
+const currentScene = ref(null)
+const currentModelLabel = ref('')
+
+/** 拉取全局默认模型归属场景；失败静默（无模型/无权限时不显示胶囊）。 */
+async function loadCurrentScene() {
+  try {
+    const result = await getCurrentScene()
+    currentScene.value = result.scene || null
+    currentModelLabel.value = result.scene
+      ? `${result.model_name || ''} ${result.model_version || ''}`.trim()
+      : ''
+  } catch {
+    currentScene.value = null
+  }
+}
+
+// 每次进入智能对话/检测工作台都重新拉取，保证切换全局模型后场景跟随。
+watch(
+  showScene,
+  (visible) => {
+    if (visible) loadCurrentScene()
+  },
+  { immediate: true },
+)
 
 /** 处理下拉菜单命令 */
 function handleCommand(command) {
@@ -108,6 +151,33 @@ function handleCommand(command) {
   font-size: 11px;
   letter-spacing: 0.08em;
   color: $text-regular;
+}
+
+// 当前检测场景胶囊：与品牌角标同语言，朱橙描边提示“检测上下文”
+.scene-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  padding: 3px 10px;
+  border: 1px solid rgba(223, 107, 78, 0.45);
+  border-radius: 999px;
+  background: rgba(223, 107, 78, 0.06);
+  cursor: default;
+  line-height: 1;
+}
+
+.scene-chip-label {
+  font-family: $font-mono;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: $signal-orange;
+}
+
+.scene-chip-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: $text-primary;
 }
 
 .header-right {

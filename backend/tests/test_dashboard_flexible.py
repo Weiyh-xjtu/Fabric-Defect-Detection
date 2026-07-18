@@ -7,6 +7,7 @@ from app.entity.db_models import (
     DetectionResult,
     DetectionScene,
     DetectionTask,
+    ModelVersion,
     Role,
     User,
     UserRole,
@@ -20,6 +21,14 @@ from tests.test_day10 import register_and_login
 def _clear_detection(db_session) -> None:
     db_session.query(DetectionResult).delete()
     db_session.query(DetectionTask).delete()
+    db_session.commit()
+
+
+def _clear_global_model(db_session) -> None:
+    """清除全局默认模型标记，避免其他测试文件的遗留影响场景上下文。"""
+    db_session.query(ModelVersion).update(
+        {"is_global_default": False}, synchronize_session=False
+    )
     db_session.commit()
 
 
@@ -638,6 +647,142 @@ class TestChatToolDefectHints:
         assert payload["defect_count"] == 0
         names = {item["name"] for item in payload["available_defects"]}
         assert "hole" in names
+
+
+class TestAgentSceneContext:
+    """Agent 统计工具自动限定在全局默认模型的归属场景内。"""
+
+    def _setup_agent_env(self, db_session, monkeypatch):
+        """让工具的 SessionLocal 指向测试库并放行权限。"""
+        import app.agent.detection_agent as agent_module
+        from sqlalchemy.orm import sessionmaker
+
+        factory = sessionmaker(
+            autocommit=False, autoflush=False, bind=db_session.get_bind()
+        )
+        monkeypatch.setattr(agent_module, "SessionLocal", factory)
+        monkeypatch.setattr(
+            agent_module, "_tool_permission_error", lambda _permission: None
+        )
+        return agent_module
+
+    def _make_global_model(self, db_session, scene_id: int, suffix: str) -> ModelVersion:
+        version = ModelVersion(
+            scene_id=scene_id,
+            version=f"v-agent-{suffix}",
+            model_name=f"agent-model-{suffix}",
+            model_type="yolo11n",
+            model_path=f"runs/agent-{suffix}/best.pt",
+            status="active",
+            is_global_default=True,
+        )
+        db_session.add(version)
+        db_session.commit()
+        db_session.refresh(version)
+        return version
+
+    def test_statistics_scoped_to_default_model_scene(self, db_session, monkeypatch):
+        agent_module = self._setup_agent_env(db_session, monkeypatch)
+        _clear_detection(db_session)
+        _clear_global_model(db_session)
+        user = _ensure_user(db_session, "agent_scene_user")
+        scene_a = _make_scene(db_session, "agent_scene_a")
+        scene_b = _make_scene(db_session, "agent_scene_b")
+        # A 场景 2 个 hole，B 场景 1 个 hole；默认模型属于 A。
+        _make_task_with_defects(
+            db_session, user.id, scene_a.id,
+            datetime(2026, 6, 10, 9, 0),
+            [("hole", "破洞", "a.jpg"), ("hole", "破洞", "a2.jpg")],
+        )
+        _make_task_with_defects(
+            db_session, user.id, scene_b.id,
+            datetime(2026, 6, 10, 9, 0), [("hole", "破洞", "b.jpg")],
+        )
+        self._make_global_model(db_session, scene_a.id, "stats")
+
+        try:
+            raw = agent_module.query_detection_statistics.invoke(
+                {
+                    "start_date": "2026-06-01",
+                    "end_date": "2026-06-30",
+                    "defect": "破洞",
+                }
+            )
+            payload = json.loads(raw)
+            assert payload["defect_count"] == 2
+            assert payload["scene"] == "织物缺陷检测"
+
+            # 任务级统计同样只算场景 A 的 1 条任务。
+            raw_tasks = agent_module.query_detection_statistics.invoke(
+                {"start_date": "2026-06-01", "end_date": "2026-06-30"}
+            )
+            tasks_payload = json.loads(raw_tasks)
+            assert tasks_payload["total_tasks"] == 1
+            assert tasks_payload["scene"] == "织物缺陷检测"
+        finally:
+            _clear_global_model(db_session)
+
+    def test_trends_scoped_to_default_model_scene(self, db_session, monkeypatch):
+        agent_module = self._setup_agent_env(db_session, monkeypatch)
+        _clear_detection(db_session)
+        _clear_global_model(db_session)
+        user = _ensure_user(db_session, "agent_trend_user")
+        scene_a = _make_scene(db_session, "agent_trend_a")
+        scene_b = _make_scene(db_session, "agent_trend_b")
+        _make_task_with_defects(
+            db_session, user.id, scene_a.id,
+            datetime(2026, 6, 10, 9, 0), [("hole", "破洞", "a.jpg")],
+        )
+        _make_task_with_defects(
+            db_session, user.id, scene_b.id,
+            datetime(2026, 6, 10, 9, 0),
+            [("stain", "污渍", "b.jpg"), ("stain", "污渍", "b2.jpg")],
+        )
+        self._make_global_model(db_session, scene_a.id, "trend")
+
+        try:
+            raw = agent_module.query_detection_trends.invoke(
+                {"start_date": "2026-06-01", "end_date": "2026-06-30"}
+            )
+            payload = json.loads(raw)
+            assert payload["scene"] == "织物缺陷检测"
+            dist = {
+                item["class_name"]: item["count"]
+                for item in payload["class_distribution"]
+            }
+            # 只有场景 A 的 hole，场景 B 的 stain 不出现。
+            assert dist == {"hole": 1}
+        finally:
+            _clear_global_model(db_session)
+
+    def test_without_global_model_falls_back_to_all_scenes(
+        self, db_session, monkeypatch
+    ):
+        agent_module = self._setup_agent_env(db_session, monkeypatch)
+        _clear_detection(db_session)
+        _clear_global_model(db_session)
+        user = _ensure_user(db_session, "agent_fallback_user")
+        scene_a = _make_scene(db_session, "agent_fallback_a")
+        scene_b = _make_scene(db_session, "agent_fallback_b")
+        _make_task_with_defects(
+            db_session, user.id, scene_a.id,
+            datetime(2026, 6, 10, 9, 0), [("hole", "破洞", "a.jpg")],
+        )
+        _make_task_with_defects(
+            db_session, user.id, scene_b.id,
+            datetime(2026, 6, 10, 9, 0), [("hole", "破洞", "b.jpg")],
+        )
+
+        raw = agent_module.query_detection_statistics.invoke(
+            {
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-30",
+                "defect": "hole",
+            }
+        )
+        payload = json.loads(raw)
+        assert payload["defect_count"] == 2
+        assert payload["scene"] == "全部场景"
 
 
 class TestToolDateParsing:

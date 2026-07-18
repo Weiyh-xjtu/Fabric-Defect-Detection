@@ -67,3 +67,11 @@ export function detectVideo(formData) {
 export function getVideoStatus(taskId) {
   return request.get(`/detection/video/status/${taskId}`);
 }
+
+/**
+ * 获取当前检测场景（全局默认模型的归属场景）
+ * @returns {Promise} - { scene: { id, name, display_name, category } | null, model_version, model_name }
+ */
+export function getCurrentScene() {
+  return request.get("/detection/current-scene");
+}
