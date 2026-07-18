@@ -470,7 +470,10 @@ onBeforeUnmount(() => {
 </script>
 
 <style lang="scss" scoped>
-.dashboard-page { min-height: 100%; }
+.dashboard-page {
+  min-height: 100%;
+  padding: 20px;
+}
 .page-header {
   display: flex;
   align-items: center;
