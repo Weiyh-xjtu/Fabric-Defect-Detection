@@ -31,6 +31,23 @@
           />
         </div>
         <div class="filter-item">
+          <span class="filter-label">场景</span>
+          <el-select
+            v-model="selectedScene"
+            clearable
+            placeholder="全部场景"
+            class="scene-select"
+            @change="handleSceneChange"
+          >
+            <el-option
+              v-for="option in sceneOptions"
+              :key="option.id"
+              :label="option.display_name"
+              :value="option.id"
+            />
+          </el-select>
+        </div>
+        <div class="filter-item">
           <span class="filter-label">缺陷</span>
           <el-select
             v-model="selectedDefects"
@@ -277,6 +294,7 @@ import {
   getDefectOptions,
   getDefectTrend,
   getSceneDistribution,
+  getSceneOptions,
   getStatistics,
   getTrend,
   getTypeDistribution,
@@ -289,6 +307,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'v
 
 const preset = ref(30)
 const dateRange = ref(null)
+const selectedScene = ref(null)
+const sceneOptions = ref([])
 const selectedDefects = ref([])
 const defectOptions = ref([])
 const loading = ref(false)
@@ -332,6 +352,9 @@ const defectFilterActive = computed(() => selectedDefects.value.length > 0)
 /** 把当前筛选状态转成 API 参数：自定义区间优先，否则用天数预设。 */
 function currentQuery() {
   const query = { classNames: selectedDefects.value }
+  if (selectedScene.value) {
+    query.sceneId = selectedScene.value
+  }
   if (preset.value === 'custom' && dateRange.value?.length === 2) {
     query.start = dateRange.value[0]
     query.end = dateRange.value[1]
@@ -458,11 +481,15 @@ const tableConfigs = computed(() => {
 
 /** 当前时间窗口的文件名后缀。 */
 function rangeLabel() {
+  const sceneName = sceneOptions.value.find(
+    (item) => item.id === selectedScene.value,
+  )?.display_name
+  const scenePrefix = sceneName ? `${sceneName}-` : ''
   if (preset.value === 'custom' && dateRange.value?.length === 2) {
-    return `${dateRange.value[0]}_${dateRange.value[1]}`
+    return `${scenePrefix}${dateRange.value[0]}_${dateRange.value[1]}`
   }
   const days = preset.value === 'custom' ? 30 : preset.value
-  return `近${days}天`
+  return `${scenePrefix}近${days}天`
 }
 
 /** 导出指定卡片的表格数据为 CSV。 */
@@ -554,6 +581,22 @@ function handlePresetChange(value) {
 
 function handleDateRangeChange() {
   if (dateRange.value?.length === 2) loadAllData()
+}
+
+/** 场景切换后可选缺陷集合会变化，需要连同下拉一起刷新。 */
+async function handleSceneChange() {
+  await loadDefectOptions(currentQuery())
+  await loadAllData()
+}
+
+/** 拉取场景下拉选项（启用场景，全量一次性加载）。 */
+async function loadSceneOptions() {
+  try {
+    const result = await getSceneOptions()
+    sceneOptions.value = result.options || []
+  } catch (error) {
+    console.error('[场景选项加载失败]', error)
+  }
 }
 
 /** 拉取缺陷下拉选项（不受已选缺陷影响，跟随时间窗口）。 */
@@ -745,6 +788,7 @@ function handleResize() {
 }
 
 onMounted(async () => {
+  await loadSceneOptions()
   await loadDefectOptions(currentQuery())
   await loadAllData()
   window.addEventListener('resize', handleResize)
@@ -790,6 +834,7 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 .filter-label { color: $text-secondary; font-size: 14px; white-space: nowrap; }
+.scene-select { min-width: 180px; }
 .defect-select { min-width: 260px; }
 .card-header {
   display: flex;
@@ -864,6 +909,7 @@ onBeforeUnmount(() => {
   .page-header { align-items: flex-start; flex-direction: column; }
   .filter-row { gap: 16px; }
   .filter-item { width: 100%; }
+  .scene-select { flex: 1; min-width: 0; }
   .defect-select { flex: 1; min-width: 0; }
 }
 </style>
