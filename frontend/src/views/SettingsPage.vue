@@ -171,6 +171,10 @@ onMounted(loadUserInfo)
 </script>
 
 <style lang="scss" scoped>
+.settings-page {
+  padding: 20px;
+}
+
 .page-header {
   margin-bottom: 20px;
   h2 { margin: 0 0 4px; }

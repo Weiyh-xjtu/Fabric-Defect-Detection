@@ -336,7 +336,10 @@ onMounted(async () => {
 </script>
 
 <style lang="scss" scoped>
-.history-page { min-height: 100%; }
+.history-page {
+  min-height: 100%;
+  padding: 20px;
+}
 .page-header {
   display: flex;
   align-items: center;
