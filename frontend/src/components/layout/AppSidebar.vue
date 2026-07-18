@@ -238,8 +238,8 @@ onMounted(() => {
 }
 
 .app-sidebar.has-chat-history .menu-scroll-area {
-  flex: 0 1 auto;
-  max-height: 52%;
+  flex: 0 0 auto;
+  max-height: none;
 }
 
 .chat-history-section {
@@ -272,6 +272,7 @@ onMounted(() => {
   font-weight: 600;
   background: transparent;
   border-color: $indigo-line;
+  border-radius: 12px;
 
   &:hover,
   &:focus {

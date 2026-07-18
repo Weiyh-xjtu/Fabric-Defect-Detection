@@ -33,147 +33,149 @@
       </div>
     </el-card>
 
-    <div class="main-content">
-      <section class="preview-panel">
-        <div class="video-wrapper">
-          <video
-            ref="videoRef"
-            autoplay
-            playsinline
-            muted
-            class="source-video"
-          ></video>
-          <canvas
-            ref="canvasRef"
-            class="preview-canvas"
-            :width="canvasWidth"
-            :height="canvasHeight"
-          ></canvas>
+    <el-card class="workbench-card" shadow="never">
+      <div class="main-content">
+        <section class="preview-panel">
+          <div class="video-wrapper">
+            <video
+              ref="videoRef"
+              autoplay
+              playsinline
+              muted
+              class="source-video"
+            ></video>
+            <canvas
+              ref="canvasRef"
+              class="preview-canvas"
+              :width="canvasWidth"
+              :height="canvasHeight"
+            ></canvas>
 
-          <div v-if="!isRunning" class="placeholder">
-            <span>{{ isConnecting ? "正在初始化模型..." : placeholderText }}</span>
-          </div>
-        </div>
-
-        <div v-if="isRunning" class="video-stats">
-          <el-tag type="success">FPS: {{ currentFps }}</el-tag>
-          <el-tag type="info">帧: {{ frameCount }}</el-tag>
-          <el-tag type="info">推理: {{ inferenceTime }}ms</el-tag>
-        </div>
-      </section>
-
-      <aside class="result-panel">
-        <el-card shadow="never">
-          <template #header>实时检测统计</template>
-          <div class="stats-grid">
-            <div class="stat-item">
-              <div class="stat-value">{{ objectCount }}</div>
-              <div class="stat-label">当前目标数</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value">{{ currentFps }}</div>
-              <div class="stat-label">实时 FPS</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value">{{ inferenceTime }}</div>
-              <div class="stat-label">推理耗时(ms)</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value">{{ frameCount }}</div>
-              <div class="stat-label">已处理帧</div>
+            <div v-if="!isRunning" class="placeholder">
+              <span>{{ isConnecting ? "正在初始化模型..." : placeholderText }}</span>
             </div>
           </div>
-        </el-card>
 
-        <el-card class="detections-card" shadow="never">
-          <template #header>
-            <div class="card-header">
-              <span>当前帧目标列表</span>
-              <el-tag size="small">{{ currentDetections.length }} 个目标</el-tag>
-            </div>
-          </template>
-
-          <div v-if="currentDetections.length === 0" class="empty-state">
-            暂无检测目标
+          <div v-if="isRunning" class="video-stats">
+            <el-tag type="success">FPS: {{ currentFps }}</el-tag>
+            <el-tag type="info">帧: {{ frameCount }}</el-tag>
+            <el-tag type="info">推理: {{ inferenceTime }}ms</el-tag>
           </div>
-          <div v-else class="detection-list">
-            <div
-              v-for="(det, index) in currentDetections"
-              :key="`${det.class_id}-${index}`"
-              class="detection-item"
-            >
-              <div class="det-info">
-                <span class="det-class">{{ det.class_name }}</span>
-                <el-progress
-                  :percentage="Math.round(det.confidence * 100)"
-                  :stroke-width="6"
-                  :show-text="true"
-                />
+        </section>
+
+        <aside class="result-panel">
+          <el-card shadow="never">
+            <template #header>实时检测统计</template>
+            <div class="stats-grid">
+              <div class="stat-item">
+                <div class="stat-value">{{ objectCount }}</div>
+                <div class="stat-label">当前目标数</div>
               </div>
-              <div class="det-bbox">
-                [{{ det.bbox.map((value) => Math.round(value)).join(", ") }}]
+              <div class="stat-item">
+                <div class="stat-value">{{ currentFps }}</div>
+                <div class="stat-label">实时 FPS</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value">{{ inferenceTime }}</div>
+                <div class="stat-label">推理耗时(ms)</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value">{{ frameCount }}</div>
+                <div class="stat-label">已处理帧</div>
               </div>
             </div>
-          </div>
-        </el-card>
+          </el-card>
 
-        <el-card
-          v-if="Object.keys(classDistribution).length"
-          class="distribution-card"
-          shadow="never"
+          <el-card class="detections-card" shadow="never">
+            <template #header>
+              <div class="card-header">
+                <span>当前帧目标列表</span>
+                <el-tag size="small">{{ currentDetections.length }} 个目标</el-tag>
+              </div>
+            </template>
+
+            <div v-if="currentDetections.length === 0" class="empty-state">
+              暂无检测目标
+            </div>
+            <div v-else class="detection-list">
+              <div
+                v-for="(det, index) in currentDetections"
+                :key="`${det.class_id}-${index}`"
+                class="detection-item"
+              >
+                <div class="det-info">
+                  <span class="det-class">{{ det.class_name }}</span>
+                  <el-progress
+                    :percentage="Math.round(det.confidence * 100)"
+                    :stroke-width="6"
+                    :show-text="true"
+                  />
+                </div>
+                <div class="det-bbox">
+                  [{{ det.bbox.map((value) => Math.round(value)).join(", ") }}]
+                </div>
+              </div>
+            </div>
+          </el-card>
+
+          <el-card
+            v-if="Object.keys(classDistribution).length"
+            class="distribution-card"
+            shadow="never"
+          >
+            <template #header>类别分布</template>
+            <div class="distribution-list">
+              <div
+                v-for="(count, className) in classDistribution"
+                :key="className"
+                class="distribution-item"
+              >
+                <span>{{ className }}</span>
+                <el-tag size="small" type="primary">{{ count }}</el-tag>
+              </div>
+            </div>
+          </el-card>
+        </aside>
+      </div>
+
+      <div class="control-bar">
+        <el-button
+          v-if="!isRunning && !isConnecting"
+          type="primary"
+          size="large"
+          @click="startCamera"
         >
-          <template #header>类别分布</template>
-          <div class="distribution-list">
-            <div
-              v-for="(count, className) in classDistribution"
-              :key="className"
-              class="distribution-item"
-            >
-              <span>{{ className }}</span>
-              <el-tag size="small" type="primary">{{ count }}</el-tag>
-            </div>
-          </div>
-        </el-card>
-      </aside>
-    </div>
+          {{ startButtonText }}
+        </el-button>
+        <el-button v-else type="danger" size="large" @click="stopCamera()">
+          {{ isConnecting ? "取消连接" : "停止检测" }}
+        </el-button>
 
-    <div class="control-bar">
-      <el-button
-        v-if="!isRunning && !isConnecting"
-        type="primary"
-        size="large"
-        @click="startCamera"
-      >
-        {{ startButtonText }}
-      </el-button>
-      <el-button v-else type="danger" size="large" @click="stopCamera()">
-        {{ isConnecting ? "取消连接" : "停止检测" }}
-      </el-button>
+        <el-divider direction="vertical" />
 
-      <el-divider direction="vertical" />
+        <span class="control-label">推理模式：</span>
+        <el-radio-group
+          v-model="detectMode"
+          :disabled="isRunning || isConnecting"
+        >
+          <el-radio-button value="cpu">CPU 节能</el-radio-button>
+          <el-radio-button value="gpu">GPU 加速</el-radio-button>
+        </el-radio-group>
 
-      <span class="control-label">推理模式：</span>
-      <el-radio-group
-        v-model="detectMode"
-        :disabled="isRunning || isConnecting"
-      >
-        <el-radio-button value="cpu">CPU 节能</el-radio-button>
-        <el-radio-button value="gpu">GPU 加速</el-radio-button>
-      </el-radio-group>
+        <el-divider direction="vertical" />
 
-      <el-divider direction="vertical" />
-
-      <span class="control-label">置信度：</span>
-      <el-slider
-        v-model="confThreshold"
-        :min="0.1"
-        :max="0.9"
-        :step="0.05"
-        :disabled="isRunning || isConnecting"
-        class="confidence-slider"
-        show-input
-      />
-    </div>
+        <span class="control-label">置信度：</span>
+        <el-slider
+          v-model="confThreshold"
+          :min="0.1"
+          :max="0.9"
+          :step="0.05"
+          :disabled="isRunning || isConnecting"
+          class="confidence-slider"
+          show-input
+        />
+      </div>
+    </el-card>
   </div>
 </template>
 
@@ -578,6 +580,20 @@ onBeforeUnmount(() => stopCamera(false));
   margin-top: 8px;
   color: #909399;
   font-size: 13px;
+}
+
+.workbench-card {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+
+  :deep(.el-card__body) {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
 }
 
 .main-content {
