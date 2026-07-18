@@ -362,3 +362,19 @@ def test_memory_is_isolated_by_user():
     assert memory.load(session, 2)[0]["content"] == "用户二的消息"
     memory.clear(session, 1)
     memory.clear(session, 2)
+
+
+def test_agent_prompt_injects_current_date():
+    """系统提示词必须包含 {current_date} 占位符，供每次调用注入实时日期，
+    否则 LLM 会凭训练数据猜测“今天/昨天”对应的具体日期。"""
+    from datetime import datetime
+
+    from app.agent.detection_agent import DetectionAgent, _current_date_text
+
+    agent = DetectionAgent([], name="analysis")
+    system_template = agent.executor.agent.runnable.get_prompts()[0].messages[0].prompt.template
+    assert "{current_date}" in system_template
+
+    date_text = _current_date_text()
+    assert datetime.now().strftime("%Y-%m-%d") in date_text
+    assert "星期" in date_text

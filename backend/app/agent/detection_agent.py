@@ -144,6 +144,17 @@ def _finalize_tool_result(result: dict) -> str:
     return json.dumps(_strip_base64_for_llm(result), ensure_ascii=False)
 
 
+def _current_date_text() -> str:
+    """构造注入提示词的当前系统日期文本，如 2026-07-19（星期日）。
+
+    Agent 是长驻单例，日期必须在每次请求时计算并通过提示词变量注入，
+    否则 LLM 只能凭训练数据猜测“今天/昨天”对应的具体日期。
+    """
+    now = datetime.now()
+    weekday_cn = "一二三四五六日"[now.weekday()]
+    return f"{now.strftime('%Y-%m-%d')}（星期{weekday_cn}）"
+
+
 def _tool_permission_error(permission: str) -> str | None:
     """Return a JSON error when the request user cannot invoke a tool."""
     user_id = _current_user_id.get()
@@ -982,7 +993,14 @@ class DetectionAgent:
 - 对于视频检测，还要报告视频时长和处理的帧数
 - 如果有标注图，告知用户可以在结果卡片中查看
 - 简洁专业，不要过度解释"""
-        system_prompt = system_prompt or default_system_prompt
+        # 追加当前日期占位符：Agent 为长驻单例，日期在每次调用时通过
+        # {current_date} 变量注入，确保“今天/昨天/本周”等相对日期换算正确。
+        system_prompt = (system_prompt or default_system_prompt) + (
+            "\n\n当前系统日期：{current_date}。"
+            "用户提到“今天/昨天/前天/本周/上周/最近N天”等相对日期时，"
+            "必须以该系统日期为基准换算成具体日期（例如“昨天”＝系统日期减一天），"
+            "并在回答中使用换算后的日期，绝不能凭记忆或猜测使用其他日期。"
+        )
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -1050,7 +1068,13 @@ class DetectionAgent:
         )
         try:
             history = conversation_memory.load(session_id, user_id)
-            result = await self.executor.ainvoke({"input": message, "chat_history": history})
+            result = await self.executor.ainvoke(
+                {
+                    "input": message,
+                    "chat_history": history,
+                    "current_date": _current_date_text(),
+                }
+            )
             if record_memory:
                 conversation_memory.append(session_id, "user", message, user_id)
                 conversation_memory.append(session_id, "assistant", result["output"], user_id)
@@ -1117,7 +1141,11 @@ class DetectionAgent:
         try:
             history = conversation_memory.load(session_id, user_id)
             async for event in self.executor.astream_events(
-                {"input": message, "chat_history": history},
+                {
+                    "input": message,
+                    "chat_history": history,
+                    "current_date": _current_date_text(),
+                },
                 version="v2",
             ):
                 event_kind = event["event"]

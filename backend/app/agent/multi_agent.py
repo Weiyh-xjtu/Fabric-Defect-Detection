@@ -102,6 +102,8 @@ class MultiAgentOrchestrator:
                     ANALYSIS_PROMPT
                     + " 必须调用工具获取真实数据，禁止编造统计数字。"
                     "询问今日/今天时调用 query_detection_statistics 并设置 today=true。"
+                    "询问昨天/前天等某一天时，按系统提示中的当前日期换算出那一天，"
+                    "把 start_date 和 end_date 都设为该日期（如昨天＝当前日期减一天）。"
                     "涉及具体日期区间时，把 start_date/end_date 传给工具即可。"
                     "关键：当用户只说了月日（如“7.15到7.17”“6月1号”）而没有明确年份时，"
                     "必须原样按“月-日”格式传参（如 start_date=\"07-15\"、end_date=\"07-17\"），"
