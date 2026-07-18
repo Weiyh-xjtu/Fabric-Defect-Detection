@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════
-// 全局样式 — 通用类名、布局辅助
+// 全局样式 — 通用类名、布局辅助、Element Plus 品牌覆盖
 // ═══════════════════════════════════════════════════════
 
 @use './reset.scss';
@@ -12,11 +12,53 @@
 
 // ── 卡片容器 ────────────────────────────────────────
 .card-container {
-  background: #fff;
+  background: $panel-bg;
+  border: 1px solid #e3e7ef;
   border-radius: $border-radius-md;
   box-shadow: $shadow-sm;
   padding: $spacing-lg;
   margin-bottom: $spacing-md;
+}
+
+// ── 页头（各页面统一）───────────────────────────────
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: $spacing-md;
+  margin-bottom: $spacing-lg;
+
+  h2 {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-family: $font-display;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: $text-primary;
+
+    // 缺陷检测标记：标题前的朱橙定位点
+    &::before {
+      content: '';
+      width: 6px;
+      height: 18px;
+      background: $signal-orange;
+      border-radius: 1px;
+    }
+  }
+
+  p {
+    margin-top: 6px;
+    font-size: 13px;
+    color: $text-secondary;
+  }
+}
+
+// ── 数据 / 标签等宽字辅助 ───────────────────────────
+.mono {
+  font-family: $font-mono;
+  font-variant-numeric: tabular-nums;
 }
 
 // ── Flex 布局辅助 ───────────────────────────────────
@@ -39,15 +81,55 @@
   white-space: nowrap;
 }
 
+// ── Element Plus 品牌覆盖 ───────────────────────────
+:root {
+  --el-color-primary: #{$signal-orange};
+  --el-color-primary-light-3: #{$signal-orange};
+  --el-color-primary-light-5: #ef8b6f;
+  --el-color-primary-light-7: #f5b6a4;
+  --el-color-primary-light-8: #f9cdc0;
+  --el-color-primary-light-9: #fdece6;
+  --el-color-primary-dark-2: #{$signal-orange-dark};
+  --el-color-success: #{$loom-green};
+  --el-color-warning: #{$thread-gold};
+  --el-border-radius-base: 8px;
+  --el-font-family: #{$font-body};
+}
+
+.el-button--primary {
+  --el-button-bg-color: #{$signal-orange};
+  --el-button-border-color: #{$signal-orange};
+  --el-button-hover-bg-color: #{$signal-orange-dark};
+  --el-button-hover-border-color: #{$signal-orange-dark};
+  --el-button-active-bg-color: #{$signal-orange-dark};
+  font-weight: 600;
+}
+
+// 卡片默认边框化，去掉浮夸阴影
+.el-card {
+  border: 1px solid #e3e7ef;
+  border-radius: $border-radius-md;
+}
+
+// 表格 / 数字用等宽体，突出仪器感
+.el-statistic__number,
+.el-table .cell .mono {
+  font-family: $font-mono;
+}
+
 // ── 滚动条美化 ──────────────────────────────────────
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c0c4cc;
-  border-radius: 3px;
+  background: #c2cad9;
+  border-radius: 4px;
+
+  &:hover {
+    background: #a7b1c4;
+  }
 }
 
 ::-webkit-scrollbar-track {

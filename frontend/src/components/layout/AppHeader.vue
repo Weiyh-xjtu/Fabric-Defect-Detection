@@ -1,9 +1,11 @@
 <template>
   <header class="app-header">
-    <!-- 左侧：Logo + 平台名称 -->
+    <!-- 左侧：检测框角标包裹的字标 -->
     <div class="header-left">
-      <img :src="productAvatar" alt="logo" class="header-logo" />
-      <span class="header-title">FIRESIGHT</span>
+      <span class="brand-mark">
+        <span class="brand-name">WEFT</span>
+      </span>
+      <span class="brand-tagline">布面缺陷检测平台</span>
     </div>
 
     <!-- 右侧：用户信息 + 退出按钮 -->
@@ -35,7 +37,6 @@
 import { useRouter } from 'vue-router'
 import { ArrowDown, User, SwitchButton } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
-import productAvatar from '@/assets/avatar.png'
 import { useUserStore } from '@/stores/user'
 import { useAgentStore } from '@/stores/agent'
 
@@ -67,33 +68,43 @@ function handleCommand(command) {
 <style lang="scss" scoped>
 .app-header {
   height: $header-height;
-  background: #fff;
-  border-bottom: 1px solid #ebeef5;
+  background: $indigo-deep;
+  @include weave-grid(rgba(255, 255, 255, 0.03), 12px);
+  border-bottom: 1px solid $indigo-line;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 $spacing-lg;
-  box-shadow: $shadow-sm;
   z-index: 100;
 }
 
 .header-left {
   display: flex;
-  align-items: center;
-  gap: $spacing-sm;
+  align-items: baseline;
+  gap: 12px;
 }
 
-.header-logo {
-  width: 34px;
-  height: 34px;
-  object-fit: cover;
-  border-radius: 10px;
+// 签名元素：字标嵌在 bbox 检测框角标内
+.brand-mark {
+  @include bbox-corners($signal-orange, 7px, 2px);
+  padding: 4px 10px;
+  display: inline-flex;
 }
 
-.header-title {
-  font-size: 17px;
+.brand-name {
+  font-family: $font-display;
+  font-size: 18px;
   font-weight: 700;
-  color: #b71c1c;
+  letter-spacing: 0.18em;
+  color: #fff;
+  line-height: 1;
+}
+
+.brand-tagline {
+  font-family: $font-mono;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: $sidebar-text;
 }
 
 .header-right {
@@ -111,12 +122,16 @@ function handleCommand(command) {
   transition: background 0.2s;
 
   &:hover {
-    background: #f5f7fa;
+    background: $indigo-mid;
   }
 }
 
 .username {
   font-size: 14px;
-  color: $text-primary;
+  color: #e6eaf4;
+}
+
+.user-info :deep(.el-icon) {
+  color: $sidebar-text;
 }
 </style>

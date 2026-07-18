@@ -1,30 +1,47 @@
 // ═══════════════════════════════════════════════════════
-// 全局 SCSS 变量 — 主题色、间距、尺寸
+// 全局 SCSS 变量 — WEFT 布面缺陷检测平台设计令牌
+// 视觉语言：牛仔靛蓝（织物）× 检测朱橙（缺陷信号）× 仪器等宽字
 // ═══════════════════════════════════════════════════════
 
-// ── 主题色 ──────────────────────────────────────────
-$primary-color: #409eff;
-$success-color: #67c23a;
-$warning-color: #e6a23c;
-$danger-color: #f56c6c;
-$info-color: #909399;
+// ── 品牌色 ──────────────────────────────────────────
+$indigo-deep: #16203a;      // 深靛 — 导航/品牌底色（牛仔染缸）
+$indigo-mid: #24314f;       // 中靛 — 悬停、次级面板
+$indigo-line: #35446b;      // 靛蓝分隔线
+$signal-orange: #e8613c;    // 检测朱橙 — 缺陷标记、主要动作
+$signal-orange-dark: #cf4f2c;
+$loom-green: #6b8f71;       // 织物绿 — 合格 / 通过
+$thread-gold: #d9a441;      // 纱线金 — 警示
+
+// ── Element Plus 语义映射 ───────────────────────────
+$primary-color: $signal-orange;
+$success-color: $loom-green;
+$warning-color: $thread-gold;
+$danger-color: #c4402a;
+$info-color: #7a8296;
 
 // ── 背景色 ──────────────────────────────────────────
-$bg-color: #f5f7fa;
-$bg-color-dark: #1d1e1f;
-$sidebar-bg: #304156;
-$sidebar-text: #bfcbd9;
-$sidebar-active-text: #409eff;
+$bg-color: #eef1f5;          // 工作区冷调浅灰（验布台灯箱）
+$bg-color-dark: $indigo-deep;
+$panel-bg: #ffffff;
+$sidebar-bg: $indigo-deep;
+$sidebar-text: #aeb8d0;
+$sidebar-active-text: #ffffff;
 
 // ── 文字色 ──────────────────────────────────────────
-$text-primary: #303133;
-$text-regular: #606266;
-$text-secondary: #909399;
-$text-placeholder: #c0c4cc;
+$text-primary: #1c2436;
+$text-regular: #4a5568;
+$text-secondary: #8b93a7;
+$text-placeholder: #b8bfce;
+
+// ── 字体 ────────────────────────────────────────────
+$font-display: 'Space Grotesk', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+$font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+$font-body: -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+  'Microsoft YaHei', sans-serif;
 
 // ── 布局尺寸 ────────────────────────────────────────
 $header-height: 56px;
-$sidebar-width: 210px;
+$sidebar-width: 232px;
 $sidebar-collapsed-width: 64px;
 
 // ── 间距 ────────────────────────────────────────────
@@ -40,6 +57,42 @@ $border-radius-md: 8px;
 $border-radius-lg: 12px;
 
 // ── 阴影 ────────────────────────────────────────────
-$shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
-$shadow-md: 0 2px 8px rgba(0, 0, 0, 0.1);
-$shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.12);
+$shadow-sm: 0 1px 3px rgba(22, 32, 58, 0.08);
+$shadow-md: 0 2px 10px rgba(22, 32, 58, 0.1);
+$shadow-lg: 0 6px 24px rgba(22, 32, 58, 0.14);
+
+// ── 签名元素：检测框角标（bbox corner brackets）─────
+// 用法：@include bbox-corners($color, $size)
+@mixin bbox-corners($color: $signal-orange, $size: 8px, $thick: 2px) {
+  position: relative;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    width: $size;
+    height: $size;
+    pointer-events: none;
+  }
+
+  &::before {
+    top: 0;
+    left: 0;
+    border-top: $thick solid $color;
+    border-left: $thick solid $color;
+  }
+
+  &::after {
+    right: 0;
+    bottom: 0;
+    border-right: $thick solid $color;
+    border-bottom: $thick solid $color;
+  }
+}
+
+// ── 签名纹理：经纬织物网格（weave grid）─────────────
+@mixin weave-grid($line: rgba(255, 255, 255, 0.035), $cell: 14px) {
+  background-image:
+    repeating-linear-gradient(0deg, $line 0, $line 1px, transparent 1px, transparent $cell),
+    repeating-linear-gradient(90deg, $line 0, $line 1px, transparent 1px, transparent $cell);
+}
