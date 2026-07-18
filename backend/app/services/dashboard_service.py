@@ -98,6 +98,25 @@ class DashboardService:
                     alias_map.setdefault(str(code).strip().lower(), set()).add(str(code))
         return alias_map
 
+    @staticmethod
+    def _scene_cn_map(db: Session) -> dict[str, str]:
+        """全部场景的英文 code→中文名实时映射。
+
+        展示时优先于 detection_results 行内的历史快照，
+        保证改场景表中文名后看板立即跟随，无需刷存量数据。
+        多个场景登记同一 code 时，最近更新的场景生效。
+        """
+        scenes = db.query(DetectionScene).all()
+        scenes.sort(key=lambda s: s.updated_at or datetime.min)
+        mapping: dict[str, str] = {}
+        for scene in scenes:
+            cn_map = scene.class_names_cn if isinstance(scene.class_names_cn, dict) else {}
+            for code, name in cn_map.items():
+                if code and name:
+                    # 按 updated_at 升序遍历，后更新的场景覆盖先前的。
+                    mapping[str(code)] = str(name)
+        return mapping
+
     @classmethod
     def _resolve_class_terms(
         cls, db: Session, class_names: list[str] | None
@@ -463,19 +482,30 @@ class DashboardService:
             "end_at": end_at.isoformat(timespec="seconds"),
         }
 
-    @staticmethod
-    def _class_name_cn_map(db: Session, class_names: list[str]) -> dict[str, str]:
-        """查询缺陷类别对应的中文名映射（取最近出现的一条）。"""
+    @classmethod
+    def _class_name_cn_map(cls, db: Session, class_names: list[str]) -> dict[str, str]:
+        """查询缺陷类别对应的中文名映射。
+
+        优先取场景表的实时映射（改名立即生效），
+        场景未登记的类别再回退到历史结果行里的快照。
+        """
         if not class_names:
             return {}
+        mapping = {
+            code: cn
+            for code, cn in cls._scene_cn_map(db).items()
+            if code in class_names
+        }
+        missing = [name for name in class_names if name not in mapping]
+        if not missing:
+            return mapping
         rows = (
             db.query(DetectionResult.class_name, DetectionResult.class_name_cn)
-            .filter(DetectionResult.class_name.in_(class_names))
+            .filter(DetectionResult.class_name.in_(missing))
             .filter(DetectionResult.class_name_cn.isnot(None))
             .distinct()
             .all()
         )
-        mapping: dict[str, str] = {}
         for class_name, class_name_cn in rows:
             if class_name_cn:
                 mapping.setdefault(class_name, class_name_cn)
@@ -510,11 +540,15 @@ class DashboardService:
             .order_by(func.count(DetectionResult.id).desc())
             .all()
         )
+        # 场景表实时映射优先，历史行内快照兜底。
+        scene_cn = self._scene_cn_map(db)
         return {
             "options": [
                 {
                     "name": row.class_name,
-                    "name_cn": row.class_name_cn or row.class_name,
+                    "name_cn": scene_cn.get(row.class_name)
+                    or row.class_name_cn
+                    or row.class_name,
                     "count": int(row.count or 0),
                 }
                 for row in rows
@@ -552,11 +586,15 @@ class DashboardService:
             .order_by(func.count(DetectionResult.id).desc())
             .all()
         )
+        # 场景表实时映射优先，历史行内快照兜底。
+        scene_cn = self._scene_cn_map(db)
         return {
             "distribution": [
                 {
                     "name": row.class_name,
-                    "name_cn": row.class_name_cn or row.class_name,
+                    "name_cn": scene_cn.get(row.class_name)
+                    or row.class_name_cn
+                    or row.class_name,
                     "value": int(row.count),
                 }
                 for row in rows

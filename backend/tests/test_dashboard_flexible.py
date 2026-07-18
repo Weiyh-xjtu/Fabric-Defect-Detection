@@ -12,6 +12,7 @@ from app.entity.db_models import (
     UserRole,
 )
 from app.services.dashboard_service import dashboard_service
+from app.services.history_service import history_service
 
 from tests.test_day10 import register_and_login
 
@@ -250,6 +251,107 @@ class TestDefectNameMatching:
             class_names=["hole"],
         )
         assert stats["total_objects"] == 1
+
+
+class TestSceneCnNameFollowsSceneTable:
+    """展示用中文名实时读场景表：改 class_names_cn 后无需刷存量数据即生效。"""
+
+    def _rename_hole(self, db_session, scene, new_name: str) -> None:
+        scene.class_names_cn = {**scene.class_names_cn, "hole": new_name}
+        db_session.add(scene)
+        db_session.commit()
+
+    def test_class_distribution_prefers_scene_mapping(self, db_session):
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "follow_dist_scene")
+        user = _ensure_user(db_session)
+        # 行内快照仍是旧名「破洞」。
+        _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime(2026, 6, 10, 9, 0),
+            [("hole", "破洞", "a.jpg"), ("stain", "污渍", "a.jpg")],
+        )
+        self._rename_hole(db_session, scene, "织物破洞")
+
+        dist = dashboard_service.get_class_distribution(
+            db_session, None,
+            start_date=date(2026, 6, 1), end_date=date(2026, 6, 30),
+        )
+        by_name = {item["name"]: item["name_cn"] for item in dist["distribution"]}
+        assert by_name["hole"] == "织物破洞"
+        # 未改名的类别不受影响。
+        assert by_name["stain"] == "污渍"
+
+    def test_defect_options_prefer_scene_mapping(self, db_session):
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "follow_options_scene")
+        user = _ensure_user(db_session)
+        _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime(2026, 6, 10, 9, 0), [("hole", "破洞", "a.jpg")],
+        )
+        self._rename_hole(db_session, scene, "织物破洞")
+
+        options = dashboard_service.get_defect_options(
+            db_session, None,
+            start_date=date(2026, 6, 1), end_date=date(2026, 6, 30),
+        )
+        by_name = {item["name"]: item["name_cn"] for item in options["options"]}
+        assert by_name["hole"] == "织物破洞"
+
+    def test_defect_trend_prefers_scene_mapping(self, db_session):
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "follow_trend_scene")
+        user = _ensure_user(db_session)
+        _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime(2026, 6, 2, 9, 0), [("hole", "破洞", "a.jpg")],
+        )
+        self._rename_hole(db_session, scene, "织物破洞")
+
+        result = dashboard_service.get_defect_trend(
+            db_session, None,
+            start_date=date(2026, 6, 1), end_date=date(2026, 6, 5),
+        )
+        series = {item["name"]: item for item in result["series"]}
+        assert series["hole"]["name_cn"] == "织物破洞"
+
+    def test_trend_falls_back_to_snapshot_when_scene_unmapped(self, db_session):
+        # 场景表没登记的类别，仍用历史行内快照兜底。
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "follow_fallback_scene")
+        user = _ensure_user(db_session)
+        _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime(2026, 6, 2, 9, 0), [("scratch", "划痕", "a.jpg")],
+        )
+        result = dashboard_service.get_defect_trend(
+            db_session, None,
+            start_date=date(2026, 6, 1), end_date=date(2026, 6, 5),
+        )
+        series = {item["name"]: item for item in result["series"]}
+        assert series["scratch"]["name_cn"] == "划痕"
+
+    def test_history_detail_prefers_scene_mapping(self, db_session):
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "follow_history_scene")
+        user = _ensure_user(db_session)
+        task = _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime(2026, 6, 10, 9, 0),
+            [("hole", "破洞", "a.jpg"), ("scratch", "划痕", "a.jpg")],
+        )
+        self._rename_hole(db_session, scene, "织物破洞")
+
+        detail = history_service.get_task_detail(db_session, user.id, task.id)
+        assert detail is not None
+        # 改名类别跟随场景表，未登记类别（scratch）用行内快照兜底。
+        assert detail["class_counts"] == {"织物破洞": 1, "划痕": 1}
+        by_name = {
+            item["class_name"]: item["class_name_cn"] for item in detail["results"]
+        }
+        assert by_name["hole"] == "织物破洞"
+        assert by_name["scratch"] == "划痕"
 
 
 class TestFlexibleDashboardApi:
