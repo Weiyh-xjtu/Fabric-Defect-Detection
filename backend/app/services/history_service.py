@@ -133,9 +133,20 @@ class HistoryService:
             .order_by(DetectionResult.id)
             .all()
         )
+        # 场景表实时中文名优先，结果行内的历史快照兜底，保证改名后展示跟随。
+        scene = task.scene
+        cn_map = (
+            scene.class_names_cn
+            if scene and isinstance(scene.class_names_cn, dict)
+            else {}
+        )
         class_counts: dict[str, int] = {}
         for result in results:
-            display_name = result.class_name_cn or result.class_name
+            display_name = (
+                cn_map.get(result.class_name)
+                or result.class_name_cn
+                or result.class_name
+            )
             class_counts[display_name] = class_counts.get(display_name, 0) + 1
 
         return {
@@ -145,7 +156,8 @@ class HistoryService:
                 {
                     "id": result.id,
                     "class_name": result.class_name,
-                    "class_name_cn": result.class_name_cn,
+                    "class_name_cn": cn_map.get(result.class_name)
+                    or result.class_name_cn,
                     "class_id": result.class_id,
                     "confidence": round(float(result.confidence), 4),
                     "bbox": result.bbox,
