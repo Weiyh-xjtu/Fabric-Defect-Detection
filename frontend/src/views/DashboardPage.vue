@@ -195,8 +195,8 @@ const statCards = computed(() => [
     growthKey: 'tasks',
     label: '检测任务',
     icon: Document,
-    color: '#409eff',
-    background: '#ecf5ff',
+    color: '#24314f',
+    background: '#e9edf6',
     format: formatNumber,
   },
   {
@@ -204,8 +204,8 @@ const statCards = computed(() => [
     growthKey: 'images',
     label: '处理图片',
     icon: PictureFilled,
-    color: '#67c23a',
-    background: '#f0f9eb',
+    color: '#6b8f71',
+    background: '#eef4ef',
     format: formatNumber,
   },
   {
@@ -213,8 +213,8 @@ const statCards = computed(() => [
     growthKey: 'objects',
     label: defectFilterActive.value ? '缺陷目标' : '检测目标',
     icon: Aim,
-    color: '#e6a23c',
-    background: '#fdf6ec',
+    color: '#e8613c',
+    background: '#fdece6',
     format: formatNumber,
   },
   {
@@ -222,8 +222,8 @@ const statCards = computed(() => [
     growthKey: 'inference_time',
     label: '平均耗时',
     icon: Timer,
-    color: '#f56c6c',
-    background: '#fef0f0',
+    color: '#d9a441',
+    background: '#faf3e4',
     format: (value) => Number(value || 0).toFixed(2),
     unit: 'ms',
     inverse: true,
@@ -337,11 +337,11 @@ function renderTrendChart(trend) {
         type: 'line',
         smooth: true,
         data: trend.map((item) => item.task_count),
-        itemStyle: { color: '#409eff' },
+        itemStyle: { color: '#24314f' },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(64,158,255,0.3)' },
-            { offset: 1, color: 'rgba(64,158,255,0.02)' },
+            { offset: 0, color: 'rgba(36,49,79,0.28)' },
+            { offset: 1, color: 'rgba(36,49,79,0.02)' },
           ]),
         },
       },
@@ -351,7 +351,7 @@ function renderTrendChart(trend) {
         smooth: true,
         yAxisIndex: 1,
         data: trend.map((item) => item.object_count),
-        itemStyle: { color: '#67c23a' },
+        itemStyle: { color: '#e8613c' },
       },
     ],
   }, true)
@@ -363,6 +363,7 @@ function renderDefectTrendChart(payload) {
   defectTrendChart ||= echarts.init(defectTrendChartRef.value)
   defectTrendChart.setOption({
     graphic: emptyGraphic(series.length === 0),
+    color: ['#e8613c', '#24314f', '#6b8f71', '#d9a441', '#7a8296', '#a06a8c', '#c4402a', '#4a5b8a'],
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
     legend: {
       type: 'scroll',
@@ -392,6 +393,7 @@ function renderClassChart(distribution) {
   classChart ||= echarts.init(classChartRef.value)
   classChart.setOption({
     graphic: emptyGraphic(distribution.length === 0),
+    color: ['#e8613c', '#24314f', '#6b8f71', '#d9a441', '#7a8296', '#a06a8c', '#c4402a', '#4a5b8a'],
     tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
     legend: { type: 'scroll', orient: 'vertical', right: 8, top: 20, bottom: 20 },
     series: [{
@@ -420,8 +422,8 @@ function renderSceneChart(distribution) {
       itemStyle: {
         borderRadius: [0, 4, 4, 0],
         color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
-          { offset: 0, color: '#409eff' },
-          { offset: 1, color: '#79bbff' },
+          { offset: 0, color: '#24314f' },
+          { offset: 1, color: '#4a5b8a' },
         ]),
       },
     }],
@@ -432,7 +434,7 @@ function renderTypeChart(distribution) {
   typeChart ||= echarts.init(typeChartRef.value)
   typeChart.setOption({
     graphic: emptyGraphic(distribution.length === 0),
-    color: ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9b59b6'],
+    color: ['#e8613c', '#24314f', '#6b8f71', '#d9a441', '#7a8296', '#a06a8c'],
     tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
     legend: { bottom: 0, type: 'scroll' },
     series: [{
@@ -504,6 +506,23 @@ onBeforeUnmount(() => {
 }
 .card-hint { color: $text-secondary; font-size: 12px; }
 .stat-cards { row-gap: 16px; margin-bottom: 16px; }
+.stat-card {
+  position: relative;
+  overflow: hidden;
+}
+.stat-card::before {
+  // 签名：卡片左上角检测框角标
+  content: '';
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 12px;
+  height: 12px;
+  border-top: 2px solid $signal-orange;
+  border-left: 2px solid $signal-orange;
+  opacity: 0.5;
+  pointer-events: none;
+}
 .stat-card :deep(.el-card__body) {
   display: flex;
   align-items: center;
@@ -521,12 +540,19 @@ onBeforeUnmount(() => {
   border-radius: 12px;
 }
 .stat-info { min-width: 0; }
-.stat-value { color: $text-primary; font-size: 28px; font-weight: 700; line-height: 1.2; }
+.stat-value {
+  color: $text-primary;
+  font-family: $font-mono;
+  font-variant-numeric: tabular-nums;
+  font-size: 27px;
+  font-weight: 600;
+  line-height: 1.2;
+}
 .unit { margin-left: 3px; color: $text-secondary; font-size: 13px; font-weight: 400; }
 .stat-label { margin-top: 3px; color: $text-secondary; font-size: 13px; }
-.stat-growth { margin-top: 4px; font-size: 12px; }
-.growth-up { color: #67c23a; &::before { content: '↑ '; } }
-.growth-down { color: #f56c6c; &::before { content: '↓ '; } }
+.stat-growth { margin-top: 4px; font-family: $font-mono; font-size: 12px; }
+.growth-up { color: $loom-green; &::before { content: '↑ '; } }
+.growth-down { color: $danger-color; &::before { content: '↓ '; } }
 .growth-flat { color: $text-secondary; }
 .chart-row { row-gap: 16px; margin-bottom: 16px; }
 .chart-container { width: 100%; height: 320px; }

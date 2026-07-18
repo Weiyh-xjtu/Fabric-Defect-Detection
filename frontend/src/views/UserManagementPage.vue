@@ -334,7 +334,7 @@ defineExpose({
 })
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .user-management-page {
   display: flex;
   flex-direction: column;
@@ -398,6 +398,26 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+// 长邮箱不得挤压头像：头像固定尺寸，文本区可收缩并截断
+.user-cell {
+  min-width: 0;
+
+  .el-avatar {
+    flex-shrink: 0;
+  }
+
+  > div {
+    min-width: 0;
+  }
+
+  .secondary-text {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .username-line {

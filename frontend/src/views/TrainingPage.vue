@@ -619,12 +619,16 @@ async function fetchMetrics() {
 }
 
 // ── 更新图表 ──
+// WEFT 品牌图表配色：靛蓝 / 朱橙 / 织物绿 / 纱线金
+const CHART_COLORS = ['#24314f', '#e8613c', '#6b8f71', '#d9a441']
+
 function updateCharts(metrics) {
   const epochs = metrics.map((m) => m.epoch)
 
   // Loss 曲线
   if (lossChart) {
     lossChart.setOption({
+      color: CHART_COLORS,
       title: { text: '训练损失曲线', left: 'center', textStyle: { fontSize: 14 } },
       tooltip: { trigger: 'axis' },
       legend: { data: ['Box Loss', 'Cls Loss', 'DFL Loss'], bottom: 0 },
@@ -672,32 +676,32 @@ function updateCharts(metrics) {
           type: 'line',
           data: metrics.map((m) => m.map50),
           smooth: true,
-          lineStyle: { width: 2, color: '#409eff' },
-          itemStyle: { color: '#409eff' },
+          lineStyle: { width: 2, color: '#e8613c' },
+          itemStyle: { color: '#e8613c' },
         },
         {
           name: 'mAP@50-95',
           type: 'line',
           data: metrics.map((m) => m.map50_95),
           smooth: true,
-          lineStyle: { width: 2, color: '#67c23a' },
-          itemStyle: { color: '#67c23a' },
+          lineStyle: { width: 2, color: '#24314f' },
+          itemStyle: { color: '#24314f' },
         },
         {
           name: 'Precision',
           type: 'line',
           data: metrics.map((m) => m.precision),
           smooth: true,
-          lineStyle: { width: 2, type: 'dashed', color: '#e6a23c' },
-          itemStyle: { color: '#e6a23c' },
+          lineStyle: { width: 2, type: 'dashed', color: '#6b8f71' },
+          itemStyle: { color: '#6b8f71' },
         },
         {
           name: 'Recall',
           type: 'line',
           data: metrics.map((m) => m.recall),
           smooth: true,
-          lineStyle: { width: 2, type: 'dashed', color: '#f56c6c' },
-          itemStyle: { color: '#f56c6c' },
+          lineStyle: { width: 2, type: 'dashed', color: '#d9a441' },
+          itemStyle: { color: '#d9a441' },
         },
       ],
     })
@@ -950,7 +954,7 @@ onBeforeUnmount(() => {
 })
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .training-page {
   padding: 20px;
 }
@@ -976,8 +980,9 @@ onBeforeUnmount(() => {
 .monitor-info {
   display: flex;
   gap: 16px;
-  font-size: 13px;
-  color: #909399;
+  font-family: $font-mono;
+  font-size: 12px;
+  color: $text-secondary;
 }
 
 .metric-cards {
@@ -985,19 +990,37 @@ onBeforeUnmount(() => {
 }
 
 .metric-item {
+  position: relative;
   text-align: center;
   padding: 8px 0;
+  overflow: hidden;
+
+  // 签名：指标卡左上角检测框角标
+  &::before {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 10px;
+    height: 10px;
+    border-top: 2px solid $signal-orange;
+    border-left: 2px solid $signal-orange;
+    opacity: 0.45;
+    pointer-events: none;
+  }
 }
 
 .metric-value {
+  font-family: $font-mono;
+  font-variant-numeric: tabular-nums;
   font-size: 20px;
-  font-weight: 700;
-  color: #303133;
+  font-weight: 600;
+  color: $text-primary;
 }
 
 .metric-label {
   font-size: 12px;
-  color: #909399;
+  color: $text-secondary;
   margin-top: 4px;
 }
 
@@ -1013,7 +1036,7 @@ onBeforeUnmount(() => {
 
 .action-hint,
 .slider-label {
-  color: #909399;
+  color: $text-secondary;
   font-size: 13px;
 }
 
@@ -1026,7 +1049,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   margin-bottom: 14px;
-  color: #909399;
+  color: $text-secondary;
   font-size: 13px;
 }
 
@@ -1043,11 +1066,27 @@ onBeforeUnmount(() => {
 }
 
 .evaluation-metric {
+  position: relative;
   padding: 16px;
   text-align: center;
-  background: #f5f7fa;
-  border: 1px solid #ebeef5;
+  background: #f8f9fc;
+  border: 1px solid #e9ecf3;
   border-radius: 6px;
+  font-family: $font-mono;
+  font-variant-numeric: tabular-nums;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 10px;
+    height: 10px;
+    border-top: 2px solid $signal-orange;
+    border-left: 2px solid $signal-orange;
+    opacity: 0.45;
+    pointer-events: none;
+  }
 }
 
 .weak-tag {
@@ -1055,7 +1094,7 @@ onBeforeUnmount(() => {
 }
 
 :deep(.weak-class-row) {
-  --el-table-tr-bg-color: #fef0f0;
+  --el-table-tr-bg-color: #fdece6;
 }
 
 .predict-thresholds {

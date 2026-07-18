@@ -288,6 +288,15 @@ onMounted(() => {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   padding: 0 8px 12px;
+
+  // v-loading 遮罩适配深色侧边栏（默认白色遮罩很突兀）
+  :deep(.el-loading-mask) {
+    background-color: rgba(22, 32, 58, 0.7);
+  }
+
+  :deep(.el-loading-spinner .path) {
+    stroke: $signal-orange;
+  }
 }
 
 .session-item {

@@ -432,16 +432,45 @@ onMounted(loadAll)
 onBeforeUnmount(clearEvaluationTimer)
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .model-page { padding: 20px; }
 .page-header, .card-title, .toolbar { display: flex; align-items: center; justify-content: space-between; }
 .page-header { margin-bottom: 18px; }
 .page-header h2 { margin: 0 0 6px; }
-.page-header p { margin: 0; color: #909399; }
-.current-card { margin-bottom: 18px; }
+.page-header p { margin: 0; color: $text-secondary; }
+.current-card {
+  position: relative;
+  margin-bottom: 18px;
+  border-left: 3px solid $signal-orange;
+
+  // 签名：当前生效模型卡的检测框角标
+  &::after {
+    content: '';
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 12px;
+    height: 12px;
+    border-top: 2px solid $signal-orange;
+    border-right: 2px solid $signal-orange;
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  :deep(.el-descriptions__content) {
+    font-family: $font-mono;
+    font-variant-numeric: tabular-nums;
+  }
+}
 .toolbar { justify-content: flex-start; gap: 12px; margin-bottom: 16px; }
 .thresholds { margin: 22px 0 8px; }
 .test-result { margin-top: 18px; }
 .result-image { display: block; max-width: 100%; max-height: 520px; margin: 18px auto 0; border-radius: 6px; }
-.per-class-table { margin-top: 18px; }
+.per-class-table {
+  margin-top: 18px;
+
+  :deep(.el-table .cell) {
+    font-variant-numeric: tabular-nums;
+  }
+}
 </style>

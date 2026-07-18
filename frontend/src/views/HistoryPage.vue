@@ -351,7 +351,14 @@ onMounted(async () => {
   gap: 20px;
   color: $text-secondary;
   font-size: 14px;
-  strong { margin-left: 4px; color: $text-primary; font-size: 18px; }
+  strong {
+    margin-left: 4px;
+    color: $text-primary;
+    font-family: $font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 18px;
+    font-weight: 600;
+  }
 }
 .filter-card {
   margin-bottom: 16px;

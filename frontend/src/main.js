@@ -6,13 +6,13 @@
  */
 import { createApp } from 'vue'
 
-// 全局样式
-import '@/assets/styles/global.scss'
-
-// Element Plus
+// Element Plus（先加载，便于随后用品牌样式覆盖其 CSS 变量）
 import ElementPlus, { ElMessage } from 'element-plus'
 import 'element-plus/dist/index.css'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
+
+// 全局样式（在 Element Plus 之后加载，确保品牌令牌覆盖生效）
+import '@/assets/styles/global.scss'
 
 // 核心模块
 import App from './App.vue'
