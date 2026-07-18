@@ -5,8 +5,8 @@
         :default-active="activeMenu"
         :router="true"
         background-color="transparent"
-        text-color="#aeb8d0"
-        active-text-color="#ffffff"
+        text-color="#3f4a5f"
+        active-text-color="#3f4a5f"
       >
         <el-menu-item
           v-for="item in menuItems"
@@ -198,9 +198,12 @@ onMounted(() => {
   height: 100%;
   overflow: hidden;
   font-size: 14px;
-  background: $indigo-deep;
-  @include weave-grid; // 签名纹理：经纬织物网格
-  border-right: 1px solid $indigo-line;
+  background:
+    radial-gradient(circle at 18px 18px, rgba(47, 58, 79, 0.026) 1px, transparent 1px),
+    linear-gradient(145deg, rgba(223, 107, 78, 0.044), transparent 56%),
+    #f5f6f9;
+  background-size: 24px 24px, 100% 100%, auto;
+  border-right: 1px solid #e8ecf3;
 
   .el-menu-item {
     height: 44px;
@@ -211,15 +214,14 @@ onMounted(() => {
     transition: background 0.15s, color 0.15s;
 
     &.is-active {
-      font-weight: 600;
-      background-color: $indigo-mid !important;
-      // 签名元素：激活项左侧的检测框角标线
+      font-weight: 700;
+      background-color: #fff !important;
       box-shadow: inset 3px 0 0 $signal-orange;
     }
 
     &:hover {
-      background-color: $indigo-mid !important;
-      color: #fff !important;
+      color: #3f4a5f !important;
+      background-color: #fff !important;
     }
   }
 }
@@ -248,7 +250,7 @@ onMounted(() => {
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  border-top: 1px solid $indigo-line;
+  border-top: 1px solid #e8ecf3;
 }
 
 .history-header {
@@ -261,7 +263,7 @@ onMounted(() => {
 }
 
 .history-title {
-  color: $sidebar-text;
+  color: #6b7484;
   font-family: $font-mono;
   font-size: 12px;
   letter-spacing: 0.06em;
@@ -269,16 +271,16 @@ onMounted(() => {
 }
 
 .new-chat-button {
-  color: #fff;
+  color: #3f4a5f;
   font-weight: 600;
-  background: transparent;
-  border-color: $indigo-line;
+  background: #fff;
+  border-color: #dcdfe6;
   border-radius: 12px;
 
   &:hover,
   &:focus {
-    color: #fff;
-    background: $indigo-mid;
+    color: #3f4a5f;
+    background: #fff;
     border-color: $signal-orange;
   }
 }
@@ -291,9 +293,8 @@ onMounted(() => {
   scrollbar-gutter: stable;
   padding: 0 8px 12px;
 
-  // v-loading 遮罩适配深色侧边栏（默认白色遮罩很突兀）
   :deep(.el-loading-mask) {
-    background-color: rgba(22, 32, 58, 0.7);
+    background-color: rgba(247, 248, 251, 0.75);
   }
 
   :deep(.el-loading-spinner .path) {
@@ -308,14 +309,14 @@ onMounted(() => {
   gap: 8px;
   margin-bottom: 4px;
   padding: 9px 10px;
-  color: $sidebar-text;
+  color: #6b7484;
   cursor: pointer;
   border-radius: 6px;
   transition: background 0.2s, color 0.2s;
 
   &:hover {
-    background: $indigo-mid;
-    color: #dfe5f2;
+    color: #3f4a5f;
+    background: #fff;
 
     .session-delete {
       visibility: visible;
@@ -323,9 +324,9 @@ onMounted(() => {
   }
 
   &.active {
-    color: #fff;
-    font-weight: 600;
-    background: $indigo-mid;
+    color: #3f4a5f;
+    font-weight: 700;
+    background: #fff;
     box-shadow: inset 3px 0 0 $signal-orange;
   }
 }
@@ -345,7 +346,7 @@ onMounted(() => {
 
 .session-meta {
   margin-top: 2px;
-  color: #7a86a3;
+  color: #9aa3b2;
   font-family: $font-mono;
   font-size: 11px;
 }
@@ -353,7 +354,7 @@ onMounted(() => {
 .session-delete {
   flex-shrink: 0;
   visibility: hidden;
-  color: #7a86a3;
+  color: #9aa3b2;
 
   &:hover {
     color: $signal-orange;
@@ -363,7 +364,7 @@ onMounted(() => {
 
 .session-empty {
   padding: 12px;
-  color: #7a86a3;
+  color: #9aa3b2;
   font-size: 13px;
   text-align: center;
 }

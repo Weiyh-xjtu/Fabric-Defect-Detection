@@ -4,7 +4,7 @@
     <div class="login-hero">
       <div class="hero-inner">
         <header class="hero-top">
-          <span class="hero-mark">WEFT</span>
+          <span class="hero-mark">FIRESIGHT</span>
           <span class="hero-mark-sub">FABRIC INSPECTION</span>
         </header>
 
@@ -54,7 +54,7 @@
     <div class="login-panel">
       <div class="login-card">
         <div class="login-header">
-          <span class="login-mark"><span class="login-mark-text">WEFT</span></span>
+          <span class="login-mark"><span class="login-mark-text">FIRESIGHT</span></span>
           <h2>登录工作台</h2>
           <p>输入账号，进入你的验布工位</p>
         </div>
@@ -197,17 +197,17 @@ async function handleLogin() {
   padding: 48px 5%;
   overflow: hidden;
   background:
-    radial-gradient(130% 100% at 18% 0%, rgba(232, 97, 60, 0.22) 0%, transparent 42%),
-    radial-gradient(120% 110% at 100% 100%, rgba(53, 68, 107, 0.6) 0%, transparent 50%),
-    $indigo-deep;
-  color: #fff;
+    radial-gradient(120% 90% at 18% 0%, rgba(223, 107, 78, 0.12) 0%, transparent 44%),
+    radial-gradient(120% 110% at 100% 100%, rgba(111, 127, 155, 0.16) 0%, transparent 54%),
+    linear-gradient(135deg, #fbfcfe 0%, #f1f4f8 100%);
+  color: $text-primary;
 
   // 织物经纬网格覆盖整个背景
   &::before {
     content: '';
     position: absolute;
     inset: 0;
-    @include weave-grid(rgba(255, 255, 255, 0.05), 30px);
+    @include weave-grid(rgba(47, 58, 79, 0.035), 30px);
     pointer-events: none;
   }
 }
@@ -231,7 +231,7 @@ async function handleLogin() {
   font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.34em;
-  color: #fff;
+  color: $text-primary;
 }
 
 .hero-mark-sub {
@@ -259,15 +259,15 @@ async function handleLogin() {
   max-width: 460px;
   font-size: 14px;
   line-height: 1.75;
-  color: #c3cbe0;
+  color: $text-regular;
 }
 
 // ── 验布监视器 ─────────────────────────────────────
 .monitor {
-  border: 1px solid $indigo-line;
+  border: 1px solid #e2e7f0;
   border-radius: 10px;
-  background: rgba(10, 15, 30, 0.55);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 18px 42px rgba(47, 58, 79, 0.12);
   overflow: hidden;
 }
 
@@ -276,8 +276,8 @@ async function handleLogin() {
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  border-bottom: 1px solid $indigo-line;
-  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid #e2e7f0;
+  background: rgba(255, 255, 255, 0.62);
 }
 
 .monitor-dot {
@@ -292,7 +292,7 @@ async function handleLogin() {
 .monitor-text {
   font-family: $font-mono;
   font-size: 12px;
-  color: #d4dbec;
+  color: $text-regular;
 }
 
 .monitor-speed {
@@ -324,7 +324,7 @@ async function handleLogin() {
   position: absolute;
   border: 2px solid $signal-orange;
   border-radius: 2px;
-  box-shadow: 0 0 12px rgba(232, 97, 60, 0.35);
+  box-shadow: 0 0 12px rgba(223, 107, 78, 0.24);
 
   &::before,
   &::after {
@@ -391,8 +391,8 @@ async function handleLogin() {
   right: 0;
   top: 0;
   height: 40px;
-  background: linear-gradient(180deg, rgba(232, 97, 60, 0) 0%, rgba(232, 97, 60, 0.28) 100%);
-  border-bottom: 1px solid rgba(232, 97, 60, 0.8);
+  background: linear-gradient(180deg, rgba(223, 107, 78, 0) 0%, rgba(223, 107, 78, 0.2) 100%);
+  border-bottom: 1px solid rgba(223, 107, 78, 0.62);
   animation: scan-sweep 3.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
@@ -401,11 +401,11 @@ async function handleLogin() {
   flex-wrap: wrap;
   gap: 6px 18px;
   padding: 9px 14px;
-  border-top: 1px solid $indigo-line;
+  border-top: 1px solid #e2e7f0;
   font-size: 11px;
   letter-spacing: 0.04em;
-  color: #8b93a7;
-  background: rgba(255, 255, 255, 0.02);
+  color: $text-secondary;
+  background: rgba(255, 255, 255, 0.62);
 }
 
 .readout-alert { color: $signal-orange; }
@@ -442,14 +442,14 @@ async function handleLogin() {
   b {
     font-size: 24px;
     font-weight: 600;
-    color: #fff;
+    color: $text-primary;
   }
 
   span {
     font-family: $font-mono;
     font-size: 11px;
     letter-spacing: 0.05em;
-    color: #8b93a7;
+    color: $text-secondary;
   }
 }
 

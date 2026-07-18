@@ -3,7 +3,7 @@
     <!-- 左侧：检测框角标包裹的字标 -->
     <div class="header-left">
       <span class="brand-mark">
-        <span class="brand-name">WEFT</span>
+        <span class="brand-name">FIRESIGHT</span>
       </span>
       <span class="brand-tagline">布面缺陷检测平台</span>
     </div>
@@ -68,9 +68,12 @@ function handleCommand(command) {
 <style lang="scss" scoped>
 .app-header {
   height: $header-height;
-  background: $indigo-deep;
-  @include weave-grid(rgba(255, 255, 255, 0.03), 12px);
-  border-bottom: 1px solid $indigo-line;
+  background:
+    radial-gradient(circle at 18px 18px, rgba(47, 58, 79, 0.028) 1px, transparent 1px),
+    linear-gradient(135deg, rgba(223, 107, 78, 0.038) 0%, rgba(223, 107, 78, 0.024) 48%, transparent 82%),
+    #fff;
+  background-size: 24px 24px, 100% 100%, auto;
+  border-bottom: 1px solid #e8ecf3;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -96,7 +99,7 @@ function handleCommand(command) {
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.18em;
-  color: #fff;
+  color: $text-primary;
   line-height: 1;
 }
 
@@ -104,7 +107,7 @@ function handleCommand(command) {
   font-family: $font-mono;
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: $sidebar-text;
+  color: $text-regular;
 }
 
 .header-right {
@@ -122,16 +125,16 @@ function handleCommand(command) {
   transition: background 0.2s;
 
   &:hover {
-    background: $indigo-mid;
+    background: #f7f8fb;
   }
 }
 
 .username {
   font-size: 14px;
-  color: #e6eaf4;
+  color: $text-primary;
 }
 
 .user-info :deep(.el-icon) {
-  color: $sidebar-text;
+  color: $text-regular;
 }
 </style>
