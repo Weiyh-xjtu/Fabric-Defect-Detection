@@ -619,8 +619,8 @@ async function fetchMetrics() {
 }
 
 // ── 更新图表 ──
-// WEFT 品牌图表配色：靛蓝 / 朱橙 / 织物绿 / 纱线金
-const CHART_COLORS = ['#24314f', '#e8613c', '#6b8f71', '#d9a441']
+// FIRESIGHT 品牌图表配色：靛蓝 / 朱橙 / 织物绿 / 纱线金
+const CHART_COLORS = ['#6f7f9b', '#df6b4e', '#86a48c', '#d9b565']
 
 function updateCharts(metrics) {
   const epochs = metrics.map((m) => m.epoch)
@@ -676,32 +676,32 @@ function updateCharts(metrics) {
           type: 'line',
           data: metrics.map((m) => m.map50),
           smooth: true,
-          lineStyle: { width: 2, color: '#e8613c' },
-          itemStyle: { color: '#e8613c' },
+          lineStyle: { width: 2, color: '#df6b4e' },
+          itemStyle: { color: '#df6b4e' },
         },
         {
           name: 'mAP@50-95',
           type: 'line',
           data: metrics.map((m) => m.map50_95),
           smooth: true,
-          lineStyle: { width: 2, color: '#24314f' },
-          itemStyle: { color: '#24314f' },
+          lineStyle: { width: 2, color: '#6f7f9b' },
+          itemStyle: { color: '#6f7f9b' },
         },
         {
           name: 'Precision',
           type: 'line',
           data: metrics.map((m) => m.precision),
           smooth: true,
-          lineStyle: { width: 2, type: 'dashed', color: '#6b8f71' },
-          itemStyle: { color: '#6b8f71' },
+          lineStyle: { width: 2, type: 'dashed', color: '#86a48c' },
+          itemStyle: { color: '#86a48c' },
         },
         {
           name: 'Recall',
           type: 'line',
           data: metrics.map((m) => m.recall),
           smooth: true,
-          lineStyle: { width: 2, type: 'dashed', color: '#d9a441' },
-          itemStyle: { color: '#d9a441' },
+          lineStyle: { width: 2, type: 'dashed', color: '#d9b565' },
+          itemStyle: { color: '#d9b565' },
         },
       ],
     })
@@ -1069,8 +1069,8 @@ onBeforeUnmount(() => {
   position: relative;
   padding: 16px;
   text-align: center;
-  background: #f8f9fc;
-  border: 1px solid #e9ecf3;
+  background: #fafbfc;
+  border: 1px solid #edf1f6;
   border-radius: 6px;
   font-family: $font-mono;
   font-variant-numeric: tabular-nums;
@@ -1094,7 +1094,7 @@ onBeforeUnmount(() => {
 }
 
 :deep(.weak-class-row) {
-  --el-table-tr-bg-color: #fdece6;
+  --el-table-tr-bg-color: #fdf0ec;
 }
 
 .predict-thresholds {

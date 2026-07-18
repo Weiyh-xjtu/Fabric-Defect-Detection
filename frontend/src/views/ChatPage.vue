@@ -6,7 +6,7 @@
       <div class="message-list" ref="messageListRef">
         <!-- 空会话：居中欢迎屏 -->
         <div v-if="agentStore.messages.length === 0" class="welcome-screen">
-          <span class="welcome-mark"><span class="welcome-mark-text">WEFT · AI</span></span>
+          <span class="welcome-mark"><span class="welcome-mark-text">FIRESIGHT · AI</span></span>
           <h1 class="welcome-title">你好！我是布面质检助手</h1>
           <p class="welcome-subtitle">发图检测缺陷，或直接提问</p>
           <div class="welcome-hints">
@@ -989,7 +989,7 @@ onMounted(async () => {
   align-items: center;
   padding: 4px 12px;
   margin-bottom: 20px;
-  border: 1px solid #e3e7ef;
+  border: 1px solid #e8ecf3;
   border-radius: 999px;
   background: $bg-color;
 }
@@ -1033,7 +1033,7 @@ onMounted(async () => {
   padding: 14px 16px;
   text-align: left;
   background: #fff;
-  border: 1px solid #e3e7ef;
+  border: 1px solid #e8ecf3;
   border-left: 3px solid transparent;
   border-radius: $border-radius-md;
   transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
@@ -1282,7 +1282,7 @@ onMounted(async () => {
 
   &:focus-within {
     border-color: $signal-orange;
-    box-shadow: 0 8px 28px rgba(232, 97, 60, 0.1);
+    box-shadow: 0 8px 28px rgba(223, 107, 78, 0.075);
   }
 
   .el-textarea {
@@ -1413,8 +1413,8 @@ onMounted(async () => {
   position: relative;
   margin-top: 10px;
   padding: 10px 12px;
-  background: #f8f9fc;
-  border: 1px solid #e3e7ef;
+  background: #fafbfc;
+  border: 1px solid #e8ecf3;
   border-left: 3px solid $signal-orange;
   border-radius: 8px;
   display: flex;
