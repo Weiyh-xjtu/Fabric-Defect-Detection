@@ -578,7 +578,7 @@ onBeforeUnmount(() => stopCamera(false));
 
 .source-help {
   margin-top: 8px;
-  color: #909399;
+  color: #9aa3b2;
   font-size: 13px;
 }
 
@@ -619,8 +619,8 @@ onBeforeUnmount(() => stopCamera(false));
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: $indigo-deep;
-  border: 1px solid $indigo-line;
+  background: #eef0f4;
+  border: 1px solid #e1e5ec;
   border-radius: 8px;
 
   // 签名：视口四角检测框角标（验布监视器视口）
@@ -668,12 +668,12 @@ onBeforeUnmount(() => stopCamera(false));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #8b93a7;
+  color: #8b95a6;
   font-family: $font-mono;
   font-size: 13px;
   letter-spacing: 0.04em;
-  background: $indigo-deep;
-  @include weave-grid(rgba(255, 255, 255, 0.04), 22px);
+  background: #eef0f4;
+  @include weave-grid(rgba(47, 58, 79, 0.04), 22px);
 }
 
 .video-stats,
@@ -702,8 +702,8 @@ onBeforeUnmount(() => stopCamera(false));
   position: relative;
   padding: 12px;
   text-align: center;
-  background: #f8f9fc;
-  border: 1px solid #e9ecf3;
+  background: #fafbfc;
+  border: 1px solid #edf1f6;
   border-radius: 8px;
 
   // 签名：统计块左上角检测框角标
@@ -749,7 +749,7 @@ onBeforeUnmount(() => stopCamera(false));
 
 .empty-state {
   padding: 24px;
-  color: #909399;
+  color: #9aa3b2;
   text-align: center;
 }
 
@@ -761,7 +761,7 @@ onBeforeUnmount(() => stopCamera(false));
 .detection-item {
   gap: 12px;
   padding: 10px 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid #f2f4f8;
 
   &:last-child {
     border-bottom: 0;
@@ -795,7 +795,7 @@ onBeforeUnmount(() => stopCamera(false));
 .distribution-item {
   gap: 6px;
   padding: 5px 8px;
-  background: #f5f5f5;
+  background: #f7f8fb;
   border-radius: 4px;
 }
 
@@ -805,11 +805,11 @@ onBeforeUnmount(() => stopCamera(false));
   gap: 16px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid #e8ecf3;
 }
 
 .control-label {
-  color: #606266;
+  color: #6b7484;
   font-size: 14px;
   white-space: nowrap;
 }
