@@ -13,7 +13,7 @@
 // ── 卡片容器 ────────────────────────────────────────
 .card-container {
   background: $panel-bg;
-  border: 1px solid #e3e7ef;
+  border: 1px solid #e8ecf3;
   border-radius: $border-radius-md;
   box-shadow: $shadow-sm;
   padding: $spacing-lg;
@@ -84,14 +84,18 @@
 // ── Element Plus 品牌覆盖 ───────────────────────────
 :root {
   --el-color-primary: #{$signal-orange};
-  --el-color-primary-light-3: #{$signal-orange};
-  --el-color-primary-light-5: #ef8b6f;
-  --el-color-primary-light-7: #f5b6a4;
-  --el-color-primary-light-8: #f9cdc0;
-  --el-color-primary-light-9: #fdece6;
+  --el-color-primary-light-3: #e98770;
+  --el-color-primary-light-5: #efaa99;
+  --el-color-primary-light-7: #f6cfc5;
+  --el-color-primary-light-8: #f9ddd6;
+  --el-color-primary-light-9: #fdf0ec;
   --el-color-primary-dark-2: #{$signal-orange-dark};
   --el-color-success: #{$loom-green};
   --el-color-warning: #{$thread-gold};
+  --el-bg-color-page: #{$bg-color};
+  --el-border-color: #e0e6ef;
+  --el-border-color-light: #e8ecf3;
+  --el-border-color-lighter: #f0f3f7;
   --el-border-radius-base: 8px;
   --el-font-family: #{$font-body};
 }
@@ -107,7 +111,7 @@
 
 // 卡片默认边框化，去掉浮夸阴影
 .el-card {
-  border: 1px solid #e3e7ef;
+  border: 1px solid #e8ecf3;
   border-radius: $border-radius-md;
 }
 
@@ -124,11 +128,11 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c2cad9;
+  background: #d5dbe6;
   border-radius: 4px;
 
   &:hover {
-    background: #a7b1c4;
+    background: #c4ccd9;
   }
 }
 

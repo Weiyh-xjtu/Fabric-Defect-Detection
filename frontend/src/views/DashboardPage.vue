@@ -350,8 +350,8 @@ const statCards = computed(() => [
     growthKey: 'tasks',
     label: '检测任务',
     icon: Document,
-    color: '#24314f',
-    background: '#e9edf6',
+    color: '#6f7f9b',
+    background: '#f0f3f8',
     format: formatNumber,
   },
   {
@@ -359,8 +359,8 @@ const statCards = computed(() => [
     growthKey: 'images',
     label: '处理图片',
     icon: PictureFilled,
-    color: '#6b8f71',
-    background: '#eef4ef',
+    color: '#86a48c',
+    background: '#f1f6f2',
     format: formatNumber,
   },
   {
@@ -368,8 +368,8 @@ const statCards = computed(() => [
     growthKey: 'objects',
     label: defectFilterActive.value ? '缺陷目标' : '检测目标',
     icon: Aim,
-    color: '#e8613c',
-    background: '#fdece6',
+    color: '#df6b4e',
+    background: '#fdf0ec',
     format: formatNumber,
   },
   {
@@ -377,8 +377,8 @@ const statCards = computed(() => [
     growthKey: 'inference_time',
     label: '平均耗时',
     icon: Timer,
-    color: '#d9a441',
-    background: '#faf3e4',
+    color: '#d9b565',
+    background: '#fbf6e8',
     format: (value) => Number(value || 0).toFixed(2),
     unit: 'ms',
     inverse: true,
@@ -538,7 +538,7 @@ function emptyGraphic(isEmpty) {
         type: 'text',
         left: 'center',
         top: 'middle',
-        style: { text: '暂无数据', fill: '#909399', fontSize: 14 },
+        style: { text: '暂无数据', fill: '#9aa3b2', fontSize: 14 },
       }]
     : []
 }
@@ -626,7 +626,7 @@ function renderTrendChart(trend) {
         type: 'line',
         smooth: true,
         data: trend.map((item) => item.task_count),
-        itemStyle: { color: '#24314f' },
+        itemStyle: { color: '#6f7f9b' },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
             { offset: 0, color: 'rgba(36,49,79,0.28)' },
@@ -640,7 +640,7 @@ function renderTrendChart(trend) {
         smooth: true,
         yAxisIndex: 1,
         data: trend.map((item) => item.object_count),
-        itemStyle: { color: '#e8613c' },
+        itemStyle: { color: '#df6b4e' },
       },
     ],
   }, true)
@@ -652,7 +652,7 @@ function renderDefectTrendChart(payload) {
   defectTrendChart ||= echarts.init(defectTrendChartRef.value)
   defectTrendChart.setOption({
     graphic: emptyGraphic(series.length === 0),
-    color: ['#e8613c', '#24314f', '#6b8f71', '#d9a441', '#7a8296', '#a06a8c', '#c4402a', '#4a5b8a'],
+    color: ['#df6b4e', '#6f7f9b', '#86a48c', '#d9b565', '#a6afbf', '#c5a3bb', '#d98067', '#9aa8c8'],
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
     legend: {
       type: 'scroll',
@@ -682,7 +682,7 @@ function renderClassChart(distribution) {
   classChart ||= echarts.init(classChartRef.value)
   classChart.setOption({
     graphic: emptyGraphic(distribution.length === 0),
-    color: ['#e8613c', '#24314f', '#6b8f71', '#d9a441', '#7a8296', '#a06a8c', '#c4402a', '#4a5b8a'],
+    color: ['#df6b4e', '#6f7f9b', '#86a48c', '#d9b565', '#a6afbf', '#c5a3bb', '#d98067', '#9aa8c8'],
     tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
     legend: { type: 'scroll', orient: 'vertical', right: 8, top: 20, bottom: 20 },
     series: [{
@@ -711,8 +711,8 @@ function renderSceneChart(distribution) {
       itemStyle: {
         borderRadius: [0, 4, 4, 0],
         color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
-          { offset: 0, color: '#24314f' },
-          { offset: 1, color: '#4a5b8a' },
+          { offset: 0, color: '#6f7f9b' },
+          { offset: 1, color: '#9aa8c8' },
         ]),
       },
     }],
@@ -723,7 +723,7 @@ function renderTypeChart(distribution) {
   typeChart ||= echarts.init(typeChartRef.value)
   typeChart.setOption({
     graphic: emptyGraphic(distribution.length === 0),
-    color: ['#e8613c', '#24314f', '#6b8f71', '#d9a441', '#7a8296', '#a06a8c'],
+    color: ['#df6b4e', '#6f7f9b', '#86a48c', '#d9b565', '#a6afbf', '#c5a3bb'],
     tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
     legend: { bottom: 0, type: 'scroll' },
     series: [{

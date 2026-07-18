@@ -2,7 +2,7 @@
   <div class="register-page">
     <div class="register-card">
       <div class="register-header">
-        <span class="register-mark">WEFT</span>
+        <span class="register-mark">FIRESIGHT</span>
         <h2>创建账号</h2>
         <p>注册后即可进入布面缺陷检测工作台</p>
       </div>
@@ -150,8 +150,11 @@ async function handleRegister() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: $indigo-deep;
-  @include weave-grid(rgba(255, 255, 255, 0.05), 26px);
+  background:
+    radial-gradient(120% 90% at 18% 0%, rgba(223, 107, 78, 0.12) 0%, transparent 44%),
+    radial-gradient(120% 110% at 100% 100%, rgba(111, 127, 155, 0.16) 0%, transparent 54%),
+    linear-gradient(135deg, #fbfcfe 0%, #f1f4f8 100%);
+  @include weave-grid(rgba(47, 58, 79, 0.035), 26px);
 }
 
 .register-card {
