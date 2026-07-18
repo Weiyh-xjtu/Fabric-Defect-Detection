@@ -70,9 +70,8 @@
             v-else-if="msg.role === 'assistant'"
             class="message-bubble assistant-bubble"
           >
-            <!-- 处理该消息的专家 Agent。
-                 并行多专家时正文已有分节标题（#### 🔍 检测专家），
-                 顶部不再重复渲染标签行 -->
+            <!-- 处理该消息的专家 Agent。单专家时在气泡顶部显示胶囊；
+                 并行多专家时正文按分节拆分，各节开头渲染同款胶囊 -->
             <div v-if="agentTags(msg).length === 1" class="agent-route">
               <el-tag
                 v-for="a in agentTags(msg)"
@@ -91,11 +90,22 @@
             <div v-if="msg.loading" class="typing-indicator">
               <span></span><span></span><span></span>
             </div>
-            <div
-              v-else
-              class="message-content markdown-body"
-              v-html="renderMarkdown(msg.content)"
-            ></div>
+            <div v-else class="message-content markdown-body">
+              <template
+                v-for="(sec, si) in agentSections(msg.content)"
+                :key="si"
+              >
+                <div v-if="sec.agent" class="agent-route agent-section-route">
+                  <el-tag size="small" effect="plain" type="warning">
+                    <el-icon class="agent-tag-icon">
+                      <component :is="agentIcon(sec.agent)" />
+                    </el-icon>
+                    <span>{{ agentLabel(sec.agent) }}</span>
+                  </el-tag>
+                </div>
+                <div v-html="renderMarkdown(sec.content)"></div>
+              </template>
+            </div>
 
             <!-- 工具调用链 -->
             <div v-if="msg.toolChain?.length" class="tool-chain">
@@ -117,14 +127,6 @@
                     "
                   >
                     🔧 {{ toolDisplayName(step.tool) }}
-                  </el-tag>
-                  <el-tag
-                    v-if="step.agent && agentTags(msg).length > 1"
-                    size="small"
-                    effect="plain"
-                    type="warning"
-                  >
-                    {{ agentLabel(step.agent) }}
                   </el-tag>
                   <span :class="['tool-chain-status', `status-${step.status}`]">
                     {{
@@ -313,7 +315,7 @@ import {
 import DetectionResultCard from "@/components/DetectionResultCard.vue";
 import { useAgentStore } from "@/stores/agent";
 import { useUserStore } from "@/stores/user";
-import { renderMarkdown } from "@/utils/markdown";
+import { renderMarkdown, splitAgentSections } from "@/utils/markdown";
 import request from "@/utils/request";
 import { streamChat } from "@/utils/stream";
 import {
@@ -794,6 +796,11 @@ function agentTags(msg) {
   return msg.agent ? [msg.agent] : [];
 }
 
+/** 并行多专家回复按分节标题拆分，供模板逐节渲染胶囊 + 正文 */
+function agentSections(content) {
+  return splitAgentSections(content);
+}
+
 /** 消息的检测结果卡片列表：优先并行数组，回退单结果字段（快捷检测/旧历史兼容） */
 function detectionCards(msg) {
   if (msg.detectionResults?.length) return msg.detectionResults;
@@ -1142,6 +1149,15 @@ onMounted(async () => {
 
   :deep(h3) {
     font-size: 20px;
+  }
+
+  /* 并行多专家分节：各节开头的专家胶囊行 */
+  .agent-section-route {
+    margin: 14px 0 10px;
+
+    &:first-child {
+      margin-top: 0;
+    }
   }
 
   :deep(p) {
