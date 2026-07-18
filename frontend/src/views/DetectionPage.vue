@@ -537,7 +537,7 @@ onBeforeUnmount(() => stopCamera(false));
   height: 100%;
   min-height: 0;
   padding: 20px;
-  background: #f5f5f5;
+  background: $bg-color;
 }
 
 .page-header {
@@ -554,7 +554,7 @@ onBeforeUnmount(() => stopCamera(false));
 
   p {
     margin-top: 6px;
-    color: #909399;
+    color: $text-secondary;
     font-size: 13px;
   }
 }
@@ -603,8 +603,32 @@ onBeforeUnmount(() => stopCamera(false));
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: #000;
+  background: $indigo-deep;
+  border: 1px solid $indigo-line;
   border-radius: 8px;
+
+  // 签名：视口四角检测框角标（验布监视器视口）
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    z-index: 2;
+    width: 16px;
+    height: 16px;
+    pointer-events: none;
+  }
+  &::before {
+    top: 8px;
+    left: 8px;
+    border-top: 2px solid $signal-orange;
+    border-left: 2px solid $signal-orange;
+  }
+  &::after {
+    right: 8px;
+    bottom: 8px;
+    border-right: 2px solid $signal-orange;
+    border-bottom: 2px solid $signal-orange;
+  }
 }
 
 .source-video {
@@ -628,8 +652,12 @@ onBeforeUnmount(() => stopCamera(false));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #a8abb2;
-  background: #111;
+  color: #8b93a7;
+  font-family: $font-mono;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  background: $indigo-deep;
+  @include weave-grid(rgba(255, 255, 255, 0.04), 22px);
 }
 
 .video-stats,
@@ -655,21 +683,38 @@ onBeforeUnmount(() => stopCamera(false));
 }
 
 .stat-item {
+  position: relative;
   padding: 12px;
   text-align: center;
-  background: #f9f9f9;
+  background: #f8f9fc;
+  border: 1px solid #e9ecf3;
   border-radius: 8px;
+
+  // 签名：统计块左上角检测框角标
+  &::before {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 10px;
+    height: 10px;
+    border-top: 2px solid $signal-orange;
+    border-left: 2px solid $signal-orange;
+    opacity: 0.45;
+  }
 }
 
 .stat-value {
-  color: #409eff;
-  font-size: 24px;
-  font-weight: 700;
+  color: $text-primary;
+  font-family: $font-mono;
+  font-variant-numeric: tabular-nums;
+  font-size: 23px;
+  font-weight: 600;
 }
 
 .stat-label {
   margin-top: 4px;
-  color: #909399;
+  color: $text-secondary;
   font-size: 12px;
 }
 
@@ -726,8 +771,8 @@ onBeforeUnmount(() => stopCamera(false));
 }
 
 .det-bbox {
-  color: #909399;
-  font-family: monospace;
+  color: $text-secondary;
+  font-family: $font-mono;
   font-size: 12px;
 }
 

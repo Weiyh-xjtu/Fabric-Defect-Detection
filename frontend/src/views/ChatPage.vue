@@ -6,20 +6,21 @@
       <div class="message-list" ref="messageListRef">
         <!-- 空会话：居中欢迎屏 -->
         <div v-if="agentStore.messages.length === 0" class="welcome-screen">
-          <h1 class="welcome-title">你好！我是 WEFT 布面质检助手</h1>
+          <span class="welcome-mark"><span class="welcome-mark-text">WEFT · AI</span></span>
+          <h1 class="welcome-title">你好！我是布面质检助手</h1>
           <p class="welcome-subtitle">发图检测缺陷，或直接提问</p>
           <div class="welcome-hints">
-            <div class="welcome-hint">
-              <span class="hint-icon">🧵</span>
-              <span>上传布面图片，标出破洞、污渍等缺陷</span>
+            <div class="welcome-hint hint-detect">
+              <span class="hint-kicker mono">检测</span>
+              <span class="hint-text">上传布面图片，标出破洞、污渍等缺陷</span>
             </div>
-            <div class="welcome-hint">
-              <span class="hint-icon">📊</span>
-              <span>询问检测统计，例如"近 7 天缺陷分布"</span>
+            <div class="welcome-hint hint-stats">
+              <span class="hint-kicker mono">统计</span>
+              <span class="hint-text">询问检测统计，例如"近 7 天缺陷分布"</span>
             </div>
-            <div class="welcome-hint">
-              <span class="hint-icon">📖</span>
-              <span>查询缺陷知识，例如"什么是经向疵点"</span>
+            <div class="welcome-hint hint-knowledge">
+              <span class="hint-kicker mono">知识</span>
+              <span class="hint-text">查询缺陷知识，例如"什么是经向疵点"</span>
             </div>
           </div>
           <p class="welcome-tip">试试发一张布面图片给我吧！</p>
@@ -959,42 +960,93 @@ onMounted(async () => {
   color: #303133;
 }
 
+.welcome-mark {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  margin-bottom: 20px;
+  border: 1px solid #e3e7ef;
+  border-radius: 999px;
+  background: $bg-color;
+}
+
+.welcome-mark-text {
+  font-family: $font-mono;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: $signal-orange;
+}
+
 .welcome-title {
   margin: 0;
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
+  font-family: $font-display;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: $text-primary;
 }
 
 .welcome-subtitle {
-  margin: 10px 0 28px;
+  margin: 10px 0 30px;
   font-size: 14px;
-  color: #909399;
+  color: $text-secondary;
 }
 
 .welcome-hints {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 14px;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  max-width: 440px;
 }
 
 .welcome-hint {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 14px;
-  color: #606266;
+  gap: 14px;
+  padding: 14px 16px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #e3e7ef;
+  border-left: 3px solid transparent;
+  border-radius: $border-radius-md;
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
 
-  .hint-icon {
-    font-size: 16px;
+  &:hover {
+    box-shadow: $shadow-md;
+    transform: translateY(-1px);
   }
+
+  &.hint-detect:hover { border-left-color: $signal-orange; }
+  &.hint-stats:hover { border-left-color: $loom-green; }
+  &.hint-knowledge:hover { border-left-color: $thread-gold; }
+}
+
+.hint-kicker {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  border-radius: 4px;
+  color: #fff;
+}
+
+.hint-detect .hint-kicker { background: $signal-orange; }
+.hint-stats .hint-kicker { background: $loom-green; }
+.hint-knowledge .hint-kicker { background: $thread-gold; color: #2a2000; }
+
+.hint-text {
+  font-size: 14px;
+  color: $text-regular;
 }
 
 .welcome-tip {
-  margin: 28px 0 0;
+  margin: 30px 0 0;
   font-size: 13px;
-  color: #c0c4cc;
+  color: $text-placeholder;
 }
 
 .message-item {
@@ -1020,8 +1072,9 @@ onMounted(async () => {
 }
 
 .user-bubble {
-  background: #f0f0f0;
-  color: #1f2328;
+  background: #e9edf6;
+  color: $text-primary;
+  border-bottom-right-radius: 6px;
 }
 
 .assistant-bubble {
@@ -1056,9 +1109,11 @@ onMounted(async () => {
     padding: 4px 8px;
   }
   code {
-    background: #f0f0f0;
-    padding: 2px 4px;
+    background: #f2f4f8;
+    padding: 2px 5px;
     border-radius: 3px;
+    font-family: $font-mono;
+    font-size: 0.88em;
   }
 }
 
@@ -1069,7 +1124,7 @@ onMounted(async () => {
   span {
     width: 6px;
     height: 6px;
-    background: #999;
+    background: $signal-orange;
     border-radius: 50%;
     animation: typing 1.2s infinite;
   }
@@ -1099,9 +1154,15 @@ onMounted(async () => {
   margin: 0 auto;
   padding: 18px 22px 16px;
   background: white;
-  border: 1px solid #b8d8ff;
+  border: 1px solid #dfe3ec;
   border-radius: 28px;
-  box-shadow: 0 8px 28px rgba(64, 158, 255, 0.08);
+  box-shadow: $shadow-sm;
+  transition: border-color 0.2s, box-shadow 0.2s;
+
+  &:focus-within {
+    border-color: $signal-orange;
+    box-shadow: 0 8px 28px rgba(232, 97, 60, 0.1);
+  }
 
   .el-textarea {
     flex: 1;
@@ -1218,10 +1279,12 @@ onMounted(async () => {
 }
 
 .tool-chain {
+  position: relative;
   margin-top: 10px;
-  padding: 8px 10px;
-  background: #fafafa;
-  border: 1px solid #ebeef5;
+  padding: 10px 12px;
+  background: #f8f9fc;
+  border: 1px solid #e3e7ef;
+  border-left: 3px solid $signal-orange;
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -1239,7 +1302,7 @@ onMounted(async () => {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #666;
+  color: $text-regular;
 }
 
 .tool-chain-index {
@@ -1247,29 +1310,32 @@ onMounted(async () => {
   height: 18px;
   line-height: 18px;
   text-align: center;
-  border-radius: 50%;
-  background: #e8e8e8;
-  color: #666;
+  border-radius: 4px;
+  background: #e9edf6;
+  color: $indigo-mid;
+  font-family: $font-mono;
   font-size: 11px;
   flex-shrink: 0;
 }
 
 .tool-chain-status {
   flex-shrink: 0;
+  font-family: $font-mono;
+  font-size: 11px;
 
   &.status-running {
-    color: #409eff;
+    color: $signal-orange;
   }
   &.status-done {
-    color: #67c23a;
+    color: $loom-green;
   }
   &.status-error {
-    color: #f56c6c;
+    color: $danger-color;
   }
 }
 
 .tool-chain-summary {
-  color: #888;
+  color: $text-secondary;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
