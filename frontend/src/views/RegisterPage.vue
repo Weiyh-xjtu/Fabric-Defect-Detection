@@ -2,9 +2,9 @@
   <div class="register-page">
     <div class="register-card">
       <div class="register-header">
-        <img src="/favicon.svg" alt="logo" class="register-logo" />
+        <span class="register-mark">WEFT</span>
         <h2>创建账号</h2>
-        <p>注册后即可使用目标检测智能体平台</p>
+        <p>注册后即可进入布面缺陷检测工作台</p>
       </div>
 
       <el-form
@@ -144,15 +144,19 @@ async function handleRegister() {
 
 <style lang="scss" scoped>
 .register-page {
+  position: relative;
   width: 100%;
   height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: $indigo-deep;
+  @include weave-grid(rgba(255, 255, 255, 0.05), 26px);
 }
 
 .register-card {
+  position: relative;
+  z-index: 1;
   width: 420px;
   padding: 40px;
   background: #fff;
@@ -164,13 +168,17 @@ async function handleRegister() {
   text-align: center;
   margin-bottom: 32px;
 
-  .register-logo {
-    width: 48px;
-    height: 48px;
-    margin-bottom: 12px;
+  .register-mark {
+    font-family: $font-display;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.3em;
+    color: $signal-orange;
   }
 
   h2 {
+    margin-top: 10px;
+    font-family: $font-display;
     font-size: 22px;
     color: $text-primary;
     margin-bottom: 8px;

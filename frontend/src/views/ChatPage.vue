@@ -6,23 +6,23 @@
       <div class="message-list" ref="messageListRef">
         <!-- 空会话：居中欢迎屏 -->
         <div v-if="agentStore.messages.length === 0" class="welcome-screen">
-          <h1 class="welcome-title">你好！我是 RSOD 目标检测智能体助手</h1>
-          <p class="welcome-subtitle">准备好了，随时开始</p>
+          <h1 class="welcome-title">你好！我是 WEFT 布面质检助手</h1>
+          <p class="welcome-subtitle">发图检测缺陷，或直接提问</p>
           <div class="welcome-hints">
             <div class="welcome-hint">
-              <span class="hint-icon">🖼️</span>
-              <span>上传一张图片，让我帮你检测目标</span>
+              <span class="hint-icon">🧵</span>
+              <span>上传布面图片，标出破洞、污渍等缺陷</span>
             </div>
             <div class="welcome-hint">
-              <span class="hint-icon">⚡</span>
-              <span>使用下方的快捷按钮直接触发检测</span>
+              <span class="hint-icon">📊</span>
+              <span>询问检测统计，例如"近 7 天缺陷分布"</span>
             </div>
             <div class="welcome-hint">
-              <span class="hint-icon">💬</span>
-              <span>用自然语言描述你的需求</span>
+              <span class="hint-icon">📖</span>
+              <span>查询缺陷知识，例如"什么是经向疵点"</span>
             </div>
           </div>
-          <p class="welcome-tip">试试发一张图片给我吧！</p>
+          <p class="welcome-tip">试试发一张布面图片给我吧！</p>
         </div>
 
         <div

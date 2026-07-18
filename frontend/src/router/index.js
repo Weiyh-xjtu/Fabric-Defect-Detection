@@ -113,8 +113,8 @@ const router = createRouter({
 router.beforeEach((to, from, next) => {
   // 设置页面标题
   document.title = to.meta.title
-    ? `${to.meta.title} - FIRESIGHT`
-    : 'FIRESIGHT'
+    ? `${to.meta.title} - WEFT 布面缺陷检测`
+    : 'WEFT 布面缺陷检测'
 
   // 检查是否需要认证
   const requiresAuth = to.matched.some((record) => record.meta.requiresAuth !== false)

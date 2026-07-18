@@ -4,9 +4,9 @@
       <el-menu
         :default-active="activeMenu"
         :router="true"
-        background-color="#f3f4f6"
-        text-color="#303133"
-        active-text-color="#303133"
+        background-color="transparent"
+        text-color="#aeb8d0"
+        active-text-color="#ffffff"
       >
         <el-menu-item
           v-for="item in menuItems"
@@ -193,27 +193,32 @@ onMounted(() => {
 .app-sidebar {
   display: flex;
   flex-direction: column;
-  width: 280px;
+  width: $sidebar-width;
   height: 100%;
   overflow: hidden;
-  font-size: 15px;
-  background: #f3f4f6;
-  border-right: 1px solid #e5e7eb;
+  font-size: 14px;
+  background: $indigo-deep;
+  @include weave-grid; // 签名纹理：经纬织物网格
+  border-right: 1px solid $indigo-line;
 
   .el-menu-item {
-    height: 50px;
-    margin-bottom: 4px;
-    border-radius: 12px;
-    font-size: 15px;
-    line-height: 50px;
+    height: 44px;
+    margin-bottom: 2px;
+    border-radius: 6px;
+    font-size: 14px;
+    line-height: 44px;
+    transition: background 0.15s, color 0.15s;
 
     &.is-active {
-      font-weight: 700;
-      background-color: #fff !important;
+      font-weight: 600;
+      background-color: $indigo-mid !important;
+      // 签名元素：激活项左侧的检测框角标线
+      box-shadow: inset 3px 0 0 $signal-orange;
     }
 
     &:hover {
-      background-color: #fff !important;
+      background-color: $indigo-mid !important;
+      color: #fff !important;
     }
   }
 }
@@ -226,8 +231,9 @@ onMounted(() => {
   scrollbar-gutter: stable;
 
   .el-menu {
-    padding: 8px;
+    padding: 10px 8px;
     border-right: none;
+    background: transparent;
   }
 }
 
@@ -241,7 +247,7 @@ onMounted(() => {
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid $indigo-line;
 }
 
 .history-header {
@@ -254,22 +260,24 @@ onMounted(() => {
 }
 
 .history-title {
-  color: #606266;
-  font-size: 14px;
+  color: $sidebar-text;
+  font-family: $font-mono;
+  font-size: 12px;
+  letter-spacing: 0.06em;
   font-weight: 600;
 }
 
 .new-chat-button {
-  color: #303133;
+  color: #fff;
   font-weight: 600;
-  background: #fff;
-  border-color: #dcdfe6;
+  background: transparent;
+  border-color: $indigo-line;
 
   &:hover,
   &:focus {
-    color: #303133;
-    background: #fff;
-    border-color: #c0c4cc;
+    color: #fff;
+    background: $indigo-mid;
+    border-color: $signal-orange;
   }
 }
 
@@ -289,13 +297,14 @@ onMounted(() => {
   gap: 8px;
   margin-bottom: 4px;
   padding: 9px 10px;
-  color: #606266;
+  color: $sidebar-text;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: 6px;
   transition: background 0.2s, color 0.2s;
 
   &:hover {
-    background: #f5f7fa;
+    background: $indigo-mid;
+    color: #dfe5f2;
 
     .session-delete {
       visibility: visible;
@@ -303,9 +312,10 @@ onMounted(() => {
   }
 
   &.active {
-    color: #303133;
-    font-weight: 700;
-    background: #fff;
+    color: #fff;
+    font-weight: 600;
+    background: $indigo-mid;
+    box-shadow: inset 3px 0 0 $signal-orange;
   }
 }
 
@@ -316,7 +326,7 @@ onMounted(() => {
 
 .session-name {
   overflow: hidden;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 19px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -324,19 +334,24 @@ onMounted(() => {
 
 .session-meta {
   margin-top: 2px;
-  color: #909399;
-  font-size: 12px;
+  color: #7a86a3;
+  font-family: $font-mono;
+  font-size: 11px;
 }
 
 .session-delete {
   flex-shrink: 0;
   visibility: hidden;
-  color: #909399;
+  color: #7a86a3;
+
+  &:hover {
+    color: #fff;
+  }
 }
 
 .session-empty {
   padding: 12px;
-  color: #909399;
+  color: #7a86a3;
   font-size: 13px;
   text-align: center;
 }
