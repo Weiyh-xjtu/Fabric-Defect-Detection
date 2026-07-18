@@ -339,7 +339,7 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 24px;
+  padding: 20px;
 }
 
 .page-header {
