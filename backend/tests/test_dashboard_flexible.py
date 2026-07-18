@@ -354,6 +354,177 @@ class TestSceneCnNameFollowsSceneTable:
         assert by_name["scratch"] == "划痕"
 
 
+class TestSceneIsolation:
+    """场景筛选隔离：scene_id 生效于全部聚合出口，且不影响全场景视图。"""
+
+    def _make_two_scenes(self, db_session):
+        """场景 A（织物）与场景 B（遥感），B 的 hole 同名但中文不同。
+
+        场景 name 全局唯一且各用例共享测试库，存在即复用。
+        """
+        user = _ensure_user(db_session, "scene_iso_user")
+        scene_a = (
+            db_session.query(DetectionScene).filter_by(name="iso_scene_a").first()
+            or _make_scene(db_session, "iso_scene_a")
+        )
+        scene_b = db_session.query(DetectionScene).filter_by(name="iso_scene_b").first()
+        if scene_b is None:
+            scene_b = DetectionScene(
+                name="iso_scene_b",
+                display_name="遥感目标检测",
+                category="remote_sensing",
+                class_names=["hole", "aircraft"],
+                class_names_cn={"hole": "孔洞", "aircraft": "飞机"},
+                is_active=False,
+            )
+            db_session.add(scene_b)
+            db_session.commit()
+            db_session.refresh(scene_b)
+        # 场景 A：hole×2、stain×1；场景 B：hole×1、aircraft×1。
+        _make_task_with_defects(
+            db_session, user.id, scene_a.id,
+            datetime(2026, 6, 10, 9, 0),
+            [("hole", "破洞", "a1.jpg"), ("hole", "破洞", "a1.jpg"),
+             ("stain", "污渍", "a2.jpg")],
+        )
+        _make_task_with_defects(
+            db_session, user.id, scene_b.id,
+            datetime(2026, 6, 11, 9, 0),
+            [("hole", "孔洞", "b1.jpg"), ("aircraft", "飞机", "b1.jpg")],
+        )
+        return user, scene_a, scene_b
+
+    def test_statistics_isolated_by_scene(self, db_session):
+        _clear_detection(db_session)
+        _, scene_a, scene_b = self._make_two_scenes(db_session)
+        window = dict(start_date=date(2026, 6, 1), end_date=date(2026, 6, 30))
+
+        all_stats = dashboard_service.get_statistics(db_session, None, **window)
+        a_stats = dashboard_service.get_statistics(
+            db_session, None, scene_id=scene_a.id, **window
+        )
+        b_stats = dashboard_service.get_statistics(
+            db_session, None, scene_id=scene_b.id, **window
+        )
+        assert all_stats["total_tasks"] == 2
+        assert a_stats["total_tasks"] == 1
+        assert a_stats["total_objects"] == 3
+        assert b_stats["total_objects"] == 2
+        assert a_stats["scene_id"] == scene_a.id
+
+    def test_statistics_with_class_filter_isolated(self, db_session):
+        # 同名 hole 只统计所选场景内的，避免跨场景混淆。
+        _clear_detection(db_session)
+        _, scene_a, scene_b = self._make_two_scenes(db_session)
+        window = dict(start_date=date(2026, 6, 1), end_date=date(2026, 6, 30))
+
+        a_hole = dashboard_service.get_statistics(
+            db_session, None, class_names=["hole"], scene_id=scene_a.id, **window
+        )
+        b_hole = dashboard_service.get_statistics(
+            db_session, None, class_names=["hole"], scene_id=scene_b.id, **window
+        )
+        assert a_hole["total_objects"] == 2
+        assert b_hole["total_objects"] == 1
+
+    def test_chinese_filter_resolves_within_scene(self, db_session):
+        # 中文词解析仅用所选场景的映射：场景 B 里「孔洞」命中 hole。
+        _clear_detection(db_session)
+        _, scene_a, scene_b = self._make_two_scenes(db_session)
+        window = dict(start_date=date(2026, 6, 1), end_date=date(2026, 6, 30))
+
+        b_via_cn = dashboard_service.get_statistics(
+            db_session, None, class_names=["孔洞"], scene_id=scene_b.id, **window
+        )
+        assert b_via_cn["total_objects"] == 1
+        # 场景 A 没登记「孔洞」，即使历史行有同词快照也不属于该场景。
+        a_via_cn = dashboard_service.get_statistics(
+            db_session, None, class_names=["孔洞"], scene_id=scene_a.id, **window
+        )
+        assert a_via_cn["total_objects"] == 0
+
+    def test_class_distribution_and_options_isolated(self, db_session):
+        _clear_detection(db_session)
+        _, scene_a, scene_b = self._make_two_scenes(db_session)
+        window = dict(start_date=date(2026, 6, 1), end_date=date(2026, 6, 30))
+
+        a_dist = dashboard_service.get_class_distribution(
+            db_session, None, scene_id=scene_a.id, **window
+        )
+        a_names = {item["name"]: item for item in a_dist["distribution"]}
+        assert set(a_names) == {"hole", "stain"}
+        assert a_names["hole"]["value"] == 2
+        # 中文名取所选场景的映射：A 场景 hole → 破洞。
+        assert a_names["hole"]["name_cn"] == "破洞"
+
+        b_options = dashboard_service.get_defect_options(
+            db_session, None, scene_id=scene_b.id, **window
+        )
+        b_names = {item["name"]: item for item in b_options["options"]}
+        assert set(b_names) == {"hole", "aircraft"}
+        # B 场景 hole → 孔洞，不受 A 场景映射影响。
+        assert b_names["hole"]["name_cn"] == "孔洞"
+
+    def test_trend_and_defect_trend_isolated(self, db_session):
+        _clear_detection(db_session)
+        _, scene_a, scene_b = self._make_two_scenes(db_session)
+        window = dict(start_date=date(2026, 6, 10), end_date=date(2026, 6, 11))
+
+        a_trend = dashboard_service.get_trend(
+            db_session, None, scene_id=scene_a.id, **window
+        )
+        # 6-10 场景 A 有 1 个任务，6-11（场景 B 的任务日）应为 0。
+        by_date = {item["date"]: item for item in a_trend["trend"]}
+        assert by_date["2026-06-10"]["task_count"] == 1
+        assert by_date["2026-06-11"]["task_count"] == 0
+
+        b_defect_trend = dashboard_service.get_defect_trend(
+            db_session, None, scene_id=scene_b.id, **window
+        )
+        names = {item["name"] for item in b_defect_trend["series"]}
+        assert names == {"hole", "aircraft"}
+        by_name = {item["name"]: item for item in b_defect_trend["series"]}
+        assert by_name["hole"]["total"] == 1
+        assert by_name["hole"]["name_cn"] == "孔洞"
+
+    def test_scene_and_type_distribution_isolated(self, db_session):
+        _clear_detection(db_session)
+        _, scene_a, _scene_b = self._make_two_scenes(db_session)
+        window = dict(start_date=date(2026, 6, 1), end_date=date(2026, 6, 30))
+
+        scene_dist = dashboard_service.get_scene_distribution(
+            db_session, None, scene_id=scene_a.id, **window
+        )
+        assert scene_dist["distribution"] == [{"name": "织物缺陷检测", "value": 1}]
+
+        type_dist = dashboard_service.get_type_distribution(
+            db_session, None, scene_id=scene_a.id, **window
+        )
+        assert type_dist["distribution"] == [{"name": "单图检测", "value": 1}]
+
+    def test_scene_options_lists_active_scenes(self, db_session):
+        # get_scene_options 只返回启用场景。
+        scene = DetectionScene(
+            name="iso_active_scene",
+            display_name="隔离测试启用场景",
+            category="industry",
+            class_names=["hole"],
+            is_active=True,
+        )
+        db_session.add(scene)
+        db_session.commit()
+        try:
+            options = dashboard_service.get_scene_options(db_session)
+            by_id = {item["id"]: item for item in options["options"]}
+            assert scene.id in by_id
+            assert by_id[scene.id]["display_name"] == "隔离测试启用场景"
+            # 停用场景（_make_scene 创建的均为 is_active=False）不应出现。
+            assert all(item["name"] != "iso_scene_a" for item in options["options"])
+        finally:
+            db_session.delete(scene)
+            db_session.commit()
+
+
 class TestFlexibleDashboardApi:
     """接口层：自定义时间段、缺陷过滤参数与校验。"""
 
@@ -392,6 +563,42 @@ class TestFlexibleDashboardApi:
             headers=headers,
         )
         assert bad.status_code == 400
+
+    def test_scene_id_param_and_scene_options_endpoint(self, client, db_session):
+        _clear_detection(db_session)
+        headers = self._grant_manager(client, db_session, "scene_api_user")
+        scene = _make_scene(db_session, "scene_api_scene")
+        other_scene = _make_scene(db_session, "scene_api_other")
+        user = db_session.query(User).filter_by(username="scene_api_user").one()
+        _make_task_with_defects(
+            db_session, user.id, scene.id,
+            datetime.now() - timedelta(days=1), [("hole", "破洞", "a.jpg")],
+        )
+        _make_task_with_defects(
+            db_session, user.id, other_scene.id,
+            datetime.now() - timedelta(days=1), [("stain", "污渍", "b.jpg")],
+        )
+
+        isolated = client.get(
+            f"/api/dashboard/statistics?days=7&scene_id={scene.id}", headers=headers
+        )
+        assert isolated.status_code == 200
+        assert isolated.json()["total_tasks"] == 1
+        assert isolated.json()["scene_id"] == scene.id
+
+        options = client.get(
+            f"/api/dashboard/defect-options?days=7&scene_id={scene.id}",
+            headers=headers,
+        )
+        names = {item["name"] for item in options.json()["options"]}
+        assert names == {"hole"}
+
+        scene_options = client.get("/api/dashboard/scene-options", headers=headers)
+        assert scene_options.status_code == 200
+        assert "options" in scene_options.json()
+
+        bad = client.get("/api/dashboard/statistics?scene_id=0", headers=headers)
+        assert bad.status_code == 422
 
 
 class TestChatToolDefectHints:

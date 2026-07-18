@@ -67,4 +67,28 @@ describe('数据看板 API 参数组装', () => {
     expect(config.params.class_name).toBeUndefined()
     expect(config.params.days).toBe(30)
   })
+
+  it('sceneId 透传为 scene_id，未选时不携带', async () => {
+    await api.getStatistics({ days: 30, sceneId: 3 })
+    let [, config] = get.mock.calls[0]
+    expect(config.params.scene_id).toBe(3)
+
+    await api.getStatistics({ days: 30 })
+    ;[, config] = get.mock.calls[1]
+    expect(config.params.scene_id).toBeUndefined()
+  })
+
+  it('缺陷下拉保留场景隔离参数', async () => {
+    await api.getDefectOptions({ days: 30, classNames: ['hole'], sceneId: 5 })
+    const [, config] = get.mock.calls[0]
+    expect(config.params.scene_id).toBe(5)
+    expect(config.params.class_name).toBeUndefined()
+  })
+
+  it('场景下拉请求固定端点且不带筛选参数', async () => {
+    await api.getSceneOptions()
+    const [url, config] = get.mock.calls[0]
+    expect(url).toBe('/dashboard/scene-options')
+    expect(config).toBeUndefined()
+  })
 })

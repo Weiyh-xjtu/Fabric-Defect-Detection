@@ -8,9 +8,10 @@ const repeatKeySerializer = { indexes: null }
 /**
  * 组装看板通用查询参数。
  * 传入 start/end 时按自定义时间段查询，否则回退到最近 days 天；
- * classNames 为缺陷类别数组，用于按缺陷过滤。
+ * classNames 为缺陷类别数组，用于按缺陷过滤；
+ * sceneId 为检测场景 id，用于按场景隔离统计。
  */
-function buildParams({ days = 30, start, end, classNames } = {}) {
+function buildParams({ days = 30, start, end, classNames, sceneId } = {}) {
   const params = {}
   if (start && end) {
     params.start_date = start
@@ -20,6 +21,9 @@ function buildParams({ days = 30, start, end, classNames } = {}) {
   }
   if (Array.isArray(classNames) && classNames.length) {
     params.class_name = classNames
+  }
+  if (sceneId) {
+    params.scene_id = sceneId
   }
   return params
 }
@@ -69,10 +73,14 @@ export function getDefectTrend(options = {}) {
 }
 
 export function getDefectOptions(options = {}) {
-  // 缺陷下拉不受已选缺陷影响，剔除 classNames 再请求。
+  // 缺陷下拉不受已选缺陷影响，剔除 classNames 再请求（场景隔离保留）。
   const { classNames, ...rest } = options
   return request.get('/dashboard/defect-options', {
     params: buildParams(rest),
     paramsSerializer: repeatKeySerializer,
   })
+}
+
+export function getSceneOptions() {
+  return request.get('/dashboard/scene-options')
 }

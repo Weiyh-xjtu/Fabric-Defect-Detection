@@ -75,16 +75,22 @@ class DashboardService:
         return list(seen) or None
 
     @staticmethod
-    def _scene_alias_map(db: Session) -> dict[str, set[str]]:
+    def _scene_alias_map(
+        db: Session, scene_id: int | None = None
+    ) -> dict[str, set[str]]:
         """构建「小写别名 → 英文类别 code 集合」映射，用于中英/大小写归一。
 
         数据来源是所有场景的 class_names / class_names_cn：
           - 英文 code 本身（小写）指向自己；
           - 中文名（小写化，中文无大小写影响，仅为统一 key）指向对应英文 code。
         这样用户用中文、英文或不同大小写都能解析回英文 code 精确匹配。
+        指定 scene_id 时只用该场景的登记映射，避免跨场景同名词互相扩散。
         """
         alias_map: dict[str, set[str]] = {}
-        scenes = db.query(DetectionScene).all()
+        scene_query = db.query(DetectionScene)
+        if scene_id is not None:
+            scene_query = scene_query.filter(DetectionScene.id == scene_id)
+        scenes = scene_query.all()
         for scene in scenes:
             class_names = scene.class_names if isinstance(scene.class_names, list) else []
             for code in class_names:
@@ -99,14 +105,18 @@ class DashboardService:
         return alias_map
 
     @staticmethod
-    def _scene_cn_map(db: Session) -> dict[str, str]:
-        """全部场景的英文 code→中文名实时映射。
+    def _scene_cn_map(db: Session, scene_id: int | None = None) -> dict[str, str]:
+        """场景的英文 code→中文名实时映射。
 
         展示时优先于 detection_results 行内的历史快照，
         保证改场景表中文名后看板立即跟随，无需刷存量数据。
-        多个场景登记同一 code 时，最近更新的场景生效。
+        不指定 scene_id 时聚合全部场景，同一 code 由最近更新的场景生效；
+        指定后只取该场景的映射，展示与筛选范围保持一致。
         """
-        scenes = db.query(DetectionScene).all()
+        scene_query = db.query(DetectionScene)
+        if scene_id is not None:
+            scene_query = scene_query.filter(DetectionScene.id == scene_id)
+        scenes = scene_query.all()
         scenes.sort(key=lambda s: s.updated_at or datetime.min)
         mapping: dict[str, str] = {}
         for scene in scenes:
@@ -119,7 +129,10 @@ class DashboardService:
 
     @classmethod
     def _resolve_class_terms(
-        cls, db: Session, class_names: list[str] | None
+        cls,
+        db: Session,
+        class_names: list[str] | None,
+        scene_id: int | None = None,
     ) -> tuple[set[str], list[str]] | None:
         """把用户输入的类别词解析成 (英文 code 小写集合, 原始词列表)。
 
@@ -129,7 +142,7 @@ class DashboardService:
         normalized = cls._normalize_classes(class_names)
         if not normalized:
             return None
-        alias_map = cls._scene_alias_map(db)
+        alias_map = cls._scene_alias_map(db, scene_id)
         code_terms: set[str] = set()
         for term in normalized:
             key = term.lower()
@@ -142,7 +155,11 @@ class DashboardService:
 
     @classmethod
     def _apply_class_filter(
-        cls, db: Session, query: "Query", class_names: list[str] | None
+        cls,
+        db: Session,
+        query: "Query",
+        class_names: list[str] | None,
+        scene_id: int | None = None,
     ) -> "Query":
         """按缺陷类别过滤，支持中英互认与大小写不敏感。
 
@@ -150,7 +167,7 @@ class DashboardService:
           - class_name 小写化后落在解析出的英文 code 集合里；
           - class_name_cn 精确等于用户原始输入（兜底未建立映射的历史数据）。
         """
-        resolved = cls._resolve_class_terms(db, class_names)
+        resolved = cls._resolve_class_terms(db, class_names, scene_id)
         if resolved is None:
             return query
         code_terms, raw_terms = resolved
@@ -159,6 +176,13 @@ class DashboardService:
             | (DetectionResult.class_name_cn.in_(raw_terms))
         )
 
+    @staticmethod
+    def _apply_scene_filter(query: "Query", scene_id: int | None) -> "Query":
+        """按检测场景过滤任务，None 表示不隔离（全部场景）。"""
+        if scene_id is None:
+            return query
+        return query.filter(DetectionTask.scene_id == scene_id)
+
     def _statistics_for_period(
         self,
         db: Session,
@@ -166,6 +190,7 @@ class DashboardService:
         start_at: datetime,
         end_at: datetime,
         class_names: list[str] | None = None,
+        scene_id: int | None = None,
     ) -> dict:
         """查询一个左闭右开时间段内的汇总数据。
 
@@ -193,6 +218,7 @@ class DashboardService:
                     DetectionTask.created_at < end_at,
                 )
             )
+            row = self._apply_scene_filter(row, scene_id)
             if user_id is not None:
                 row = row.filter(DetectionTask.user_id == user_id)
             result = row.one()
@@ -218,9 +244,10 @@ class DashboardService:
                 DetectionTask.created_at < end_at,
             )
         )
+        query = self._apply_scene_filter(query, scene_id)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
-        query = self._apply_class_filter(db, query, normalized)
+        query = self._apply_class_filter(db, query, normalized, scene_id)
         result = query.one()
         return {
             "total_tasks": int(result.total_tasks or 0),
@@ -238,20 +265,21 @@ class DashboardService:
         start_date: date | None = None,
         end_date: date | None = None,
         class_names: list[str] | None = None,
+        scene_id: int | None = None,
     ) -> dict:
         """返回任务、图片、目标、平均耗时及环比增长率。
 
-        支持自定义时间段（start_date/end_date）与缺陷类别过滤（class_names）。
-        环比对比的是等长的前一个时间窗口。
+        支持自定义时间段（start_date/end_date）、缺陷类别过滤（class_names）
+        与检测场景隔离（scene_id）。环比对比的是等长的前一个时间窗口。
         """
         start_at, end_at = self._resolve_window(start_date, end_date, days)
         span = end_at - start_at
         previous_start = start_at - span
         current = self._statistics_for_period(
-            db, user_id, start_at, end_at, class_names
+            db, user_id, start_at, end_at, class_names, scene_id
         )
         previous = self._statistics_for_period(
-            db, user_id, previous_start, start_at, class_names
+            db, user_id, previous_start, start_at, class_names, scene_id
         )
 
         return {
@@ -277,6 +305,7 @@ class DashboardService:
             "start_at": start_at.isoformat(timespec="seconds"),
             "end_at": end_at.isoformat(timespec="seconds"),
             "class_names": self._normalize_classes(class_names) or [],
+            "scene_id": scene_id,
         }
 
     def get_trend(
@@ -287,6 +316,7 @@ class DashboardService:
         start_date: date | None = None,
         end_date: date | None = None,
         class_names: list[str] | None = None,
+        scene_id: int | None = None,
     ) -> dict:
         """返回包含空白日期补零的每日检测趋势。
 
@@ -335,7 +365,8 @@ class DashboardService:
                     DetectionTask.created_at < end_at,
                 )
             )
-            query = self._apply_class_filter(db, query, normalized)
+            query = self._apply_class_filter(db, query, normalized, scene_id)
+        query = self._apply_scene_filter(query, scene_id)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
         rows = query.group_by(day_expression).order_by(day_expression).all()
@@ -372,6 +403,7 @@ class DashboardService:
             "start_at": start_at.isoformat(timespec="seconds"),
             "end_at": end_at.isoformat(timespec="seconds"),
             "class_names": normalized or [],
+            "scene_id": scene_id,
         }
 
     def get_defect_trend(
@@ -383,6 +415,7 @@ class DashboardService:
         end_date: date | None = None,
         class_names: list[str] | None = None,
         top_n: int = 8,
+        scene_id: int | None = None,
     ) -> dict:
         """返回按缺陷类别拆分的每日趋势，用于多折线对比图。
 
@@ -412,6 +445,7 @@ class DashboardService:
                 .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
                 .filter(*base_filters)
             )
+            top_query = self._apply_scene_filter(top_query, scene_id)
             if user_id is not None:
                 top_query = top_query.filter(DetectionTask.user_id == user_id)
             top_rows = (
@@ -445,7 +479,8 @@ class DashboardService:
             .join(DetectionTask, DetectionResult.task_id == DetectionTask.id)
             .filter(*base_filters)
         )
-        query = self._apply_class_filter(db, query, selected_classes)
+        query = self._apply_class_filter(db, query, selected_classes, scene_id)
+        query = self._apply_scene_filter(query, scene_id)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
         rows = (
@@ -462,7 +497,7 @@ class DashboardService:
             )
             counts.setdefault(row.class_name, {})[day_value] = int(row.count or 0)
 
-        cn_map = self._class_name_cn_map(db, selected_classes)
+        cn_map = self._class_name_cn_map(db, selected_classes, scene_id)
         series = []
         for name in selected_classes:
             day_counts = counts.get(name, {})
@@ -480,10 +515,16 @@ class DashboardService:
             "period_days": days,
             "start_at": start_at.isoformat(timespec="seconds"),
             "end_at": end_at.isoformat(timespec="seconds"),
+            "scene_id": scene_id,
         }
 
     @classmethod
-    def _class_name_cn_map(cls, db: Session, class_names: list[str]) -> dict[str, str]:
+    def _class_name_cn_map(
+        cls,
+        db: Session,
+        class_names: list[str],
+        scene_id: int | None = None,
+    ) -> dict[str, str]:
         """查询缺陷类别对应的中文名映射。
 
         优先取场景表的实时映射（改名立即生效），
@@ -493,7 +534,7 @@ class DashboardService:
             return {}
         mapping = {
             code: cn
-            for code, cn in cls._scene_cn_map(db).items()
+            for code, cn in cls._scene_cn_map(db, scene_id).items()
             if code in class_names
         }
         missing = [name for name in class_names if name not in mapping]
@@ -518,6 +559,7 @@ class DashboardService:
         days: int = 30,
         start_date: date | None = None,
         end_date: date | None = None,
+        scene_id: int | None = None,
     ) -> dict:
         """返回时间窗口内实际出现过的缺陷类别，用于前端下拉筛选。"""
         start_at, end_at = self._resolve_window(start_date, end_date, days)
@@ -533,6 +575,7 @@ class DashboardService:
                 DetectionTask.created_at < end_at,
             )
         )
+        query = self._apply_scene_filter(query, scene_id)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
         rows = (
@@ -541,7 +584,7 @@ class DashboardService:
             .all()
         )
         # 场景表实时映射优先，历史行内快照兜底。
-        scene_cn = self._scene_cn_map(db)
+        scene_cn = self._scene_cn_map(db, scene_id)
         return {
             "options": [
                 {
@@ -563,6 +606,7 @@ class DashboardService:
         start_date: date | None = None,
         end_date: date | None = None,
         class_names: list[str] | None = None,
+        scene_id: int | None = None,
     ) -> dict:
         """返回目标类别分布。"""
         start_at, end_at = self._resolve_window(start_date, end_date, days)
@@ -578,7 +622,8 @@ class DashboardService:
                 DetectionTask.created_at < end_at,
             )
         )
-        query = self._apply_class_filter(db, query, class_names)
+        query = self._apply_class_filter(db, query, class_names, scene_id)
+        query = self._apply_scene_filter(query, scene_id)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
         rows = (
@@ -587,7 +632,7 @@ class DashboardService:
             .all()
         )
         # 场景表实时映射优先，历史行内快照兜底。
-        scene_cn = self._scene_cn_map(db)
+        scene_cn = self._scene_cn_map(db, scene_id)
         return {
             "distribution": [
                 {
@@ -611,8 +656,12 @@ class DashboardService:
         days: int = 30,
         start_date: date | None = None,
         end_date: date | None = None,
+        scene_id: int | None = None,
     ) -> dict:
-        """返回检测场景任务分布。"""
+        """返回检测场景任务分布。
+
+        指定 scene_id 时只统计该场景（用于校验隔离视图，图上只会有一条）。
+        """
         start_at, end_at = self._resolve_window(start_date, end_date, days)
         query = (
             db.query(
@@ -625,6 +674,7 @@ class DashboardService:
                 DetectionTask.created_at < end_at,
             )
         )
+        query = self._apply_scene_filter(query, scene_id)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
         rows = (
@@ -648,6 +698,7 @@ class DashboardService:
         days: int = 30,
         start_date: date | None = None,
         end_date: date | None = None,
+        scene_id: int | None = None,
     ) -> dict:
         """返回检测任务类型分布。"""
         start_at, end_at = self._resolve_window(start_date, end_date, days)
@@ -661,6 +712,7 @@ class DashboardService:
                 DetectionTask.created_at < end_at,
             )
         )
+        query = self._apply_scene_filter(query, scene_id)
         if user_id is not None:
             query = query.filter(DetectionTask.user_id == user_id)
         rows = (
@@ -690,6 +742,25 @@ class DashboardService:
             "period_days": days,
             "start_at": start_at.isoformat(timespec="seconds"),
             "end_at": end_at.isoformat(timespec="seconds"),
+        }
+
+    def get_scene_options(self, db: Session) -> dict:
+        """返回启用的检测场景，用于看板场景筛选下拉。"""
+        scenes = (
+            db.query(DetectionScene)
+            .filter(DetectionScene.is_active.is_(True))
+            .order_by(DetectionScene.id.asc())
+            .all()
+        )
+        return {
+            "options": [
+                {
+                    "id": scene.id,
+                    "name": scene.name,
+                    "display_name": scene.display_name,
+                }
+                for scene in scenes
+            ]
         }
 
 
