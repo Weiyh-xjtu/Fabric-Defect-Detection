@@ -78,7 +78,10 @@
                 effect="plain"
                 type="warning"
               >
-                🤖 {{ agentLabel(a) }}
+                <el-icon class="agent-tag-icon">
+                  <component :is="agentIcon(a)" />
+                </el-icon>
+                <span>{{ agentLabel(a) }}</span>
               </el-tag>
             </div>
 
@@ -317,7 +320,16 @@ import {
   toolDisplayName,
 } from "@/utils/toolChain";
 import { ElMessage } from "element-plus";
-import { Camera, Folder, Paperclip, Picture, VideoCamera } from "@element-plus/icons-vue";
+import {
+  Aim,
+  Camera,
+  ChatLineRound,
+  DataAnalysis,
+  Folder,
+  Paperclip,
+  Picture,
+  VideoCamera,
+} from "@element-plus/icons-vue";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
@@ -758,9 +770,19 @@ function ensureChatSession() {
   return agentStore.currentSessionId;
 }
 
+const AGENT_ICON_MAP = {
+  detection: Aim,
+  analysis: DataAnalysis,
+  qa: ChatLineRound,
+};
+
 /** 专家 Agent 显示名 */
 function agentLabel(agent) {
   return AGENT_NAME_MAP[agent] || agent;
+}
+
+function agentIcon(agent) {
+  return AGENT_ICON_MAP[agent] || ChatLineRound;
 }
 
 /** 消息涉及的专家列表：优先并行 agents 数组，回退单 agent 字段（旧数据兼容） */
@@ -1038,27 +1060,119 @@ onMounted(async () => {
 }
 
 .markdown-body {
-  /* markdown 渲染后的 HTML 样式 */
-  h1,
-  h2,
-  h3 {
-    margin-top: 8px;
-    margin-bottom: 4px;
+  white-space: normal;
+  color: #1f2328;
+  font-size: 17px;
+  line-height: 1.85;
+
+  :deep(h1),
+  :deep(h2),
+  :deep(h3),
+  :deep(h4) {
+    margin: 22px 0 12px;
+    color: #0f172a;
+    font-weight: 800;
+    line-height: 1.35;
   }
-  table {
+
+  :deep(h1) {
+    font-size: 28px;
+  }
+
+  :deep(h2) {
+    font-size: 24px;
+  }
+
+  :deep(h3) {
+    font-size: 20px;
+  }
+
+  :deep(p) {
+    margin: 0 0 16px;
+  }
+
+  :deep(strong) {
+    color: #111827;
+    font-weight: 800;
+  }
+
+  :deep(ul),
+  :deep(ol) {
+    margin: 8px 0 18px;
+    padding-left: 26px;
+  }
+
+  :deep(li) {
+    margin: 6px 0;
+  }
+
+  :deep(table) {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    margin: 16px 0 22px;
+    overflow-x: auto;
     border-collapse: collapse;
-    width: 100%;
-    margin: 8px 0;
+    font-size: 15px;
   }
-  th,
-  td {
-    border: 1px solid #e0e0e0;
-    padding: 4px 8px;
+
+  :deep(th),
+  :deep(td) {
+    padding: 10px 14px;
+    border: 1px solid #e5e7eb;
+    vertical-align: top;
   }
-  code {
-    background: #f0f0f0;
-    padding: 2px 4px;
-    border-radius: 3px;
+
+  :deep(th) {
+    color: #111827;
+    font-weight: 800;
+    background: #f8fafc;
+  }
+
+  :deep(tr:nth-child(even) td) {
+    background: #fafafa;
+  }
+
+  :deep(pre) {
+    margin: 16px 0 22px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+  }
+
+  :deep(pre code) {
+    padding: 0;
+    color: #111827;
+    background: transparent;
+    border-radius: 0;
+    font-size: 14px;
+    line-height: 1.7;
+  }
+
+  :deep(code) {
+    padding: 2px 6px;
+    color: #111827;
+    background: #f1f5f9;
+    border-radius: 5px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.92em;
+  }
+
+  :deep(blockquote) {
+    margin: 16px 0;
+    padding: 10px 16px;
+    color: #4b5563;
+    background: #f8fafc;
+    border-left: 4px solid #cbd5e1;
+    border-radius: 8px;
+  }
+
+  :deep(hr) {
+    margin: 24px 0;
+    border: 0;
+    border-top: 1px solid #e5e7eb;
   }
 }
 
@@ -1215,6 +1329,16 @@ onMounted(async () => {
 /* ── 专家路由与工具调用链 ── */
 .agent-route {
   margin-bottom: 6px;
+
+  :deep(.el-tag__content) {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+}
+
+.agent-tag-icon {
+  font-size: 14px;
 }
 
 .tool-chain {
