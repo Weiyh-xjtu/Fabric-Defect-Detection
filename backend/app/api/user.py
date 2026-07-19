@@ -1,6 +1,6 @@
 """用户资料、用户列表与角色权限查询 API。"""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
@@ -9,7 +9,7 @@ from app.core.rbac import USER_MANAGE
 from app.database.session import get_db
 from app.entity.db_models import User
 from app.entity.schemas import UserRolesUpdate, UserStatusUpdate
-from app.services.user_service import user_service
+from app.services.user_service import AVATAR_MAX_FILE_SIZE, user_service
 
 router = APIRouter(prefix="/api/user", tags=["用户管理"])
 
@@ -44,6 +44,31 @@ async def update_profile(
 ) -> dict:
     """更新当前用户的手机号和邮箱。"""
     return user_service.update_profile(db, current_user.id, phone, email)
+
+
+@router.put("/avatar", summary="上传或替换头像")
+async def update_avatar(
+    file: UploadFile = File(..., description="JPG、PNG 或 WebP 头像图片，最大 5 MB"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """校验、裁剪并上传当前用户头像。"""
+    image_data = await file.read(AVATAR_MAX_FILE_SIZE + 1)
+    return user_service.update_avatar(
+        db,
+        current_user.id,
+        image_data,
+        file.content_type,
+    )
+
+
+@router.delete("/avatar", summary="恢复默认头像")
+async def remove_avatar(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """移除自定义头像，恢复显示用户名首字母。"""
+    return user_service.remove_avatar(db, current_user.id)
 
 
 @router.put("/password", summary="修改密码")

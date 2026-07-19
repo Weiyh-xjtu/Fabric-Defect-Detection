@@ -15,7 +15,7 @@ from app.config.settings import settings
 class MinIOClient:
     """MinIO 客户端封装"""
 
-    def __init__(self):
+    def __init__(self, ensure_bucket: bool = True):
         self.client = Minio(
             settings.MINIO_ENDPOINT,
             access_key=settings.MINIO_ACCESS_KEY,
@@ -23,7 +23,8 @@ class MinIOClient:
             secure=settings.MINIO_SECURE,
         )
         self.bucket_name = settings.MINIO_BUCKET
-        self._ensure_bucket()
+        if ensure_bucket:
+            self._ensure_bucket()
 
     def _ensure_bucket(self):
         """确保存储桶存在，不存在则创建"""

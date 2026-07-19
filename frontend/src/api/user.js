@@ -16,3 +16,13 @@ export function updateUserRoles(userId, roleNames) {
 export function updateUserStatus(userId, isActive) {
   return request.put(`/user/${userId}/status`, { is_active: isActive })
 }
+
+export function uploadUserAvatar(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return request.put('/user/avatar', formData)
+}
+
+export function removeUserAvatar() {
+  return request.delete('/user/avatar')
+}
