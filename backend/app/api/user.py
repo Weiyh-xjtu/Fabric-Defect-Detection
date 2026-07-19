@@ -37,13 +37,20 @@ async def list_roles(
 
 @router.put("/profile", summary="更新个人信息")
 async def update_profile(
+    username: str | None = Query(None, min_length=3, max_length=50),
     phone: str | None = Query(None, max_length=20),
     email: str | None = Query(None, max_length=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    """更新当前用户的手机号和邮箱。"""
-    return user_service.update_profile(db, current_user.id, phone, email)
+    """更新当前用户的用户名、手机号和邮箱。"""
+    return user_service.update_profile(
+        db,
+        current_user.id,
+        phone=phone,
+        email=email,
+        username=username,
+    )
 
 
 @router.put("/avatar", summary="上传或替换头像")
