@@ -3,10 +3,13 @@
     <!-- ── 页面标题 ── -->
     <div class="page-header">
       <h2>模型训练与监控</h2>
-      <el-button type="primary" @click="openCreateDialog">
+      <el-button v-if="activeTab === 'training'" type="primary" @click="openCreateDialog">
         <el-icon><Plus /></el-icon>新建训练任务
       </el-button>
     </div>
+
+    <el-tabs v-model="activeTab" class="training-tabs">
+      <el-tab-pane label="训练任务" name="training">
 
     <!-- ── 训练任务列表 ── -->
     <el-card class="task-list-card" shadow="never">
@@ -167,6 +170,13 @@
         </div>
       </el-card>
     </el-card>
+
+      </el-tab-pane>
+      <el-tab-pane label="数据集管理" name="datasets" lazy>
+        <DatasetPanel @scenes-changed="fetchScenes" />
+      </el-tab-pane>
+    </el-tabs>
+
     <el-dialog
       v-model="showCreateDialog"
       title="新建训练任务"
@@ -363,6 +373,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import request from '@/utils/request'
+import DatasetPanel from '@/components/training/DatasetPanel.vue'
 
 const MODEL_READY_TASK_STATUSES = new Set(['completed', 'cancelled'])
 
@@ -373,6 +384,7 @@ const sceneList = ref([])
 const loadingScenes = ref(false)
 const selectedTask = ref(null)
 const showCreateDialog = ref(false)
+const activeTab = ref('training')
 const creating = ref(false)
 const evalReport = ref(null)
 const validating = ref(false)
