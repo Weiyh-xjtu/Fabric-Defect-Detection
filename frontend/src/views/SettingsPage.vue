@@ -44,8 +44,13 @@
                 </div>
               </div>
             </el-form-item>
-            <el-form-item label="用户名">
-              <el-input :model-value="profileForm.username" disabled />
+            <el-form-item label="用户名" prop="username">
+              <el-input
+                v-model="profileForm.username"
+                maxlength="50"
+                show-word-limit
+                placeholder="请输入用户名"
+              />
             </el-form-item>
             <el-form-item label="邮箱" prop="email">
               <el-input v-model="profileForm.email" placeholder="请输入邮箱" />
@@ -124,6 +129,18 @@ const profileForm = reactive({
 })
 const passwordForm = reactive({ old_password: '', new_password: '', confirm_password: '' })
 const profileRules = {
+  username: [
+    { required: true, message: '请输入用户名', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        const normalized = value?.trim() || ''
+        normalized.length >= 3 && normalized.length <= 50
+          ? callback()
+          : callback(new Error('用户名长度必须为 3-50 个字符'))
+      },
+      trigger: ['blur', 'change'],
+    },
+  ],
   email: [
     { required: true, message: '请输入邮箱', trigger: 'blur' },
     { type: 'email', message: '请输入有效邮箱', trigger: ['blur', 'change'] },
@@ -234,9 +251,16 @@ async function updateProfile() {
   if (!valid) return
   profileLoading.value = true
   try {
-    await request.put('/user/profile', null, {
-      params: { email: profileForm.email, phone: profileForm.phone },
+    const result = await request.put('/user/profile', null, {
+      params: {
+        username: profileForm.username,
+        email: profileForm.email,
+        phone: profileForm.phone,
+      },
     })
+    profileForm.username = result.user.username
+    profileForm.email = result.user.email
+    profileForm.phone = result.user.phone || ''
     await userStore.fetchUserInfo()
     ElMessage.success('个人信息已更新')
   } catch (error) {
@@ -279,9 +303,11 @@ onMounted(loadUserInfo)
 
 defineExpose({
   avatarLoading,
+  profileFormRef,
   profileForm,
   handleAvatarSelected,
   removeAvatar,
+  updateProfile,
 })
 </script>
 

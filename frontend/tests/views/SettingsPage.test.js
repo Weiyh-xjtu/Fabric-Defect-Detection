@@ -62,6 +62,13 @@ describe('SettingsPage avatar editor', () => {
       user: { avatar: 'https://minio.test/new-avatar.jpg' },
     })
     mocks.fetchUserInfo.mockResolvedValue()
+    mocks.requestPut.mockResolvedValue({
+      user: {
+        username: 'fabric_renamed',
+        email: 'fabric@example.com',
+        phone: '',
+      },
+    })
   })
 
   it('选择合法图片后上传并刷新全局用户信息', async () => {
@@ -92,5 +99,27 @@ describe('SettingsPage avatar editor', () => {
     expect(ElMessage.warning).toHaveBeenCalledWith(
       '头像仅支持 JPG、PNG 或 WebP 格式',
     )
+  })
+
+  it('提交个人资料时包含可编辑用户名并刷新用户状态', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    wrapper.vm.profileFormRef = {
+      validate: vi.fn().mockResolvedValue(true),
+    }
+    wrapper.vm.profileForm.username = 'fabric_renamed'
+
+    await wrapper.vm.updateProfile()
+
+    expect(mocks.requestPut).toHaveBeenCalledWith('/user/profile', null, {
+      params: {
+        username: 'fabric_renamed',
+        email: 'fabric@example.com',
+        phone: '',
+      },
+    })
+    expect(mocks.fetchUserInfo).toHaveBeenCalledOnce()
+    expect(wrapper.vm.profileForm.username).toBe('fabric_renamed')
+    expect(ElMessage.success).toHaveBeenCalledWith('个人信息已更新')
   })
 })

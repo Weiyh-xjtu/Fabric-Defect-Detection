@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import HTTPException
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.security import (
@@ -328,11 +329,27 @@ class UserService:
         user_id: int,
         phone: Optional[str] = None,
         email: Optional[str] = None,
+        username: Optional[str] = None,
     ) -> dict:
-        """更新当前用户的手机号和邮箱。"""
+        """更新当前用户的用户名、手机号和邮箱。"""
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="用户不存在")
+        if username is not None:
+            normalized_username = username.strip()
+            if not 3 <= len(normalized_username) <= 50:
+                raise HTTPException(status_code=400, detail="用户名长度必须为 3-50 个字符")
+            duplicate_username = (
+                db.query(User)
+                .filter(
+                    User.username == normalized_username,
+                    User.id != user_id,
+                )
+                .first()
+            )
+            if duplicate_username:
+                raise HTTPException(status_code=400, detail="用户名已被其他用户使用")
+            user.username = normalized_username
         if email is not None:
             normalized_email = email.strip()
             if not normalized_email:
@@ -347,7 +364,14 @@ class UserService:
             user.email = normalized_email
         if phone is not None:
             user.phone = phone.strip() or None
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail="用户名或邮箱已被其他用户使用",
+            ) from exc
         db.refresh(user)
         logger.info("用户 %s 更新了个人信息", user.username)
         return {
