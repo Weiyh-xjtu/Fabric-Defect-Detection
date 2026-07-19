@@ -432,6 +432,11 @@ class ChatSessionCreate(SchemaModel):
     title: Optional[str] = None
 
 
+class ChatSessionTitleUpdate(SchemaModel):
+    """修改对话会话标题"""
+    title: str = Field(..., min_length=1, max_length=200, description="会话标题")
+
+
 class ChatSessionResponse(SchemaModel):
     """对话会话响应"""
     id: int

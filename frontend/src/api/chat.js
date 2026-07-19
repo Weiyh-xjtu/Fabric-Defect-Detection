@@ -24,6 +24,16 @@ export function getChatSessionHistory(sessionUuid) {
 }
 
 /**
+ * 修改指定会话的标题
+ * @param {string} sessionUuid - 会话唯一标识
+ * @param {string} title - 新标题
+ * @returns {Promise<Object>} - 更新后的会话摘要
+ */
+export function updateChatSessionTitle(sessionUuid, title) {
+  return request.patch(`/chat/sessions/${sessionUuid}`, { title });
+}
+
+/**
  * 删除指定会话
  * @param {string} sessionUuid - 会话唯一标识
  * @returns {Promise}

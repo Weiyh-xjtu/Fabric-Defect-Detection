@@ -1,9 +1,27 @@
 <template>
-  <aside :class="['app-sidebar', { 'has-chat-history': isChatRoute }]">
+  <aside
+    :class="[
+      'app-sidebar',
+      {
+        'has-chat-history': isChatRoute && !isSidebarCollapsed,
+        'is-collapsed': isSidebarCollapsed,
+      },
+    ]"
+  >
+    <el-button
+      class="sidebar-collapse-button"
+      :icon="isSidebarCollapsed ? ArrowRight : ArrowLeft"
+      :title="isSidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+      :aria-label="isSidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+      @click="isSidebarCollapsed = !isSidebarCollapsed"
+    />
+
     <div class="menu-scroll-area">
       <el-menu
         :default-active="activeMenu"
         :router="true"
+        :collapse="isSidebarCollapsed"
+        :collapse-transition="false"
         background-color="transparent"
         text-color="#3f4a5f"
         active-text-color="#3f4a5f"
@@ -12,26 +30,64 @@
           v-for="item in menuItems"
           :key="item.path"
           :index="item.path"
+          :title="isSidebarCollapsed ? item.title : undefined"
         >
           <el-icon>
             <component :is="item.icon" />
           </el-icon>
-          <span>{{ item.title }}</span>
+          <span v-if="!isSidebarCollapsed">{{ item.title }}</span>
         </el-menu-item>
       </el-menu>
     </div>
 
-    <section v-if="isChatRoute" class="chat-history-section">
+    <section
+      v-if="isChatRoute && !isSidebarCollapsed"
+      :class="['chat-history-section', { 'is-history-collapsed': isHistoryCollapsed }]"
+    >
       <div class="history-header">
         <span class="history-title">历史对话</span>
-        <el-button size="small" class="new-chat-button" @click="handleNewChat">
-          + 新对话
-        </el-button>
+        <div class="history-actions">
+          <el-button
+            class="history-icon-button history-search-button"
+            text
+            :icon="Search"
+            title="搜索历史对话"
+            aria-label="搜索历史对话"
+            @click="toggleHistorySearch"
+          />
+          <el-button
+            class="history-icon-button history-toggle-button"
+            text
+            :icon="isHistoryCollapsed ? ArrowUpBold : ArrowDownBold"
+            :title="isHistoryCollapsed ? '展开历史对话' : '收起历史对话'"
+            :aria-label="isHistoryCollapsed ? '展开历史对话' : '收起历史对话'"
+            @click="toggleHistory"
+          />
+          <el-button size="small" class="new-chat-button" @click="handleNewChat">
+            + 新对话
+          </el-button>
+        </div>
       </div>
 
-      <div v-loading="agentStore.isSessionsLoading" class="session-list">
+      <div v-if="searchVisible && !isHistoryCollapsed" class="history-search-row">
+        <el-input
+          v-model="searchQuery"
+          class="history-search-input"
+          size="small"
+          clearable
+          :prefix-icon="Search"
+          placeholder="按标题搜索对话"
+          aria-label="按标题搜索对话"
+        />
+      </div>
+
+      <div
+        v-if="!isHistoryCollapsed"
+        v-loading="agentStore.isSessionsLoading"
+        class="session-list"
+      >
         <div
-          v-for="session in agentStore.sessions"
+          v-for="session in filteredSessions"
           :key="session.session_uuid"
           :class="[
             'session-item',
@@ -46,17 +102,29 @@
               {{ formatSessionTime(session.last_message_at || session.created_at) }}
             </div>
           </div>
-          <el-button
-            class="session-delete"
-            size="small"
-            text
-            :icon="Delete"
-            title="删除会话"
-            @click.stop="handleDeleteSession(session)"
-          />
+          <div class="session-actions">
+            <el-button
+              class="session-action session-edit"
+              size="small"
+              text
+              :icon="EditPen"
+              title="编辑标题"
+              aria-label="编辑标题"
+              @click.stop="handleEditSession(session)"
+            />
+            <el-button
+              class="session-action session-delete"
+              size="small"
+              text
+              :icon="Delete"
+              title="删除会话"
+              aria-label="删除会话"
+              @click.stop="handleDeleteSession(session)"
+            />
+          </div>
         </div>
-        <div v-if="!agentStore.sessions.length" class="session-empty">
-          暂无历史对话
+        <div v-if="!filteredSessions.length" class="session-empty">
+          {{ searchQuery.trim() ? '未找到匹配的对话' : '暂无历史对话' }}
         </div>
       </div>
     </section>
@@ -64,18 +132,24 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ChatDotRound,
+  ArrowLeft,
+  ArrowRight,
   Camera,
   Box,
+  ArrowDownBold,
+  ArrowUpBold,
   Cpu,
   Clock,
   Collection,
   DataAnalysis,
   Delete,
+  EditPen,
+  Search,
   Setting,
   UserFilled,
 } from '@element-plus/icons-vue'
@@ -86,6 +160,10 @@ const route = useRoute()
 const router = useRouter()
 const agentStore = useAgentStore()
 const userStore = useUserStore()
+const isSidebarCollapsed = ref(false)
+const isHistoryCollapsed = ref(false)
+const searchVisible = ref(false)
+const searchQuery = ref('')
 
 /** 当前激活的菜单项 */
 const activeMenu = computed(() => {
@@ -111,6 +189,31 @@ const menuItems = computed(() => allMenuItems.filter((item) => (
   (!item.permission || userStore.hasPermission(item.permission))
   && (!item.anyPermission || userStore.hasAnyPermission(item.anyPermission))
 )))
+
+const filteredSessions = computed(() => {
+  const keyword = searchQuery.value.trim().toLocaleLowerCase()
+  if (!keyword) return agentStore.sessions
+
+  return agentStore.sessions.filter((session) => (
+    (session.title || '新对话').toLocaleLowerCase().includes(keyword)
+  ))
+})
+
+function toggleHistorySearch() {
+  if (isHistoryCollapsed.value) {
+    isHistoryCollapsed.value = false
+    searchVisible.value = true
+    return
+  }
+  searchVisible.value = !searchVisible.value
+  if (!searchVisible.value) {
+    searchQuery.value = ''
+  }
+}
+
+function toggleHistory() {
+  isHistoryCollapsed.value = !isHistoryCollapsed.value
+}
 
 async function refreshSessions() {
   try {
@@ -138,6 +241,37 @@ async function handleNewChat() {
     await router.push('/chat')
   }
   agentStore.newChat()
+}
+
+async function handleEditSession(session) {
+  let result
+  try {
+    result = await ElMessageBox.prompt('请输入新的对话标题', '编辑标题', {
+      inputValue: session.title || '新对话',
+      inputPlaceholder: '请输入对话标题',
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValidator(value) {
+        const title = (value || '').trim()
+        if (!title) return '标题不能为空'
+        if (title.length > 200) return '标题不能超过 200 个字符'
+        return true
+      },
+    })
+  } catch {
+    return
+  }
+
+  const title = result.value.trim()
+  if (title === session.title) return
+
+  try {
+    await agentStore.renameSession(session.session_uuid, title)
+    ElMessage.success('标题已更新')
+  } catch (err) {
+    console.error('[会话标题更新失败]', err)
+    ElMessage.error('标题更新失败')
+  }
 }
 
 async function handleDeleteSession(session) {
@@ -192,11 +326,13 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .app-sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: $sidebar-width;
+  margin-right: 23px;
   height: 100%;
-  overflow: hidden;
+  overflow: visible;
   font-size: 14px;
   background:
     radial-gradient(circle at 18px 18px, rgba(47, 58, 79, 0.026) 1px, transparent 1px),
@@ -204,6 +340,8 @@ onMounted(() => {
     #f5f6f9;
   background-size: 24px 24px, 100% 100%, auto;
   border-right: 1px solid #e8ecf3;
+  flex-shrink: 0;
+  transition: width 0.2s ease;
 
   .el-menu-item {
     height: 44px;
@@ -223,6 +361,67 @@ onMounted(() => {
       color: #3f4a5f !important;
       background-color: #fff !important;
     }
+  }
+
+  &.is-collapsed {
+    width: $sidebar-collapsed-width;
+
+    .menu-scroll-area {
+      scrollbar-gutter: auto;
+    }
+
+    .menu-scroll-area .el-menu {
+      width: auto;
+      padding-right: 8px;
+      padding-left: 8px;
+    }
+
+    .el-menu-item {
+      justify-content: center;
+      padding: 0 !important;
+    }
+  }
+}
+
+.history-icon-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: #6b7484;
+  border-radius: 6px;
+
+  &:hover,
+  &:focus {
+    color: $signal-orange;
+    background: #fff;
+  }
+}
+
+.sidebar-collapse-button {
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  z-index: 5;
+  width: 24px;
+  height: 34px;
+  padding: 0;
+  color: #6b7484;
+  background: #fff;
+  border-color: #dfe3ea;
+  border-left: none;
+  border-radius: 0 7px 7px 0;
+  box-shadow: 0 2px 6px rgba(47, 58, 79, 0.06);
+  transform: translate(100%, -50%);
+
+  &:hover,
+  &:focus {
+    color: $signal-orange;
+    background: #fff;
+    border-color: $signal-orange;
+  }
+
+  :deep(.el-icon) {
+    font-size: 15px;
   }
 }
 
@@ -251,6 +450,10 @@ onMounted(() => {
   min-height: 0;
   flex-direction: column;
   border-top: 1px solid #e8ecf3;
+
+  &.is-history-collapsed {
+    flex: 0 0 auto;
+  }
 }
 
 .history-header {
@@ -259,10 +462,11 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px;
+  padding: 10px 8px 10px 12px;
 }
 
 .history-title {
+  flex-shrink: 0;
   color: #6b7484;
   font-family: $font-mono;
   font-size: 12px;
@@ -270,7 +474,25 @@ onMounted(() => {
   font-weight: 600;
 }
 
+.history-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+}
+
+.history-icon-button {
+  width: 26px;
+  height: 26px;
+}
+
 .new-chat-button {
+  margin-left: 2px !important;
   color: #3f4a5f;
   font-weight: 600;
   background: #fff;
@@ -282,6 +504,22 @@ onMounted(() => {
     color: #3f4a5f;
     background: #fff;
     border-color: $signal-orange;
+  }
+}
+
+.history-search-row {
+  flex-shrink: 0;
+  padding: 0 8px 8px;
+}
+
+.history-search-input {
+  :deep(.el-input__wrapper) {
+    border-radius: 6px;
+    box-shadow: 0 0 0 1px #dfe3ea inset;
+
+    &.is-focus {
+      box-shadow: 0 0 0 1px $signal-orange inset;
+    }
   }
 }
 
@@ -303,6 +541,7 @@ onMounted(() => {
 }
 
 .session-item {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -318,7 +557,7 @@ onMounted(() => {
     color: #3f4a5f;
     background: #fff;
 
-    .session-delete {
+    .session-actions {
       visibility: visible;
     }
   }
@@ -328,6 +567,10 @@ onMounted(() => {
     font-weight: 700;
     background: #fff;
     box-shadow: inset 3px 0 0 $signal-orange;
+
+    .session-actions {
+      visibility: visible;
+    }
   }
 }
 
@@ -351,9 +594,28 @@ onMounted(() => {
   font-size: 11px;
 }
 
-.session-delete {
-  flex-shrink: 0;
+.session-actions {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 0;
   visibility: hidden;
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: -8px 0 12px #fff;
+  transform: translateY(-50%);
+
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+}
+
+.session-action {
+  width: 26px;
+  height: 26px;
+  padding: 0;
   color: #9aa3b2;
 
   &:hover {

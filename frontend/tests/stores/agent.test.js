@@ -8,11 +8,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 
 const getChatSessionHistory = vi.fn()
+const updateChatSessionTitle = vi.fn()
 
 vi.mock('@/api/chat', () => ({
   getChatSessions: vi.fn(),
   deleteChatSession: vi.fn(),
   getChatSessionHistory: (...args) => getChatSessionHistory(...args),
+  updateChatSessionTitle: (...args) => updateChatSessionTitle(...args),
 }))
 
 import { useAgentStore } from '@/stores/agent'
@@ -21,6 +23,7 @@ describe('agent store 历史还原', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     getChatSessionHistory.mockReset()
+    updateChatSessionTitle.mockReset()
   })
 
   it('单图历史用 MinIO URL 还原标注图', async () => {
@@ -356,5 +359,21 @@ describe('agent store 历史还原', () => {
     expect(video.annotated_video_url).toBe('http://minio/rsod/v.mp4?fresh=1')
     // detectionResult 保留为首个，兼容单结果渲染
     expect(msg.detectionResult).toEqual(msg.detectionResults[0])
+  })
+
+  it('修改会话标题后同步更新本地列表', async () => {
+    updateChatSessionTitle.mockResolvedValue({
+      session_uuid: 'session-rename',
+      title: '新标题',
+    })
+    const store = useAgentStore()
+    store.sessions = [
+      { session_uuid: 'session-rename', title: '原标题', message_count: 2 },
+    ]
+
+    await store.renameSession('session-rename', '新标题')
+
+    expect(updateChatSessionTitle).toHaveBeenCalledWith('session-rename', '新标题')
+    expect(store.sessions[0].title).toBe('新标题')
   })
 })
