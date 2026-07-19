@@ -1,28 +1,29 @@
 # Caddy 反向代理配置 — FIRESIGHT 生产部署
-# 放到服务器 /etc/caddy/Caddyfile，或用 docker 挂载。
+# 放到服务器 /etc/caddy/Caddyfile。
 # Caddy 会自动为该域名向 Let's Encrypt 申请并续期 HTTPS 证书。
 #
-# 前置条件：<你的域名> 的 A 记录已指向 <服务器公网IP>，
-# 且服务器 80/443 端口对公网开放（证书签发走 HTTP-01 挑战，必须放行 80）。
+# 用 handle 块隔离 API 与静态资源：try_files 属于重写阶段、
+# 先于 reverse_proxy 执行，不隔离会把 /api/* 重写到 index.html。
 
 <你的域名> {
 	encode zstd gzip
 
-	# 后端 API、鉴权、文件代理、WebSocket、OpenAPI 文档
-	# 后端原生监听 127.0.0.1:8000
-	@backend {
-		path /api/* /docs /redoc /openapi.json
-	}
-	reverse_proxy @backend 127.0.0.1:8000
-
-	# 前端静态资源（Vite 构建产物）
-	root * /var/www/firesight
-	try_files {path} /index.html
-	file_server
-
 	# 上传大文件（数据集 ZIP、视频）时放宽请求体限制
 	request_body {
 		max_size 2GB
+	}
+
+	# 后端 API、鉴权、文件代理、WebSocket、OpenAPI 文档
+	@backend path /api/* /docs /redoc /openapi.json
+	handle @backend {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# 其余请求走前端静态资源（Vite 构建产物，SPA 回退到 index.html）
+	handle {
+		root * /var/www/firesight
+		try_files {path} /index.html
+		file_server
 	}
 
 	log {
