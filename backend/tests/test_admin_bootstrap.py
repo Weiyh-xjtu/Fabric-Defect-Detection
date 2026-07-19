@@ -10,6 +10,9 @@ from app.core.security import hash_password, verify_password
 from app.database.session import Base
 from app.entity.db_models import Role, User, UserRole
 from app.services.admin_bootstrap_service import (
+    BOOTSTRAP_PASSWORD_ALPHABET,
+    BOOTSTRAP_USERNAME_ALPHABET,
+    BOOTSTRAP_USERNAME_LETTERS,
     ensure_bootstrap_admin,
     has_admin,
     print_admin_credentials,
@@ -40,9 +43,17 @@ def test_bootstrap_creates_exactly_one_admin(isolated_db):
     credentials = ensure_bootstrap_admin(isolated_db)
 
     assert credentials is not None
-    assert credentials.username == "admin"
+    assert len(credentials.password) == 10
+    assert set(credentials.password).issubset(set(BOOTSTRAP_PASSWORD_ALPHABET))
+    assert len(credentials.username) == 8
+    assert credentials.username[0] in BOOTSTRAP_USERNAME_LETTERS
+    assert set(credentials.username[1:]).issubset(set(BOOTSTRAP_USERNAME_ALPHABET))
     assert has_admin(isolated_db) is True
-    user = isolated_db.query(User).filter(User.username == "admin").one()
+    user = (
+        isolated_db.query(User)
+        .filter(User.username == credentials.username)
+        .one()
+    )
     assert user.is_active is True
     assert verify_password(credentials.password, user.hashed_password)
     assert any(item.role.name == SYSTEM_ADMIN for item in user.user_roles)
@@ -51,10 +62,10 @@ def test_bootstrap_creates_exactly_one_admin(isolated_db):
     assert isolated_db.query(User).count() == 1
 
 
-def test_bootstrap_avoids_existing_normal_username(isolated_db):
+def test_bootstrap_retries_when_random_username_conflicts(isolated_db, monkeypatch):
     normal_role = isolated_db.query(Role).filter(Role.name == "quality_inspector").one()
     normal_user = User(
-        username="admin",
+        username="a2345678",
         email="normal@example.com",
         hashed_password=hash_password("123456"),
         is_active=True,
@@ -63,11 +74,16 @@ def test_bootstrap_avoids_existing_normal_username(isolated_db):
     isolated_db.flush()
     isolated_db.add(UserRole(user_id=normal_user.id, role_id=normal_role.id))
     isolated_db.commit()
+    generated_names = iter(["a2345678", "b2345678"])
+    monkeypatch.setattr(
+        "app.services.admin_bootstrap_service._generate_username",
+        lambda: next(generated_names),
+    )
 
     credentials = ensure_bootstrap_admin(isolated_db)
 
     assert credentials is not None
-    assert credentials.username == "admin_2"
+    assert credentials.username == "b2345678"
     assert isolated_db.query(User).count() == 2
 
 

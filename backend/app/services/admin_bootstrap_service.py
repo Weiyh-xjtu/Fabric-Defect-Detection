@@ -15,6 +15,13 @@ from app.entity.db_models import Role, User, UserRole
 
 
 BOOTSTRAP_LOCK_KEY = 0x464142524943
+BOOTSTRAP_USERNAME_LETTERS = "abcdefghjkmnpqrstuvwxyz"
+BOOTSTRAP_USERNAME_ALPHABET = f"{BOOTSTRAP_USERNAME_LETTERS}23456789"
+BOOTSTRAP_USERNAME_LENGTH = 8
+BOOTSTRAP_PASSWORD_ALPHABET = (
+    "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
+)
+BOOTSTRAP_PASSWORD_LENGTH = 10
 
 
 @dataclass(frozen=True)
@@ -59,15 +66,27 @@ def _system_admin_role(db: Session) -> Role:
 
 
 def _generate_password() -> str:
-    """生成高强度、便于终端复制的一次性随机密码。"""
-    return secrets.token_urlsafe(24)
+    """生成固定 10 位、便于终端复制的一次性随机密码。"""
+    return "".join(
+        secrets.choice(BOOTSTRAP_PASSWORD_ALPHABET)
+        for _ in range(BOOTSTRAP_PASSWORD_LENGTH)
+    )
 
 
-def _available_identity(db: Session, base_username: str = "admin") -> tuple[str, str]:
-    """为自动创建账号选择不与现有用户名或邮箱冲突的身份。"""
-    suffix = 1
+def _generate_username() -> str:
+    """生成以字母开头、不含易混淆字符的 8 位随机用户名。"""
+    first = secrets.choice(BOOTSTRAP_USERNAME_LETTERS)
+    remainder = "".join(
+        secrets.choice(BOOTSTRAP_USERNAME_ALPHABET)
+        for _ in range(BOOTSTRAP_USERNAME_LENGTH - 1)
+    )
+    return f"{first}{remainder}"
+
+
+def _available_identity(db: Session) -> tuple[str, str]:
+    """为自动创建账号随机选择不与现有用户名或邮箱冲突的身份。"""
     while True:
-        username = base_username if suffix == 1 else f"{base_username}_{suffix}"
+        username = _generate_username()
         email = f"{username}@localhost.invalid"
         occupied = (
             db.query(User.id)
@@ -76,7 +95,6 @@ def _available_identity(db: Session, base_username: str = "admin") -> tuple[str,
         )
         if occupied is None:
             return username, email
-        suffix += 1
 
 
 def _grant_admin_role(db: Session, user: User, role: Role) -> None:
