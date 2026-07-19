@@ -330,7 +330,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   width: $sidebar-width;
-  margin-right: 23px;
   height: 100%;
   overflow: visible;
   font-size: 14px;
