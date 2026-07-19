@@ -65,12 +65,33 @@ def init_rbac():
         db.close()
 
 
+def init_bootstrap_admin():
+    """系统无管理员时创建一次性管理员，并仅在交互式终端显示凭据。"""
+    from app.database.session import SessionLocal
+    from app.services.admin_bootstrap_service import (
+        ensure_bootstrap_admin,
+        print_admin_credentials,
+    )
+
+    db = SessionLocal()
+    try:
+        credentials = ensure_bootstrap_admin(db)
+        if credentials is not None:
+            print_admin_credentials(credentials)
+    except Exception as e:
+        db.rollback()
+        print(f"管理员账号初始化失败: {e}")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
     print("正在初始化服务...")
     init_rbac()
+    init_bootstrap_admin()
     init_minio()
     recover_training_history()
     yield
