@@ -5,6 +5,7 @@
 # 用 handle 块隔离 API 与静态资源：try_files 属于重写阶段、
 # 先于 reverse_proxy 执行，不隔离会把 /api/* 重写到 index.html。
 
+# 把 <你的域名> 换成实际域名后再部署到 /etc/caddy/Caddyfile
 <你的域名> {
 	encode zstd gzip
 
