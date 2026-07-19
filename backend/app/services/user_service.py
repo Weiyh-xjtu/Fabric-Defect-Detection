@@ -175,10 +175,22 @@ class UserService:
             minio = MinIOClient(ensure_bucket=False)
             if avatar.startswith(("http://", "https://")):
                 object_name = minio.object_name_from_url(avatar)
-                return minio.get_presigned_url(object_name) if object_name else avatar
-            return minio.presign_from_url_or_name(avatar)
+                return (
+                    minio.browser_url_from_url_or_name(
+                        object_name,
+                        filename="avatar.jpg",
+                        content_type="image/jpeg",
+                    )
+                    if object_name
+                    else avatar
+                )
+            return minio.browser_url_from_url_or_name(
+                avatar,
+                filename="avatar.jpg",
+                content_type="image/jpeg",
+            )
         except Exception as exc:
-            logger.warning("MinIO 不可用，头像地址无法换签: %s", str(exc))
+            logger.warning("头像代理地址生成失败: %s", str(exc))
             return avatar if avatar.startswith(("http://", "https://")) else None
 
     @staticmethod

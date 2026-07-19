@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 35
+    FILE_ACCESS_TOKEN_EXPIRE_MINUTES: int = 7 * 24 * 60
     REFRESH_COOKIE_NAME: str = "rsod_refresh_token"
     REFRESH_COOKIE_SECURE: bool = False
 

@@ -134,12 +134,53 @@ class MinIOClient:
             return None
         from urllib.parse import unquote, urlparse
 
-        path = urlparse(url).path.lstrip("/")
+        parsed_path = urlparse(url).path
+        file_proxy_prefix = "/api/files/"
+        if parsed_path.startswith(file_proxy_prefix):
+            from app.services.file_access_service import decode_file_access_token
+
+            token = parsed_path[len(file_proxy_prefix):]
+            try:
+                return decode_file_access_token(token)["object_name"]
+            except ValueError:
+                return None
+
+        path = parsed_path.lstrip("/")
         prefix = f"{self.bucket_name}/"
         if not path.startswith(prefix):
             return None
         object_name = path[len(prefix):]
         return unquote(object_name) or None
+
+    def browser_url_from_url_or_name(
+        self,
+        value: str,
+        *,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> str | None:
+        """Convert a MinIO reference into a same-origin short-lived proxy URL."""
+        if not value:
+            return None
+        if value.startswith("/api/files/"):
+            return value
+        object_name = (
+            self.object_name_from_url(value)
+            if value.startswith(("http://", "https://"))
+            else value
+        )
+        if not object_name:
+            return None
+        from app.services.file_access_service import create_file_access_url
+
+        try:
+            return create_file_access_url(
+                object_name,
+                filename=filename,
+                content_type=content_type,
+            )
+        except ValueError:
+            return None
 
     def presign_from_url_or_name(self, value: str) -> str | None:
         """
@@ -150,7 +191,7 @@ class MinIOClient:
             return None
         object_name = (
             self.object_name_from_url(value)
-            if value.startswith(("http://", "https://"))
+            if value.startswith(("http://", "https://", "/api/files/"))
             else value
         )
         if not object_name:

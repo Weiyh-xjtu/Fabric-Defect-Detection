@@ -356,6 +356,9 @@ class _FakeMinio:
 
     bucket_name = "bucket"
 
+    def __init__(self, ensure_bucket=True):
+        self.ensure_bucket = ensure_bucket
+
     def upload_file(self, object_name, file_path, content_type="application/octet-stream"):
         return f"http://minio/{self.bucket_name}/{object_name}?uploaded=1"
 
@@ -372,6 +375,19 @@ class _FakeMinio:
             return None
         name = self.object_name_from_url(value) if value.startswith("http") else value
         return f"http://minio/{self.bucket_name}/{name}?fresh=1" if name else None
+
+    def browser_url_from_url_or_name(
+        self,
+        value,
+        *,
+        filename=None,
+        content_type=None,
+    ):
+        del filename, content_type
+        if not value:
+            return None
+        name = self.object_name_from_url(value) if value.startswith("http") else value
+        return f"/api/files/{name}" if name else None
 
 
 def test_upload_user_attachment_refs_stores_only_minio_reference(monkeypatch, tmp_path):
@@ -455,13 +471,13 @@ def test_resign_attachments_reissues_fresh_urls(monkeypatch):
     resolved = chat_api._resign_attachments(stored)
 
     by_type = {ref["type"]: ref for ref in resolved}
-    assert by_type["image"]["url"] == "http://minio/bucket/chat-originals/1/a.jpg?fresh=1"
+    assert by_type["image"]["url"] == "/api/files/chat-originals/1/a.jpg"
     assert by_type["image"]["source"] == "user"
     assert by_type["image"]["filename"] == "original.jpg"
     assert by_type["image"]["content_type"] == "image/jpeg"
     assert by_type["image"]["size"] == 123
-    assert by_type["video"]["url"] == "http://minio/bucket/detections/3/v.mp4?fresh=1"
-    assert by_type["images"]["images"][0]["url"] == "http://minio/bucket/detections/2/b.jpg?fresh=1"
+    assert by_type["video"]["url"] == "/api/files/detections/3/v.mp4"
+    assert by_type["images"]["images"][0]["url"] == "/api/files/detections/2/b.jpg"
 
 
 def test_resign_attachments_empty_is_noop():
