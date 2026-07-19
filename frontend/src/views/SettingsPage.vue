@@ -10,6 +10,40 @@
         <el-card shadow="hover">
           <template #header>个人信息</template>
           <el-form ref="profileFormRef" :model="profileForm" :rules="profileRules" label-width="80px">
+            <el-form-item label="头像">
+              <div class="avatar-editor">
+                <el-avatar :size="88" :src="profileForm.avatar || undefined">
+                  {{ profileForm.username?.charAt(0)?.toUpperCase() }}
+                </el-avatar>
+                <div class="avatar-actions">
+                  <div>
+                    <input
+                      ref="avatarInputRef"
+                      class="avatar-file-input"
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      @change="handleAvatarSelected"
+                    />
+                    <el-button
+                      type="primary"
+                      plain
+                      :loading="avatarLoading"
+                      @click="chooseAvatar"
+                    >
+                      {{ profileForm.avatar ? '更换头像' : '上传头像' }}
+                    </el-button>
+                    <el-button
+                      v-if="profileForm.avatar"
+                      :disabled="avatarLoading"
+                      @click="removeAvatar"
+                    >
+                      恢复默认
+                    </el-button>
+                  </div>
+                  <span>支持 JPG、PNG、WebP，文件不超过 5 MB</span>
+                </div>
+              </div>
+            </el-form-item>
             <el-form-item label="用户名">
               <el-input :model-value="profileForm.username" disabled />
             </el-form-item>
@@ -66,9 +100,10 @@
 </template>
 
 <script setup>
+import { removeUserAvatar, uploadUserAvatar } from '@/api/user'
 import { useUserStore } from '@/stores/user'
 import request from '@/utils/request'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -76,9 +111,17 @@ const router = useRouter()
 const userStore = useUserStore()
 const profileFormRef = ref(null)
 const passwordFormRef = ref(null)
+const avatarInputRef = ref(null)
 const profileLoading = ref(false)
 const passwordLoading = ref(false)
-const profileForm = reactive({ username: '', email: '', phone: '', created_at: null })
+const avatarLoading = ref(false)
+const profileForm = reactive({
+  username: '',
+  email: '',
+  phone: '',
+  avatar: '',
+  created_at: null,
+})
 const passwordForm = reactive({ old_password: '', new_password: '', confirm_password: '' })
 const profileRules = {
   email: [
@@ -115,9 +158,74 @@ async function loadUserInfo() {
     profileForm.username = user.username
     profileForm.email = user.email
     profileForm.phone = user.phone || ''
+    profileForm.avatar = user.avatar || ''
     profileForm.created_at = user.created_at
   } catch (error) {
     console.error('[用户信息加载失败]', error)
+  }
+}
+
+function chooseAvatar() {
+  avatarInputRef.value?.click()
+}
+
+async function handleAvatarSelected(event) {
+  const input = event.target
+  const file = input.files?.[0]
+  if (!file) return
+
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
+  if (!allowedTypes.includes(file.type)) {
+    ElMessage.warning('头像仅支持 JPG、PNG 或 WebP 格式')
+    input.value = ''
+    return
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    ElMessage.warning('头像图片不能超过 5 MB')
+    input.value = ''
+    return
+  }
+
+  avatarLoading.value = true
+  try {
+    const result = await uploadUserAvatar(file)
+    profileForm.avatar = result.user?.avatar || ''
+    await userStore.fetchUserInfo()
+    profileForm.avatar = userStore.avatar || profileForm.avatar
+    ElMessage.success('头像已更新')
+  } catch (error) {
+    console.error('[头像上传失败]', error)
+  } finally {
+    avatarLoading.value = false
+    input.value = ''
+  }
+}
+
+async function removeAvatar() {
+  try {
+    await ElMessageBox.confirm(
+      '确定移除当前头像并恢复为用户名首字母吗？',
+      '恢复默认头像',
+      {
+        type: 'warning',
+        confirmButtonText: '恢复默认',
+        cancelButtonText: '取消',
+      },
+    )
+  } catch {
+    return
+  }
+
+  avatarLoading.value = true
+  try {
+    await removeUserAvatar()
+    profileForm.avatar = ''
+    await userStore.fetchUserInfo()
+    ElMessage.success('已恢复默认头像')
+  } catch (error) {
+    console.error('[头像移除失败]', error)
+  } finally {
+    avatarLoading.value = false
   }
 }
 
@@ -168,6 +276,13 @@ function resetPasswordForm() {
 }
 
 onMounted(loadUserInfo)
+
+defineExpose({
+  avatarLoading,
+  profileForm,
+  handleAvatarSelected,
+  removeAvatar,
+})
 </script>
 
 <style lang="scss" scoped>
@@ -182,7 +297,37 @@ onMounted(loadUserInfo)
 }
 .settings-row { row-gap: 24px; }
 .about-card { margin-top: 24px; }
+.avatar-editor {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+
+  .el-avatar {
+    flex-shrink: 0;
+    font-size: 30px;
+  }
+}
+.avatar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  span {
+    color: $text-secondary;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}
+.avatar-file-input { display: none; }
 @media (max-width: 768px) {
+  .avatar-editor { align-items: flex-start; }
+  .avatar-actions > div {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    .el-button { margin-left: 0; }
+  }
   .about-card :deep(.el-descriptions__body) { overflow-x: auto; }
 }
 </style>

@@ -1,8 +1,12 @@
-"""用户注册、认证、资料与角色查询服务。"""
+"""用户注册、认证、资料、头像与角色查询服务。"""
+import io
+import uuid
+import warnings
 from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -15,8 +19,15 @@ from app.core.security import (
 from app.core.logger import get_logger
 from app.core.rbac import QUALITY_INSPECTOR, SYSTEM_ADMIN, get_user_permission_codes
 from app.entity.db_models import Role, RolePermission, User, UserRole
+from app.storage.minio_client import MinIOClient
 
 logger = get_logger(__name__)
+
+AVATAR_MAX_FILE_SIZE = 5 * 1024 * 1024
+AVATAR_MAX_PIXELS = 40_000_000
+AVATAR_OUTPUT_SIZE = (512, 512)
+ALLOWED_AVATAR_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+ALLOWED_AVATAR_FORMATS = {"JPEG", "PNG", "WEBP"}
 
 
 class UserService:
@@ -155,6 +166,21 @@ class UserService:
         }
 
     @staticmethod
+    def resolve_avatar_url(avatar: str | None) -> str | None:
+        """把数据库中的永久对象名转换为可访问 URL，并兼容历史外部 URL。"""
+        if not avatar:
+            return None
+        try:
+            minio = MinIOClient(ensure_bucket=False)
+            if avatar.startswith(("http://", "https://")):
+                object_name = minio.object_name_from_url(avatar)
+                return minio.get_presigned_url(object_name) if object_name else avatar
+            return minio.presign_from_url_or_name(avatar)
+        except Exception as exc:
+            logger.warning("MinIO 不可用，头像地址无法换签: %s", str(exc))
+            return avatar if avatar.startswith(("http://", "https://")) else None
+
+    @staticmethod
     def _serialize_user(user: User, db: Session | None = None) -> dict:
         """序列化用户信息，排除密码等敏感字段。"""
         return {
@@ -162,7 +188,7 @@ class UserService:
             "username": user.username,
             "email": user.email,
             "phone": user.phone,
-            "avatar": user.avatar,
+            "avatar": UserService.resolve_avatar_url(user.avatar),
             "is_active": bool(user.is_active),
             "is_superuser": bool(user.is_superuser),
             "roles": [user_role.role.name for user_role in user.user_roles],
@@ -326,6 +352,144 @@ class UserService:
         logger.info("用户 %s 更新了个人信息", user.username)
         return {
             "message": "个人信息已更新",
+            "user": UserService._serialize_user(user, db),
+        }
+
+    @staticmethod
+    def _prepare_avatar(image_data: bytes, content_type: str | None) -> bytes:
+        """校验并标准化头像，避免直接保存未经检查的用户文件。"""
+        if not image_data:
+            raise HTTPException(status_code=400, detail="请选择头像图片")
+        if len(image_data) > AVATAR_MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="头像图片不能超过 5 MB")
+        if content_type not in ALLOWED_AVATAR_CONTENT_TYPES:
+            raise HTTPException(status_code=400, detail="头像仅支持 JPG、PNG 或 WebP 格式")
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(image_data)) as source:
+                    if source.format not in ALLOWED_AVATAR_FORMATS:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="头像仅支持 JPG、PNG 或 WebP 格式",
+                        )
+                    width, height = source.size
+                    if width <= 0 or height <= 0 or width * height > AVATAR_MAX_PIXELS:
+                        raise HTTPException(status_code=400, detail="头像图片尺寸过大")
+                    source.load()
+                    image = ImageOps.exif_transpose(source)
+                    if image.mode in {"RGBA", "LA"} or (
+                        image.mode == "P" and "transparency" in image.info
+                    ):
+                        rgba = image.convert("RGBA")
+                        background = Image.new("RGBA", rgba.size, "white")
+                        background.alpha_composite(rgba)
+                        image = background.convert("RGB")
+                    else:
+                        image = image.convert("RGB")
+                    image = ImageOps.fit(
+                        image,
+                        AVATAR_OUTPUT_SIZE,
+                        method=Image.Resampling.LANCZOS,
+                    )
+                    output = io.BytesIO()
+                    image.save(output, format="JPEG", quality=88, optimize=True)
+                    return output.getvalue()
+        except HTTPException:
+            raise
+        except (
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+            UnidentifiedImageError,
+            OSError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(status_code=400, detail="无法识别或处理该头像图片") from exc
+
+    @staticmethod
+    def update_avatar(
+        db: Session,
+        user_id: int,
+        image_data: bytes,
+        content_type: str | None,
+    ) -> dict:
+        """上传并替换当前用户头像，数据库只保存 MinIO 永久对象名。"""
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+
+        avatar_data = UserService._prepare_avatar(image_data, content_type)
+        try:
+            minio = MinIOClient()
+            object_name = f"avatars/{user.id}/{uuid.uuid4().hex}.jpg"
+            minio.upload_bytes(object_name, avatar_data, content_type="image/jpeg")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("用户 %s 上传头像失败", user.username)
+            raise HTTPException(status_code=503, detail="头像存储服务暂不可用") from exc
+
+        old_avatar = user.avatar
+        try:
+            user.avatar = object_name
+            db.commit()
+            db.refresh(user)
+        except Exception:
+            db.rollback()
+            try:
+                minio.delete_file(object_name)
+            except Exception:
+                logger.warning("回滚头像更新时未能清理对象 %s", object_name)
+            raise
+
+        old_object_name = None
+        if old_avatar:
+            old_object_name = (
+                minio.object_name_from_url(old_avatar)
+                if old_avatar.startswith(("http://", "https://"))
+                else old_avatar
+            )
+        if old_object_name and old_object_name.startswith(f"avatars/{user.id}/"):
+            try:
+                minio.delete_file(old_object_name)
+            except Exception as exc:
+                logger.warning("旧头像对象清理失败 %s: %s", old_object_name, str(exc))
+
+        logger.info("用户 %s 更新了头像", user.username)
+        return {
+            "message": "头像已更新",
+            "user": UserService._serialize_user(user, db),
+        }
+
+    @staticmethod
+    def remove_avatar(db: Session, user_id: int) -> dict:
+        """移除当前头像，前端将回退为用户名首字母。"""
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+
+        old_avatar = user.avatar
+        user.avatar = None
+        db.commit()
+        db.refresh(user)
+
+        if old_avatar:
+            try:
+                minio = MinIOClient()
+                old_object_name = (
+                    minio.object_name_from_url(old_avatar)
+                    if old_avatar.startswith(("http://", "https://"))
+                    else old_avatar
+                )
+                if old_object_name and old_object_name.startswith(f"avatars/{user.id}/"):
+                    minio.delete_file(old_object_name)
+            except Exception as exc:
+                logger.warning("移除头像后对象清理失败: %s", str(exc))
+
+        logger.info("用户 %s 移除了头像", user.username)
+        return {
+            "message": "已恢复默认头像",
             "user": UserService._serialize_user(user, db),
         }
 
