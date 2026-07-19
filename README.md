@@ -37,6 +37,52 @@ FastAPI :8000
 
 浏览器使用相对地址 `/api` 请求后端。头像、聊天附件和检测图片使用 `/api/files/{token}` 访问，由 FastAPI 从 MinIO 流式转发，因此远程使用时无需向浏览器开放 MinIO 端口。
 
+## 多 Agent 智能对话架构
+
+“智能对话”页面背后是一套基于 LangGraph + LangChain 的多 Agent 编排系统，入口为 `POST /api/chat/stream`（SSE 流式返回），核心代码位于 `backend/app/agent/`。
+
+### 整体流程
+
+```text
+用户消息
+  │
+  ▼
+Supervisor（意图识别与任务规划）
+  │  输出 JSON 子任务计划：[{agent, task, depends_on}, ...]
+  ▼
+Detection / Analysis / QA 专家（按依赖关系并行执行）
+  │  各自调用工具，事件实时透传前端
+  ▼
+汇总合并 → 单一有序 SSE 流 → 前端分节渲染
+```
+
+- **Supervisor**（`supervisor.py`）：调用 LLM 将一条消息规划为一个或多个子任务，标注专家和 `depends_on` 依赖；对依赖做合法性清洗（去自引用、去悬空引用、检测到依赖环时整体降级为并行）。LLM 不可用或输出非法时逐级降级：先尝试单标签解析，再退到关键词规则（关键词降级刻意只路由单专家）。
+- **状态图**（`graph.py`）：LangGraph `StateGraph`，入口为 supervisor 节点，条件路由返回节点名列表实现复合意图的并行扇出，各专家写入独立的 `*_result` 状态键后由 summarize 汇聚一次。
+- **运行时编排器**（`multi_agent.py` 的 `MultiAgentOrchestrator`）：每个专家一个 asyncio 任务并行执行；有 `depends_on` 的专家会等待上游完成，并把上游输出注入自己的任务 prompt。`tool_call`/`tool_result` 事件实时透传（带 `agent` 标签），文本按计划顺序合并为带分节标题的单一流。单个专家失败在其分节内显示 ⚠️ 提示，全部失败时才发顶层 `error` 事件。
+
+### 三个专家 Agent
+
+每个专家都是 LangChain OpenAI-tools ReAct Agent（`detection_agent.py`），配备各自作用域内的 `@tool` 工具：
+
+| 专家 | 职责 | 工具 |
+| --- | --- | --- |
+| 检测专家 `detection` | 对聊天附件执行 YOLO 检测 | `list_session_attachments`、`detect_single_image`、`detect_batch_images`、`detect_zip_images_file`、`detect_video_file` |
+| 数据分析 `analysis` | 只读检测统计与系统信息查询 | `query_detection_statistics`、`query_detection_trends`、`query_system_users`、`query_system_roles` |
+| 知识问答 `qa` | 知识库检索与领域问答 | `search_knowledge`（pgvector 检索，不可用时降级词法检索并向用户说明） |
+
+### 已实现的能力
+
+- **复合意图并行处理**：如“检测这张图片，并告诉我什么是 YOLO”会被拆为检测 + 问答两个子任务并行执行，回复按专家分节展示。
+- **子任务依赖编排**：如“先统计今日检测数量，再结合结果给出建议”，下游专家会等待上游结果并在其基础上作答。
+- **附件检测**：通过 `POST /api/chat/upload` 上传图片/ZIP/视频后在对话中触发检测；附件路径随会话持久化，支持“再检测一次”和历史附件复检。
+- **上下文安全注入**：工具是模块级函数，用户 id、场景 id、会话 id、附件名等按请求通过 `contextvars` 注入，不经过 LLM 参数传递，避免越权。
+- **双通道结果**：检测工具给 LLM 的返回会剥离 base64 标注图（节省 token），完整结果（含标注图）经 contextvar 在 `on_tool_end` 时单独发给前端。
+- **会话记忆**：`conversation_memory`（`memory.py`）按会话 id 保存多轮上下文，同时 `ChatSession`/`ChatMessage` 落库；并行模式下由编排器统一写一次记忆。
+- **权限感知**：工具执行前校验当前用户 RBAC 权限，无权限时返回明确提示而不是数据。
+- **多级降级**：LLM 规划失败 → 单标签解析 → 关键词规则；向量检索失败 → 词法检索；保证离线/异常场景下对话仍可用。
+
+LLM 客户端由 `create_llm()` 构建，兼容 OpenAI 协议，通常配置为 Qwen/DashScope（见下文“配置聊天模型和 Embedding”）。
+
 ## 技术栈
 
 | 层级 | 技术 |
