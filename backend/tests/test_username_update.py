@@ -1,6 +1,8 @@
 """当前用户修改用户名的行为测试。"""
 from app.entity.db_models import User
 
+TEST_CLIENT_IP = "198.51.100.77"
+
 
 def _register(client, username: str) -> dict:
     response = client.post(
@@ -10,6 +12,7 @@ def _register(client, username: str) -> dict:
             "email": f"{username}@example.com",
             "password": "123456",
         },
+        headers={"x-forwarded-for": TEST_CLIENT_IP},
     )
     assert response.status_code == 201
     return response.json()
@@ -19,9 +22,13 @@ def _login_headers(client, username: str) -> dict[str, str]:
     response = client.post(
         "/api/auth/login",
         json={"username": username, "password": "123456"},
+        headers={"x-forwarded-for": TEST_CLIENT_IP},
     )
     assert response.status_code == 200
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+    return {
+        "Authorization": f"Bearer {response.json()['access_token']}",
+        "x-forwarded-for": TEST_CLIENT_IP,
+    }
 
 
 def test_username_can_be_changed_but_cannot_duplicate_another_user(
@@ -57,11 +64,13 @@ def test_username_can_be_changed_but_cannot_duplicate_another_user(
     old_login = client.post(
         "/api/auth/login",
         json={"username": "rename_original", "password": "123456"},
+        headers={"x-forwarded-for": TEST_CLIENT_IP},
     )
     assert old_login.status_code == 401
     assert client.post(
         "/api/auth/login",
         json={"username": "rename_updated", "password": "123456"},
+        headers={"x-forwarded-for": TEST_CLIENT_IP},
     ).status_code == 200
 
     db_session.expire_all()
