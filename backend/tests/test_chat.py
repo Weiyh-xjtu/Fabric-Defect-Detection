@@ -49,6 +49,56 @@ def _remove_uploaded(attachments):
             pass
 
 
+def test_update_session_title_only_updates_current_users_session(
+    chat_client,
+    db_session,
+):
+    from app.entity.db_models import ChatSession
+
+    own_uuid = f"rename-own-{uuid.uuid4().hex}"
+    other_uuid = f"rename-other-{uuid.uuid4().hex}"
+    own_session = ChatSession(
+        user_id=1,
+        session_uuid=own_uuid,
+        title="原标题",
+        message_count=2,
+    )
+    other_session = ChatSession(
+        user_id=2,
+        session_uuid=other_uuid,
+        title="其他用户标题",
+        message_count=1,
+    )
+    db_session.add_all([own_session, other_session])
+    db_session.commit()
+
+    try:
+        response = chat_client.patch(
+            f"/api/chat/sessions/{own_uuid}",
+            json={"title": "  更新后的标题  "},
+        )
+        assert response.status_code == 200
+        assert response.json()["title"] == "更新后的标题"
+        db_session.refresh(own_session)
+        assert own_session.title == "更新后的标题"
+
+        forbidden = chat_client.patch(
+            f"/api/chat/sessions/{other_uuid}",
+            json={"title": "越权修改"},
+        )
+        assert forbidden.status_code == 404
+
+        blank = chat_client.patch(
+            f"/api/chat/sessions/{own_uuid}",
+            json={"title": "   "},
+        )
+        assert blank.status_code == 422
+    finally:
+        db_session.delete(own_session)
+        db_session.delete(other_session)
+        db_session.commit()
+
+
 def test_upload_multiple_images(chat_client):
     response = chat_client.post(
         "/api/chat/upload",

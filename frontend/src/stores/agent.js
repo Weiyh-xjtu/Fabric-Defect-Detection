@@ -12,6 +12,7 @@ import {
   deleteChatSession,
   getChatSessionHistory,
   getChatSessions,
+  updateChatSessionTitle,
 } from '@/api/chat'
 import { parseToolResult } from '@/utils/toolChain'
 
@@ -287,6 +288,16 @@ export const useAgentStore = defineStore('agent', {
       if (this.currentSessionId === sessionUuid) {
         this.newChat()
       }
+    },
+
+    /** 修改会话标题并同步本地会话列表。 */
+    async renameSession(sessionUuid, title) {
+      const updated = await updateChatSessionTitle(sessionUuid, title)
+      const session = this.sessions.find(
+        (item) => item.session_uuid === sessionUuid,
+      )
+      if (session) Object.assign(session, updated)
+      return updated
     },
 
     /** 新建对话 */

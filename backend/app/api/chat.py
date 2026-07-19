@@ -29,6 +29,7 @@ from app.core.rbac import CHAT_USE
 from app.core.logger import get_logger
 from app.database.session import SessionLocal, get_db
 from app.entity.db_models import ChatMessage, ChatSession
+from app.entity.schemas import ChatSessionTitleUpdate
 from app.agent.memory import conversation_memory
 from app.storage.minio_client import MinIOClient
 
@@ -451,6 +452,37 @@ def get_session_history(
             }
             for item in session.messages
         ],
+    }
+
+
+@router.patch("/sessions/{session_uuid}", summary="修改会话标题")
+def update_session_title(
+    session_uuid: str,
+    payload: ChatSessionTitleUpdate,
+    current_user=Depends(require_permission(CHAT_USE)),
+    db: Session = Depends(get_db),
+) -> dict:
+    session = db.query(ChatSession).filter(
+        ChatSession.user_id == current_user.id,
+        ChatSession.session_uuid == session_uuid,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="会话标题不能为空")
+
+    session.title = title
+    db.commit()
+    db.refresh(session)
+    return {
+        "id": session.id,
+        "session_uuid": session.session_uuid,
+        "title": session.title,
+        "message_count": session.message_count,
+        "last_message_at": session.last_message_at,
+        "created_at": session.created_at,
     }
 
 
