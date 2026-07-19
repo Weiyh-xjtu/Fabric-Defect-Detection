@@ -52,8 +52,18 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
+        <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="!row.scene"
+              size="small"
+              text
+              type="warning"
+              :disabled="!row.ready"
+              @click="openRegisterDialog(row)"
+            >
+              登记
+            </el-button>
             <el-button size="small" text type="primary" :disabled="!row.ready" @click="openEditDialog(row)">
               编辑名称
             </el-button>
@@ -65,22 +75,32 @@
       </el-table>
     </el-card>
 
-    <!-- ── 编辑名称对话框（英文名锁定，仅中文名可改） ── -->
+    <!-- ── 编辑名称对话框：已登记仅中文名可改，未登记全部可改 ── -->
     <el-dialog v-model="editVisible" title="编辑名称" width="560px">
+      <el-alert
+        v-if="!editForm.sceneSynced"
+        title="该数据集未登记场景，尚未参与训练：数据集名与英文类别名均可修改（不可与已有重名）"
+        type="info"
+        :closable="false"
+        class="stage-alert"
+      />
       <el-form label-width="110px">
-        <el-form-item label="场景显示名">
-          <el-input
-            v-model="editForm.displayName"
-            :placeholder="editForm.sceneSynced ? '' : '该数据集未登记场景，仅更新 data.yaml'"
-            :disabled="!editForm.sceneSynced"
-            maxlength="100"
-          />
+        <el-form-item v-if="!editForm.sceneSynced" label="数据集名">
+          <el-input v-model="editForm.newName" placeholder="小写字母/数字/下划线" maxlength="50" />
         </el-form-item>
-        <el-form-item label="类别中文名">
+        <el-form-item v-if="editForm.sceneSynced" label="场景显示名">
+          <el-input v-model="editForm.displayName" maxlength="100" />
+        </el-form-item>
+        <el-form-item label="类别名称">
           <div class="cn-name-rows">
-            <div v-for="name in editForm.classNames" :key="name" class="cn-name-row">
-              <el-tooltip content="英文名已写入模型权重，修改需重新训练" placement="left">
-                <span class="en-name"><el-icon><Lock /></el-icon>{{ name }}</span>
+            <div v-for="(name, idx) in editForm.classNames" :key="idx" class="cn-name-row">
+              <template v-if="editForm.sceneSynced">
+                <el-tooltip content="英文名已写入模型权重，修改需重新训练" placement="left">
+                  <span class="en-name"><el-icon><Lock /></el-icon>{{ name }}</span>
+                </el-tooltip>
+              </template>
+              <el-tooltip v-else content="未登记数据集可修改英文名，登记后锁定" placement="left">
+                <el-input v-model="editForm.newClassNames[idx]" class="en-name-input" placeholder="英文名" maxlength="50" />
               </el-tooltip>
               <el-input
                 v-model="editForm.classNamesCn[name]"
@@ -94,6 +114,37 @@
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="submitEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ── 登记对话框 ── -->
+    <el-dialog v-model="registerVisible" title="登记为检测场景" width="480px">
+      <el-alert
+        title="登记后场景将出现在训练与检测流程中，英文类别名与数据集名随之锁定"
+        type="warning"
+        :closable="false"
+        class="stage-alert"
+      />
+      <el-form label-width="110px">
+        <el-form-item label="数据集">
+          <span>{{ registerForm.name }}</span>
+        </el-form-item>
+        <el-form-item label="场景显示名" required>
+          <el-input v-model="registerForm.displayName" placeholder="如：织物缺陷检测" maxlength="100" />
+        </el-form-item>
+        <el-form-item label="场景分类">
+          <el-select v-model="registerForm.category">
+            <el-option label="工业" value="industry" />
+            <el-option label="农业" value="agriculture" />
+            <el-option label="遥感" value="remote_sensing" />
+            <el-option label="医疗" value="medical" />
+            <el-option label="交通" value="traffic" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="registerVisible = false">取消</el-button>
+        <el-button type="primary" :loading="registering" @click="submitRegister">确认登记</el-button>
       </template>
     </el-dialog>
 
@@ -134,13 +185,18 @@
           class="stage-alert"
         />
         <el-form label-width="110px">
-          <el-form-item label="场景标识" required>
+          <el-form-item label="仅上传">
+            <el-checkbox v-model="commitForm.uploadOnly">
+              仅上传暂不登记场景（可先编辑数据集名与类别名，之后再登记）
+            </el-checkbox>
+          </el-form-item>
+          <el-form-item :label="commitForm.uploadOnly ? '数据集名' : '场景标识'" required>
             <el-input v-model="commitForm.sceneName" placeholder="小写字母/数字/下划线，即数据集目录名" maxlength="50" />
           </el-form-item>
-          <el-form-item label="场景显示名" required>
+          <el-form-item v-if="!commitForm.uploadOnly" label="场景显示名" required>
             <el-input v-model="commitForm.displayName" placeholder="如：织物缺陷检测" maxlength="100" />
           </el-form-item>
-          <el-form-item label="场景分类">
+          <el-form-item v-if="!commitForm.uploadOnly" label="场景分类">
             <el-select v-model="commitForm.category">
               <el-option label="工业" value="industry" />
               <el-option label="农业" value="agriculture" />
@@ -152,7 +208,7 @@
           <el-form-item label="类别名称">
             <div class="cn-name-rows">
               <div v-for="(name, idx) in commitForm.classNames" :key="idx" class="cn-name-row">
-                <el-tooltip content="英文标签名仅此时可修改，提交后将写入训练配置并锁定" placement="left">
+                <el-tooltip content="英文标签名在登记场景前可修改，登记后锁定" placement="left">
                   <el-input v-model="commitForm.classNames[idx]" class="en-name-input" placeholder="英文名" maxlength="50" />
                 </el-tooltip>
                 <el-input v-model="commitForm.classNamesCn[idx]" placeholder="中文名（可留空）" maxlength="50" />
@@ -255,6 +311,7 @@ import {
   commitDatasetUpload,
   evaluateDataset,
   getDatasets,
+  registerDataset,
   updateDatasetNames,
   uploadDataset,
 } from '@/api/datasets'
@@ -280,14 +337,24 @@ async function fetchDatasets() {
 // ── 编辑名称 ──
 const editVisible = ref(false)
 const saving = ref(false)
-const editForm = ref({ name: '', displayName: '', sceneSynced: false, classNames: [], classNamesCn: {} })
+const editForm = ref({
+  name: '',
+  newName: '',
+  displayName: '',
+  sceneSynced: false,
+  classNames: [],
+  newClassNames: [],
+  classNamesCn: {},
+})
 
 function openEditDialog(row) {
   editForm.value = {
     name: row.name,
+    newName: row.name,
     displayName: row.scene?.display_name || '',
     sceneSynced: !!row.scene,
     classNames: [...row.class_names],
+    newClassNames: [...row.class_names],
     classNamesCn: { ...row.class_names_cn },
   }
   editVisible.value = true
@@ -296,11 +363,24 @@ function openEditDialog(row) {
 async function submitEdit() {
   saving.value = true
   try {
-    await updateDatasetNames(editForm.value.name, {
-      displayName: editForm.value.displayName,
-      classNamesCn: editForm.value.classNamesCn,
-    })
-    ElMessage.success('名称已更新，看板与检测显示将即时跟随')
+    const form = editForm.value
+    const payload = {
+      displayName: form.displayName,
+      classNamesCn: form.classNamesCn,
+    }
+    if (!form.sceneSynced) {
+      // 未登记：支持改数据集名与英文类别名；中文名映射键跟随新英文名
+      const renamed = form.newClassNames.map((n) => n.trim())
+      payload.classNamesCn = {}
+      form.classNames.forEach((oldName, idx) => {
+        const cn = form.classNamesCn[oldName]
+        if (cn) payload.classNamesCn[renamed[idx]] = cn
+      })
+      if (form.newName.trim() !== form.name) payload.newName = form.newName.trim()
+      if (renamed.some((n, idx) => n !== form.classNames[idx])) payload.newClassNames = renamed
+    }
+    await updateDatasetNames(form.name, payload)
+    ElMessage.success('名称已更新')
     editVisible.value = false
     fetchDatasets()
     emit('scenes-changed')
@@ -308,6 +388,38 @@ async function submitEdit() {
     // 拦截器已提示
   } finally {
     saving.value = false
+  }
+}
+
+// ── 登记 ──
+const registerVisible = ref(false)
+const registering = ref(false)
+const registerForm = ref({ name: '', displayName: '', category: 'industry' })
+
+function openRegisterDialog(row) {
+  registerForm.value = { name: row.name, displayName: '', category: 'industry' }
+  registerVisible.value = true
+}
+
+async function submitRegister() {
+  if (!registerForm.value.displayName.trim()) {
+    ElMessage.warning('请填写场景显示名')
+    return
+  }
+  registering.value = true
+  try {
+    await registerDataset(registerForm.value.name, {
+      displayName: registerForm.value.displayName,
+      category: registerForm.value.category,
+    })
+    ElMessage.success('已登记为检测场景，英文类别名与数据集名已锁定')
+    registerVisible.value = false
+    fetchDatasets()
+    emit('scenes-changed')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    registering.value = false
   }
 }
 
@@ -325,6 +437,7 @@ const commitForm = ref({
   category: 'industry',
   classNames: [],
   classNamesCn: [],
+  uploadOnly: false,
 })
 
 function openUploadDialog() {
@@ -350,6 +463,7 @@ async function submitStage() {
       category: 'industry',
       classNames: [...result.class_names],
       classNamesCn: result.class_names.map((n) => result.class_names_cn?.[n] || ''),
+      uploadOnly: false,
     }
     uploadStep.value = 2
   } catch {
@@ -361,8 +475,8 @@ async function submitStage() {
 
 async function submitCommit(overwriteClasses = false) {
   const form = commitForm.value
-  if (!form.sceneName || !form.displayName) {
-    ElMessage.warning('请填写场景标识与显示名')
+  if (!form.sceneName || (!form.uploadOnly && !form.displayName)) {
+    ElMessage.warning(form.uploadOnly ? '请填写数据集名' : '请填写场景标识与显示名')
     return
   }
   committing.value = true
@@ -378,9 +492,12 @@ async function submitCommit(overwriteClasses = false) {
       classNames: form.classNames.map((n) => n.trim()),
       classNamesCn,
       overwriteClasses: overwriteClasses === true,
+      registerScene: !form.uploadOnly,
     })
     ElMessage.success(
-      `数据集 ${result.name} 已就绪：train ${result.split_stats.train} / val ${result.split_stats.val} / test ${result.split_stats.test}`,
+      form.uploadOnly
+        ? `数据集 ${result.name} 已上传（未登记），可继续编辑后登记`
+        : `数据集 ${result.name} 已就绪：train ${result.split_stats.train} / val ${result.split_stats.val} / test ${result.split_stats.test}`,
     )
     uploadVisible.value = false
     fetchDatasets()

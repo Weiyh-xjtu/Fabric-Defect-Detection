@@ -386,3 +386,163 @@ def test_evaluate_missing_dataset_returns_404(client, db_session, datasets_root)
         client.post("/api/datasets/ds_not_exist/evaluate", headers=headers).status_code
         == 404
     )
+
+
+def test_unregistered_dataset_can_rename_classes_and_dataset(
+    client, db_session, datasets_root
+) -> None:
+    """未登记数据集（无场景记录）可改英文类别名与数据集名。"""
+    _make_dataset(datasets_root, "ds_free_demo")
+    headers = _admin_headers(client, db_session, "dataset_free_admin")
+
+    response = client.put(
+        "/api/datasets/ds_free_demo/names",
+        headers=headers,
+        json={
+            "new_name": "ds_free_renamed",
+            "new_class_names": ["big_hole", "oil_mark"],
+            "class_names_cn": {"big_hole": "大洞", "oil_mark": "油渍"},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["name"] == "ds_free_renamed"
+    assert payload["class_names"] == ["big_hole", "oil_mark"]
+    assert payload["scene_synced"] is False
+    # 目录已改名，yaml 内 names/names_cn/path 均已更新
+    assert not (datasets_root / "ds_free_demo").exists()
+    yaml_text = (
+        datasets_root / "ds_free_renamed" / "yolo_dataset" / "data.yaml"
+    ).read_text(encoding="utf-8")
+    assert "0: big_hole" in yaml_text and "1: oil_mark" in yaml_text
+    assert "hole" in yaml_text  # big_hole 含 hole 子串，检查旧独立名不在
+    assert "0: hole" not in yaml_text
+    assert "0: 大洞" in yaml_text
+
+
+def test_registered_dataset_rejects_class_and_dataset_rename(
+    client, db_session, datasets_root
+) -> None:
+    _make_dataset(datasets_root, "ds_locked_demo")
+    _get_or_create_scene(db_session, "ds_locked_demo")
+    headers = _admin_headers(client, db_session, "dataset_locked_admin")
+
+    renamed_classes = client.put(
+        "/api/datasets/ds_locked_demo/names",
+        headers=headers,
+        json={"new_class_names": ["a", "b"]},
+    )
+    renamed_dataset = client.put(
+        "/api/datasets/ds_locked_demo/names",
+        headers=headers,
+        json={"new_name": "ds_locked_other"},
+    )
+
+    assert renamed_classes.status_code == 400
+    assert "已锁定" in renamed_classes.json()["message"]
+    assert renamed_dataset.status_code == 400
+    assert "已锁定" in renamed_dataset.json()["message"]
+
+
+def test_rename_rejects_duplicate_names(client, db_session, datasets_root) -> None:
+    _make_dataset(datasets_root, "ds_dup_a")
+    _make_dataset(datasets_root, "ds_dup_b")
+    _get_or_create_scene(db_session, "ds_dup_scene")
+    headers = _admin_headers(client, db_session, "dataset_dup_admin")
+
+    to_existing_dir = client.put(
+        "/api/datasets/ds_dup_a/names",
+        headers=headers,
+        json={"new_name": "ds_dup_b"},
+    )
+    to_existing_scene = client.put(
+        "/api/datasets/ds_dup_a/names",
+        headers=headers,
+        json={"new_name": "ds_dup_scene"},
+    )
+
+    assert to_existing_dir.status_code == 400
+    assert "不可重名" in to_existing_dir.json()["message"]
+    assert to_existing_scene.status_code == 400
+    assert "已被占用" in to_existing_scene.json()["message"]
+
+
+def test_register_unregistered_dataset(client, db_session, datasets_root) -> None:
+    _make_dataset(datasets_root, "ds_register_demo")
+    headers = _admin_headers(client, db_session, "dataset_register_admin")
+
+    response = client.post(
+        "/api/datasets/ds_register_demo/register",
+        headers=headers,
+        json={"display_name": "登记场景", "category": "industry"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["display_name"] == "登记场景"
+    assert payload["class_names"] == ["hole", "stain"]
+    # 类别中文名从 data.yaml 带入
+    assert payload["class_names_cn"] == {"hole": "破洞", "stain": "污渍"}
+    scene = db_session.query(DetectionScene).filter_by(name="ds_register_demo").one()
+    assert scene.class_names == ["hole", "stain"]
+
+    # 重复登记被拒
+    again = client.post(
+        "/api/datasets/ds_register_demo/register",
+        headers=headers,
+        json={"display_name": "再登记", "category": "industry"},
+    )
+    assert again.status_code == 400
+    assert "重复登记" in again.json()["message"]
+    _deactivate_scene(db_session, "ds_register_demo")
+
+
+def test_upload_commit_without_register_keeps_unregistered(
+    client, db_session, datasets_root
+) -> None:
+    headers = _admin_headers(client, db_session, "dataset_noreg_admin")
+    upload = client.post(
+        "/api/datasets/upload",
+        headers=headers,
+        files={"file": ("pack.zip", _make_upload_zip(), "application/zip")},
+    ).json()
+
+    response = client.post(
+        f"/api/datasets/upload/{upload['upload_id']}/commit",
+        headers=headers,
+        json={
+            "scene_name": "ds_noreg_demo",
+            "category": "industry",
+            "class_names": ["broken", "dirty"],
+            "class_names_cn": {},
+            "register_scene": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["registered"] is False
+    assert payload["scene_id"] is None
+    # 未建场景记录，保持未登记状态
+    assert (
+        db_session.query(DetectionScene).filter_by(name="ds_noreg_demo").first() is None
+    )
+    # 数据已落盘
+    assert (datasets_root / "ds_noreg_demo" / "yolo_dataset" / "data.yaml").is_file()
+
+    # 未登记 → 仍可改英文名，随后可登记
+    rename = client.put(
+        "/api/datasets/ds_noreg_demo/names",
+        headers=headers,
+        json={"new_class_names": ["thread_break", "oil_stain"]},
+    )
+    assert rename.status_code == 200
+    register = client.post(
+        "/api/datasets/ds_noreg_demo/register",
+        headers=headers,
+        json={"display_name": "后补登记", "category": "industry"},
+    )
+    assert register.status_code == 200
+    assert register.json()["class_names"] == ["thread_break", "oil_stain"]
+    _deactivate_scene(db_session, "ds_noreg_demo")

@@ -41,6 +41,31 @@ describe('数据集管理 API', () => {
     expect(put).toHaveBeenCalledWith('/datasets/fdd/names', {
       display_name: '织物缺陷',
       class_names_cn: { hole: '破洞' },
+      new_name: null,
+      new_class_names: null,
+    })
+  })
+
+  it('updateDatasetNames 未登记数据集可携带新名称', async () => {
+    await api.updateDatasetNames('ds_a', {
+      newName: 'ds_b',
+      newClassNames: ['big_hole'],
+      classNamesCn: { big_hole: '大洞' },
+    })
+    expect(put).toHaveBeenCalledWith('/datasets/ds_a/names', {
+      display_name: null,
+      class_names_cn: { big_hole: '大洞' },
+      new_name: 'ds_b',
+      new_class_names: ['big_hole'],
+    })
+  })
+
+  it('registerDataset 登记为场景', async () => {
+    await api.registerDataset('ds_a', { displayName: '新场景', category: 'industry' })
+    expect(post).toHaveBeenCalledWith('/datasets/ds_a/register', {
+      display_name: '新场景',
+      category: 'industry',
+      description: null,
     })
   })
 
@@ -72,7 +97,19 @@ describe('数据集管理 API', () => {
       class_names_cn: { thread_break: '断线' },
       description: null,
       overwrite_classes: true,
+      register_scene: true,
     })
+  })
+
+  it('commitDatasetUpload 仅上传不登记时 register_scene 为 false', async () => {
+    await api.commitDatasetUpload('upload-2', {
+      sceneName: 'raw_pack',
+      classNames: ['hole'],
+      registerScene: false,
+    })
+    const [, body] = post.mock.calls[0]
+    expect(body.register_scene).toBe(false)
+    expect(body.display_name).toBe('')
   })
 
   it('evaluateDataset 默认走缓存，force 时携带参数', async () => {

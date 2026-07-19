@@ -2,9 +2,10 @@
 
 接口列表（均需模型管理权限）：
   - GET    /api/datasets                      数据集列表（含归属场景与类别）
-  - PUT    /api/datasets/{name}/names         修改显示名与类别中文名（双写 yaml+DB）
+  - PUT    /api/datasets/{name}/names         修改名称（已登记仅中文名；未登记可改英文名/数据集名）
+  - POST   /api/datasets/{name}/register      登记未登记数据集为检测场景
   - POST   /api/datasets/upload               上传 zip 暂存并解析（第一段）
-  - POST   /api/datasets/upload/{id}/commit   确认落盘并登记场景（第二段）
+  - POST   /api/datasets/upload/{id}/commit   确认落盘（第二段，可选仅上传不登记）
   - POST   /api/datasets/{name}/evaluate      数据集体检评估（缓存报告）
 """
 
@@ -28,22 +29,38 @@ VALID_CATEGORIES = {"agriculture", "industry", "remote_sensing", "medical", "tra
 
 
 class UpdateNamesRequest(BaseModel):
-    """中文名修改请求；英文类别名不在此接口的可改范围内。"""
+    """名称修改请求。
+
+    已登记数据集仅 display_name/class_names_cn 生效；
+    未登记数据集额外支持 new_name（改数据集名）与
+    new_class_names（整表替换英文类别名）。
+    """
 
     display_name: str | None = Field(None, max_length=100)
     class_names_cn: dict[str, str] = Field(default_factory=dict)
+    new_name: str | None = Field(None, min_length=2, max_length=50)
+    new_class_names: list[str] | None = None
+
+
+class RegisterDatasetRequest(BaseModel):
+    """未登记数据集登记为场景的请求。"""
+
+    display_name: str = Field(..., min_length=1, max_length=100)
+    category: str = Field("industry")
+    description: str | None = None
 
 
 class CommitUploadRequest(BaseModel):
-    """上传确认请求；class_names 是英文名唯一可修改的时机。"""
+    """上传确认请求；register_scene=False 时仅落盘不登记场景。"""
 
     scene_name: str = Field(..., min_length=2, max_length=50)
-    display_name: str = Field(..., min_length=1, max_length=100)
+    display_name: str = Field("", max_length=100)
     category: str = Field("industry")
     class_names: list[str] = Field(..., min_length=1)
     class_names_cn: dict[str, str] = Field(default_factory=dict)
     description: str | None = None
     overwrite_classes: bool = False
+    register_scene: bool = True
 
 
 @router.get("", summary="数据集列表")
@@ -67,6 +84,32 @@ async def update_dataset_names(
             dataset_name,
             display_name=request.display_name,
             class_names_cn=request.class_names_cn,
+            new_name=request.new_name,
+            new_class_names=request.new_class_names,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{dataset_name}/register", summary="登记数据集为检测场景")
+async def register_dataset(
+    dataset_name: str,
+    request: RegisterDatasetRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission(MODEL_MANAGE)),
+):
+    if request.category not in VALID_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"无效场景分类：{request.category}")
+    try:
+        return dataset_service.register(
+            db,
+            dataset_name,
+            display_name=request.display_name,
+            category=request.category,
+            description=request.description,
+            user_id=current_user.id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -110,6 +153,7 @@ async def commit_dataset_upload(
             description=request.description,
             user_id=current_user.id,
             overwrite_classes=request.overwrite_classes,
+            register_scene=request.register_scene,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

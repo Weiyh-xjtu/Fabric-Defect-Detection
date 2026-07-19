@@ -12,6 +12,7 @@ import { flushPromises, shallowMount } from '@vue/test-utils'
 const getDatasets = vi.fn()
 const updateDatasetNames = vi.fn()
 const evaluateDataset = vi.fn()
+const registerDataset = vi.fn()
 
 vi.mock('@/api/datasets', () => ({
   getDatasets: (...args) => getDatasets(...args),
@@ -19,6 +20,7 @@ vi.mock('@/api/datasets', () => ({
   uploadDataset: vi.fn(),
   commitDatasetUpload: vi.fn(),
   evaluateDataset: (...args) => evaluateDataset(...args),
+  registerDataset: (...args) => registerDataset(...args),
 }))
 
 vi.mock('element-plus', () => ({
@@ -91,6 +93,46 @@ describe('DatasetPanel', () => {
     })
     expect(wrapper.emitted('scenes-changed')).toHaveLength(1)
     // 保存后刷新列表
+    expect(getDatasets).toHaveBeenCalledTimes(2)
+  })
+
+  it('未登记数据集保存时携带新数据集名与英文类别名', async () => {
+    const unregistered = {
+      ...SAMPLE_ITEM,
+      name: 'raw_pack',
+      scene: null,
+    }
+    updateDatasetNames.mockResolvedValue({})
+    const wrapper = mountPanel()
+    await flushPromises()
+    wrapper.vm.openEditDialog(unregistered)
+    expect(wrapper.vm.editForm.sceneSynced).toBe(false)
+    wrapper.vm.editForm.newName = 'fabric_pack'
+    wrapper.vm.editForm.newClassNames = ['big_hole', 'stain']
+    await wrapper.vm.submitEdit()
+    await flushPromises()
+    expect(updateDatasetNames).toHaveBeenCalledWith('raw_pack', {
+      displayName: '',
+      // 中文名映射键跟随新英文名迁移
+      classNamesCn: { big_hole: '破洞', stain: '污渍' },
+      newName: 'fabric_pack',
+      newClassNames: ['big_hole', 'stain'],
+    })
+  })
+
+  it('登记对话框提交调用 registerDataset 并刷新', async () => {
+    registerDataset.mockResolvedValue({ scene_id: 9 })
+    const wrapper = mountPanel()
+    await flushPromises()
+    wrapper.vm.openRegisterDialog({ ...SAMPLE_ITEM, name: 'raw_pack', scene: null })
+    wrapper.vm.registerForm.displayName = '登记场景'
+    await wrapper.vm.submitRegister()
+    await flushPromises()
+    expect(registerDataset).toHaveBeenCalledWith('raw_pack', {
+      displayName: '登记场景',
+      category: 'industry',
+    })
+    expect(wrapper.emitted('scenes-changed')).toHaveLength(1)
     expect(getDatasets).toHaveBeenCalledTimes(2)
   })
 

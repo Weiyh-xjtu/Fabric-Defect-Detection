@@ -121,6 +121,38 @@ def _write_data_yaml(
     (yolo_dir / "data.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _update_yaml_names(yaml_path: Path, class_names: list[str]) -> None:
+    """整表替换 data.yaml 的 names 段（未登记数据集改英文名时使用）。
+
+    names 支持两种原始写法（list 或 id 映射），统一重写为 id 映射；
+    其余内容保留原样。
+    """
+    lines = yaml_path.read_text(encoding="utf-8").splitlines()
+    result: list[str] = []
+    skipping = False
+    inserted = False
+    for line in lines:
+        stripped = line.split("#", 1)[0].strip()
+        top_level = line and not line.startswith((" ", "\t"))
+        if skipping:
+            if top_level and stripped:
+                skipping = False
+            else:
+                continue
+        # names: 顶层键（含 "names: ['a', 'b']" 内联写法），排除 names_cn:
+        if top_level and stripped.startswith("names:"):
+            result.append("names:")
+            result.extend(f"  {i}: {name}" for i, name in enumerate(class_names))
+            inserted = True
+            # 内联写法（names: [...]）无缩进子行，跳过逻辑同样安全
+            skipping = True
+            continue
+        result.append(line)
+    if not inserted:
+        result += ["", "names:"] + [f"  {i}: {name}" for i, name in enumerate(class_names)]
+    yaml_path.write_text("\n".join(result) + "\n", encoding="utf-8")
+
+
 def _update_yaml_names_cn(yaml_path: Path, class_names: list[str], cn_map: dict[str, str]) -> None:
     """只重写/追加 data.yaml 的 names_cn 段，保留其余内容原样。"""
     text = yaml_path.read_text(encoding="utf-8")
@@ -229,10 +261,16 @@ class DatasetService:
         *,
         display_name: str | None,
         class_names_cn: dict[str, str],
+        new_name: str | None = None,
+        new_class_names: list[str] | None = None,
     ) -> dict:
-        """双写场景显示名与类别中文名（data.yaml + detection_scenes）。
+        """修改数据集名称配置。
 
-        英文类别名不可修改：入参 cn 映射的键必须是 data.yaml 中已有的英文名。
+        - 已登记（场景表有记录）：仅可改显示名与类别中文名，双写
+          data.yaml 与 detection_scenes；英文类别名与数据集名已锁定。
+        - 未登记：必然未参与训练，额外允许改数据集名（new_name，
+          不得与已有数据集目录/场景重名）与英文类别名（new_class_names，
+          按 id 顺序整表替换）。
         """
         dataset_dir = _safe_dataset_dir(dataset_name)
         yaml_path = dataset_dir / "yolo_dataset" / "data.yaml"
@@ -240,14 +278,60 @@ class DatasetService:
             raise FileNotFoundError(f"数据集 {dataset_name} 未就绪（缺少 yolo_dataset/data.yaml）")
         data = _read_yaml(yaml_path)
         class_names = _names_to_list(data.get("names"))
+        scene = db.query(DetectionScene).filter(DetectionScene.name == dataset_name).first()
+
+        # ── 未登记数据集：英文名/数据集名可改 ──
+        renamed_classes = False
+        if new_class_names is not None and new_class_names != class_names:
+            if scene:
+                raise ValueError("数据集已登记场景，英文类别名已锁定（修改需重新训练）")
+            cleaned = [n.strip() for n in new_class_names]
+            if len(cleaned) != len(class_names):
+                raise ValueError(
+                    f"类别数量不可变更：数据集含 {len(class_names)} 类，提交了 {len(cleaned)} 个"
+                )
+            if any(not n for n in cleaned) or len(set(cleaned)) != len(cleaned):
+                raise ValueError("类别英文名不能为空且不能重复")
+            # 中文名映射键随英文名同步迁移
+            class_names_cn = {
+                cleaned[i]: class_names_cn.get(cleaned[i]) or class_names_cn.get(old) or ""
+                for i, old in enumerate(class_names)
+            }
+            class_names = cleaned
+            renamed_classes = True
+
         unknown = [k for k in class_names_cn if k not in class_names]
         if unknown:
             raise ValueError(f"以下类别不存在于数据集中（英文名不可修改）：{unknown}")
         cn_map = {k: str(v).strip() for k, v in class_names_cn.items() if str(v).strip()}
 
+        if renamed_classes:
+            _update_yaml_names(yaml_path, class_names)
         _update_yaml_names_cn(yaml_path, class_names, cn_map)
 
-        scene = db.query(DetectionScene).filter(DetectionScene.name == dataset_name).first()
+        final_name = dataset_name
+        if new_name and new_name != dataset_name:
+            if scene:
+                raise ValueError("数据集已登记场景，数据集名已锁定")
+            if not SCENE_NAME_PATTERN.match(new_name):
+                raise ValueError("数据集名需为小写字母开头，仅含小写字母/数字/下划线（2~50 字符）")
+            if (_datasets_root() / new_name).exists():
+                raise ValueError(f"数据集 {new_name} 已存在，不可重名")
+            if db.query(DetectionScene.id).filter(DetectionScene.name == new_name).first():
+                raise ValueError(f"场景标识 {new_name} 已被占用，不可重名")
+            dataset_dir.rename(_datasets_root() / new_name)
+            final_name = new_name
+            # data.yaml 内的绝对 path 需跟随目录改名
+            new_yaml = _datasets_root() / new_name / "yolo_dataset" / "data.yaml"
+            text = new_yaml.read_text(encoding="utf-8")
+            new_lines = [
+                f"path: {(_datasets_root() / new_name / 'yolo_dataset').resolve().as_posix()}"
+                if line.split("#", 1)[0].strip().startswith("path:") and not line.startswith((" ", "\t"))
+                else line
+                for line in text.splitlines()
+            ]
+            new_yaml.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
         if scene:
             merged = dict(scene.class_names_cn) if isinstance(scene.class_names_cn, dict) else {}
             for name in class_names:
@@ -260,13 +344,61 @@ class DatasetService:
                 scene.display_name = display_name.strip()
             scene.updated_at = datetime.now()
             db.commit()
-        logger.info("数据集 %s 名称已更新（scene=%s）", dataset_name, bool(scene))
+        logger.info("数据集 %s 名称已更新（scene=%s, renamed=%s）", final_name, bool(scene), final_name != dataset_name)
         return {
-            "name": dataset_name,
+            "name": final_name,
             "display_name": scene.display_name if scene else None,
             "class_names": class_names,
             "class_names_cn": cn_map,
             "scene_synced": scene is not None,
+        }
+
+    # ── 登记 ──
+
+    def register(
+        self,
+        db: Session,
+        dataset_name: str,
+        *,
+        display_name: str,
+        category: str,
+        description: str | None,
+        user_id: int,
+    ) -> dict:
+        """把未登记数据集登记为检测场景（类别取自 data.yaml）。"""
+        dataset_dir = _safe_dataset_dir(dataset_name)
+        yaml_path = dataset_dir / "yolo_dataset" / "data.yaml"
+        if not yaml_path.is_file():
+            raise FileNotFoundError(f"数据集 {dataset_name} 未就绪（缺少 yolo_dataset/data.yaml）")
+        if not display_name.strip():
+            raise ValueError("场景显示名不能为空")
+        if db.query(DetectionScene.id).filter(DetectionScene.name == dataset_name).first():
+            raise ValueError(f"数据集 {dataset_name} 已登记场景，无需重复登记")
+        data = _read_yaml(yaml_path)
+        class_names = _names_to_list(data.get("names"))
+        if not class_names:
+            raise ValueError("data.yaml 缺少 names 类别定义，无法登记")
+        cn_map = _cn_map_from_yaml(data, class_names)
+        scene = DetectionScene(
+            name=dataset_name,
+            display_name=display_name.strip(),
+            description=description,
+            category=category,
+            class_names=class_names,
+            class_names_cn=cn_map,
+            is_active=True,
+            created_by=user_id,
+        )
+        db.add(scene)
+        db.commit()
+        db.refresh(scene)
+        logger.info("数据集 %s 已登记为场景 id=%d", dataset_name, scene.id)
+        return {
+            "name": dataset_name,
+            "scene_id": scene.id,
+            "display_name": scene.display_name,
+            "class_names": class_names,
+            "class_names_cn": cn_map,
         }
 
     # ── 两段式上传 ──
@@ -329,14 +461,19 @@ class DatasetService:
         description: str | None,
         user_id: int,
         overwrite_classes: bool = False,
+        register_scene: bool = True,
     ) -> dict:
         """确认提交：归一化落盘 + 写 data.yaml + upsert 场景表。
 
-        此步骤是英文类别名唯一可修改的时机（class_names 按 id 顺序重命名），
-        落盘后英文名即锁定。
+        register_scene=False 时仅落盘不登记场景（保持"未登记"状态，
+        英文类别名与数据集名仍可后续修改，直到显式登记）。
+        落盘时 class_names 按 id 顺序重命名英文类别名；登记后英文名即锁定。
         """
         if not SCENE_NAME_PATTERN.match(scene_name):
             raise ValueError("场景标识需为小写字母开头，仅含小写字母/数字/下划线（2~50 字符）")
+        if not register_scene:
+            # 仅上传不登记：显示名非必填
+            display_name = display_name or scene_name
         if not display_name.strip():
             raise ValueError("场景显示名不能为空")
         staging = STAGING_DIR / upload_id
@@ -361,6 +498,10 @@ class DatasetService:
 
         # 类别冲突检查：同名场景已有模型版本时，静默改类别会导致口径错乱
         scene = db.query(DetectionScene).filter(DetectionScene.name == scene_name).first()
+        if scene and not register_scene:
+            raise ValueError(
+                f"场景标识 {scene_name} 已登记场景，仅上传模式请换用其他名称"
+            )
         if scene and not overwrite_classes:
             old = scene.class_names if isinstance(scene.class_names, list) else []
             if old and old != cleaned:
@@ -386,37 +527,42 @@ class DatasetService:
             shutil.rmtree(target_root, ignore_errors=True)
             raise
 
-        # ── upsert 场景 ──
-        if scene:
-            scene.display_name = display_name.strip()
-            scene.category = category
-            scene.class_names = cleaned
-            scene.class_names_cn = cn_map
-            if description:
-                scene.description = description
-            scene.updated_at = datetime.now()
-        else:
-            scene = DetectionScene(
-                name=scene_name,
-                display_name=display_name.strip(),
-                description=description,
-                category=category,
-                class_names=cleaned,
-                class_names_cn=cn_map,
-                is_active=True,
-                created_by=user_id,
-            )
-            db.add(scene)
-        db.commit()
-        db.refresh(scene)
+        # ── upsert 场景（仅上传模式跳过，保持未登记状态便于后续编辑） ──
+        scene_id = None
+        if register_scene:
+            if scene:
+                scene.display_name = display_name.strip()
+                scene.category = category
+                scene.class_names = cleaned
+                scene.class_names_cn = cn_map
+                if description:
+                    scene.description = description
+                scene.updated_at = datetime.now()
+            else:
+                scene = DetectionScene(
+                    name=scene_name,
+                    display_name=display_name.strip(),
+                    description=description,
+                    category=category,
+                    class_names=cleaned,
+                    class_names_cn=cn_map,
+                    is_active=True,
+                    created_by=user_id,
+                )
+                db.add(scene)
+            db.commit()
+            db.refresh(scene)
+            scene_id = scene.id
         shutil.rmtree(staging, ignore_errors=True)
         logger.info(
-            "数据集 %s 上传完成：train=%s val=%s test=%s，场景 id=%d",
-            scene_name, stats.get("train"), stats.get("val"), stats.get("test"), scene.id,
+            "数据集 %s 上传完成：train=%s val=%s test=%s，场景=%s",
+            scene_name, stats.get("train"), stats.get("val"), stats.get("test"),
+            scene_id if scene_id else "未登记",
         )
         return {
             "name": scene_name,
-            "scene_id": scene.id,
+            "scene_id": scene_id,
+            "registered": register_scene,
             "split_stats": {k: stats.get(k, 0) for k in ("train", "val", "test")},
             "missing_labels": len(stats.get("missing_labels", [])),
             "class_names": cleaned,
