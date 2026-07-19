@@ -867,6 +867,7 @@ async function restoreEvalState(task) {
 
 async function exportModel() {
   if (!selectedTask.value) return
+  stopPolling()
   exporting.value = true
   try {
     const payload = {
@@ -895,6 +896,9 @@ async function exportModel() {
     )
   } finally {
     exporting.value = false
+    if (selectedTask.value) {
+      startPolling()
+    }
   }
 }
 

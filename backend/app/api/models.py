@@ -34,7 +34,7 @@ def _get_model_version(db: Session, model_version_id: int) -> ModelVersion:
 
 
 @router.get("")
-async def list_model_versions(
+def list_model_versions(
     scene_id: int | None = Query(default=None),
     status: str | None = Query(default=None),
     db: Session = Depends(get_db),
@@ -51,7 +51,7 @@ async def list_model_versions(
 
 
 @router.get("/current")
-async def get_current_model(
+def get_current_model(
     db: Session = Depends(get_db),
     _current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
@@ -66,7 +66,7 @@ async def get_current_model(
 
 
 @router.post("/{model_version_id}/activate")
-async def activate_model_version(
+def activate_model_version(
     model_version_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -91,7 +91,7 @@ async def activate_model_version(
 
 
 @router.post("/{model_version_id}/archive")
-async def archive_model_version(
+def archive_model_version(
     model_version_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -111,7 +111,7 @@ async def archive_model_version(
 
 
 @router.post("/{model_version_id}/unarchive")
-async def unarchive_model_version(
+def unarchive_model_version(
     model_version_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -131,7 +131,7 @@ async def unarchive_model_version(
 
 
 @router.post("/{model_version_id}/backup")
-async def backup_model_version(
+def backup_model_version(
     model_version_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -154,7 +154,7 @@ async def backup_model_version(
 
 
 @router.post("/{model_version_id}/restore")
-async def restore_model_version(
+def restore_model_version(
     model_version_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -176,7 +176,7 @@ async def restore_model_version(
 
 
 @router.delete("/{model_version_id}")
-async def delete_model_version(
+def delete_model_version(
     model_version_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -243,7 +243,7 @@ async def test_model_version(
 
 
 @router.post("/{model_version_id}/evaluate")
-async def evaluate_model_version(
+def evaluate_model_version(
     model_version_id: int,
     request: ModelEvaluationRequest | None = None,
     db: Session = Depends(get_db),
@@ -277,7 +277,7 @@ async def evaluate_model_version(
 
 
 @router.get("/{model_version_id}/evaluation")
-async def get_model_evaluation_status(
+def get_model_evaluation_status(
     model_version_id: int,
     db: Session = Depends(get_db),
     _current_user=Depends(require_permission(MODEL_MANAGE)),

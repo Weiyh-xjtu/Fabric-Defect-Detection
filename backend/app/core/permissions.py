@@ -16,7 +16,7 @@ def _forbidden() -> HTTPException:
 
 
 def require_permission(code: str) -> Callable:
-    async def dependency(
+    def dependency(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> User:
@@ -30,7 +30,7 @@ def require_permission(code: str) -> Callable:
 def require_any_permission(*codes: str) -> Callable:
     required = set(codes)
 
-    async def dependency(
+    def dependency(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> User:

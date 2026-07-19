@@ -60,7 +60,7 @@ def _set_refresh_cookie(response: Response, user: User) -> None:
     )
 
 
-async def get_current_user(
+def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ):
@@ -93,7 +93,7 @@ async def get_current_user(
 
 
 @router.post("/register", response_model=UserResponse, status_code=201)
-async def register(request: UserRegister, db: Session = Depends(get_db)):
+def register(request: UserRegister, db: Session = Depends(get_db)):
     """
     用户注册
 
@@ -111,7 +111,7 @@ async def register(request: UserRegister, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(
+def login(
     request: UserLogin,
     response: Response,
     db: Session = Depends(get_db),
@@ -133,7 +133,7 @@ async def login(
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh_login_session(
+def refresh_login_session(
     response: Response,
     refresh_token: str | None = Cookie(
         default=None,
@@ -166,7 +166,7 @@ async def refresh_login_session(
 
 
 @router.post("/logout", status_code=204)
-async def logout(response: Response) -> None:
+def logout(response: Response) -> None:
     """清除浏览器中的 Refresh Cookie。"""
     response.delete_cookie(
         key=settings.REFRESH_COOKIE_NAME,
@@ -178,7 +178,7 @@ async def logout(response: Response) -> None:
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_current_user_info(
+def get_current_user_info(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

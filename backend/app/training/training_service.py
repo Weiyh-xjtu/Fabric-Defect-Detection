@@ -29,12 +29,15 @@
 import csv
 import hashlib
 import json
+import multiprocessing
 import os
 import shutil
 import threading
 import uuid
+from concurrent.futures import Future, ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Callable
 
 from app.config.settings import settings
 from app.core.logger import get_logger
@@ -63,6 +66,89 @@ _running_lock = threading.Lock()
 # key: task_id, value: {status, split, report, error, started_at, completed_at, thread}
 _running_evaluations: dict = {}
 _eval_lock = threading.Lock()
+
+# YOLO 加载、CUDA 初始化和评估包含大量 CPU/GIL 密集工作。仅放入线程仍会
+# 让单进程 Uvicorn 出现明显饥饿，因此使用独立进程串行执行模型重任务。
+_model_task_executor: ProcessPoolExecutor | None = None
+_model_task_executor_lock = threading.Lock()
+
+
+def _get_model_task_executor() -> ProcessPoolExecutor:
+    """惰性创建模型任务进程池，避免应用导入阶段启动子进程。"""
+    global _model_task_executor
+    with _model_task_executor_lock:
+        if _model_task_executor is None:
+            _model_task_executor = ProcessPoolExecutor(
+                max_workers=1,
+                mp_context=multiprocessing.get_context("spawn"),
+            )
+        return _model_task_executor
+
+
+def submit_model_task(
+    func: Callable[..., dict],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Future:
+    """提交需要与 Web 进程隔离的模型任务。"""
+    return _get_model_task_executor().submit(func, *args, **kwargs)
+
+
+def shutdown_model_task_executor() -> None:
+    """应用关闭时停止接收新的模型任务，不等待长时间评估退出。"""
+    global _model_task_executor
+    with _model_task_executor_lock:
+        executor = _model_task_executor
+        _model_task_executor = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _validate_model_in_process(
+    task_id: int,
+    split: str,
+    conf: float,
+    iou: float,
+) -> dict:
+    """子进程入口：使用独立数据库会话执行模型评估。"""
+    db = SessionLocal()
+    try:
+        return TrainingService.validate_model(
+            db,
+            task_id=task_id,
+            split=split,
+            conf=conf,
+            iou=iou,
+        )
+    finally:
+        db.close()
+
+
+def _finish_validation_future(task_id: int, future: Future) -> None:
+    """把隔离进程的评估结果同步回 Web 进程内状态注册表。"""
+    try:
+        result = future.result()
+    except Exception as exc:
+        logger.error(
+            "评估进程异常: task_id=%d, error=%s",
+            task_id,
+            exc,
+            exc_info=True,
+        )
+        result = {"error": f"评估失败: {exc}"}
+
+    with _eval_lock:
+        current = _running_evaluations.get(task_id)
+        if current is None:
+            return
+        current["completed_at"] = datetime.now().isoformat()
+        if "error" in result:
+            current["status"] = "failed"
+            current["error"] = result["error"]
+        else:
+            current["status"] = "completed"
+            current["report"] = result
 
 
 class TrainingService:
@@ -824,10 +910,11 @@ class TrainingService:
         conf: float = 0.001,
         iou: float = 0.6,
     ) -> dict:
-        """在后台线程中启动模型评估，立即返回（前端轮询获取结果）。
+        """在隔离进程中启动模型评估，立即返回（前端轮询获取结果）。
 
-        与训练相同的异步模式：接口只负责校验和登记，耗时的
-        model.val() 在守护线程中执行，结果写入 _running_evaluations。
+        接口只负责校验和登记；生产环境把 model.val() 放入独立进程，
+        避免 CUDA 初始化、数据加载和绘图拖慢 Web 事件循环。测试和显式
+        关闭隔离时保留线程执行路径。
         """
         # ── 前置校验（复用 validate_model 的失败条件，尽早同步报错）──
         task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
@@ -887,6 +974,7 @@ class TrainingService:
                 "started_at": datetime.now().isoformat(),
                 "completed_at": None,
                 "thread": None,
+                "future": None,
                 "cached": False,
             }
             _running_evaluations[task_id] = entry
@@ -923,13 +1011,29 @@ class TrainingService:
                     current["status"] = "completed"
                     current["report"] = result
 
-        thread = threading.Thread(
-            target=_run_validation,
-            daemon=True,
-            name=f"validate-{task.task_uuid}",
-        )
-        entry["thread"] = thread
-        thread.start()
+        if settings.MODEL_TASK_PROCESS_ISOLATION:
+            future = submit_model_task(
+                _validate_model_in_process,
+                task_id,
+                split,
+                conf,
+                iou,
+            )
+            entry["future"] = future
+            future.add_done_callback(
+                lambda completed, current_task_id=task_id: _finish_validation_future(
+                    current_task_id,
+                    completed,
+                )
+            )
+        else:
+            thread = threading.Thread(
+                target=_run_validation,
+                daemon=True,
+                name=f"validate-{task.task_uuid}",
+            )
+            entry["thread"] = thread
+            thread.start()
 
         logger.info(
             "评估任务已启动: task_id=%d, uuid=%s, split=%s",
