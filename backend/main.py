@@ -95,9 +95,15 @@ async def lifespan(_app: FastAPI):
     init_bootstrap_admin()
     init_minio()
     recover_training_history()
-    yield
-    # 关闭时执行（如果需要）
-    print("服务已关闭")
+    try:
+        yield
+    finally:
+        from app.api.training import shutdown_backup_executor
+        from app.training.training_service import shutdown_model_task_executor
+
+        shutdown_backup_executor()
+        shutdown_model_task_executor()
+        print("服务已关闭")
 
 
 # 创建 FastAPI 实例

@@ -17,6 +17,9 @@ import asyncio
 import base64
 import os
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
@@ -44,6 +47,7 @@ from app.entity.schemas import (
 from app.training.training_service import (
     MODEL_READY_TASK_STATUSES,
     _task_output_dir,
+    submit_model_task,
     training_service,
 )
 from app.services.model_management_service import model_management_service
@@ -52,22 +56,60 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/training", tags=["模型训练"])
 
+_backup_executor: ThreadPoolExecutor | None = None
+_backup_executor_lock = threading.Lock()
+
+
+def _get_backup_executor() -> ThreadPoolExecutor:
+    """惰性创建可在应用重启后重新初始化的备份执行器。"""
+    global _backup_executor
+    with _backup_executor_lock:
+        if _backup_executor is None:
+            _backup_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="model-backup",
+            )
+        return _backup_executor
+
 
 def _backup_exported_model(model_version_id: int) -> None:
     """响应返回后在后台备份正式模型，避免远程上传阻塞导出请求。"""
+    started_at = time.perf_counter()
+    logger.info("导出模型后台备份开始: model_version_id=%d", model_version_id)
     db = SessionLocal()
     try:
         model_management_service.backup_model(db, model_version_id)
+        logger.info(
+            "导出模型后台备份完成: model_version_id=%d, duration=%.1fs",
+            model_version_id,
+            time.perf_counter() - started_at,
+        )
     except Exception as exc:
         db.rollback()
         logger.error(
-            "导出模型后台备份失败: model_version_id=%d, error=%s",
+            "导出模型后台备份失败: model_version_id=%d, duration=%.1fs, error=%s",
             model_version_id,
+            time.perf_counter() - started_at,
             exc,
             exc_info=True,
         )
     finally:
         db.close()
+
+
+def _schedule_export_backup(model_version_id: int) -> None:
+    """把远程上传提交到专用线程池，避免占用 FastAPI 公共线程池。"""
+    _get_backup_executor().submit(_backup_exported_model, model_version_id)
+
+
+def shutdown_backup_executor() -> None:
+    """应用退出时停止接收新的备份任务。"""
+    global _backup_executor
+    with _backup_executor_lock:
+        executor = _backup_executor
+        _backup_executor = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _export_model_in_worker(
@@ -92,6 +134,26 @@ def _export_model_in_worker(
         db.close()
 
 
+async def _run_export_model(
+    task_id: int,
+    *,
+    version: str | None,
+    description: str | None,
+    set_default: bool,
+) -> dict:
+    """隔离执行导出；测试或显式关闭隔离时回退到工作线程。"""
+    kwargs = {
+        "version": version,
+        "description": description,
+        "set_default": set_default,
+    }
+    if not settings.MODEL_TASK_PROCESS_ISOLATION:
+        return await asyncio.to_thread(_export_model_in_worker, task_id, **kwargs)
+
+    future = submit_model_task(_export_model_in_worker, task_id, **kwargs)
+    return await asyncio.wrap_future(future)
+
+
 def _get_owned_task(db: Session, task_id: int, _user) -> TrainingTask:
     """获取训练任务；调用方已通过模型管理权限校验。"""
     task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
@@ -101,7 +163,7 @@ def _get_owned_task(db: Session, task_id: int, _user) -> TrainingTask:
 
 
 @router.get("/scenes")
-async def list_training_scenes(
+def list_training_scenes(
     db: Session = Depends(get_db),
     _current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
@@ -125,7 +187,7 @@ async def list_training_scenes(
 
 
 @router.post("/start")
-async def start_training(
+def start_training(
     request: TrainingTaskCreate,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -214,7 +276,7 @@ async def start_training(
 
 
 @router.get("/tasks")
-async def list_training_tasks(
+def list_training_tasks(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
@@ -224,7 +286,7 @@ async def list_training_tasks(
 
 
 @router.post("/rescan")
-async def rescan_training_tasks(
+def rescan_training_tasks(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
 ):
@@ -245,7 +307,7 @@ async def rescan_training_tasks(
 
 
 @router.get("/status/{task_id}")
-async def get_training_status(
+def get_training_status(
     task_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -264,7 +326,7 @@ async def get_training_status(
 
 
 @router.get("/metrics/{task_id}")
-async def get_training_metrics(
+def get_training_metrics(
     task_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -280,7 +342,7 @@ async def get_training_metrics(
 
 
 @router.post("/stop/{task_id}")
-async def stop_training(
+def stop_training(
     task_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -294,7 +356,7 @@ async def stop_training(
 
 
 @router.get("/results/{task_uuid}")
-async def get_results_csv(
+def get_results_csv(
     task_uuid: str,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),
@@ -324,7 +386,7 @@ async def get_results_csv(
 
 
 @router.post("/validate/{task_id}", response_model=ModelValidateStartResponse)
-async def validate_model(
+def validate_model(
     task_id: int,
     request: ModelValidateRequest = None,
     db: Session = Depends(get_db),
@@ -352,7 +414,7 @@ async def validate_model(
 
 
 @router.get("/validate/{task_id}/status", response_model=ModelValidateStatusResponse)
-async def get_validation_status(
+def get_validation_status(
     task_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
@@ -363,7 +425,7 @@ async def get_validation_status(
 
 
 @router.get("/validate/{task_id}/artifacts/{filename}")
-async def get_validation_artifact(
+def get_validation_artifact(
     task_id: int,
     filename: str,
     db: Session = Depends(get_db),
@@ -408,8 +470,7 @@ async def export_model(
     """导出训练权重、评估报告和模型版本信息。"""
     _get_owned_task(db, task_id, current_user)
     request = request or ModelExportRequest()
-    result = await asyncio.to_thread(
-        _export_model_in_worker,
+    result = await _run_export_model(
         task_id,
         version=request.version,
         description=request.description,
@@ -425,7 +486,7 @@ async def export_model(
     )
     if request.upload_minio:
         background_tasks.add_task(
-            _backup_exported_model,
+            _schedule_export_backup,
             result["model_version_id"],
         )
         result["message"] = f"模型已导出为版本 {result['version']}，备份将在后台完成"
@@ -433,7 +494,7 @@ async def export_model(
 
 
 @router.get("/download/{task_id}")
-async def download_model(
+def download_model(
     task_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(MODEL_MANAGE)),

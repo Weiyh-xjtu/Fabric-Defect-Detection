@@ -1,5 +1,6 @@
 """训练 API 测试。"""
 
+from concurrent.futures import Future
 import json
 import sys
 import types
@@ -129,9 +130,10 @@ def test_export_api_schedules_backup_after_response_work(
         }
 
     monkeypatch.setattr(training_api.training_service, "export_model", fake_export_model)
+    monkeypatch.setattr(settings, "MODEL_TASK_PROCESS_ISOLATION", False)
     monkeypatch.setattr(
         training_api,
-        "_backup_exported_model",
+        "_schedule_export_backup",
         lambda model_version_id: captured.update(backup_id=model_version_id),
     )
 
@@ -144,6 +146,39 @@ def test_export_api_schedules_backup_after_response_work(
     assert response.status_code == 200
     assert response.json()["message"].endswith("备份将在后台完成")
     assert captured == {"upload_minio": False, "backup_id": 99}
+
+
+@pytest.mark.asyncio
+async def test_export_uses_isolated_model_process(monkeypatch) -> None:
+    """生产模式下导出应提交到模型进程池，而不是占用 Web 工作线程。"""
+    completed = Future()
+    completed.set_result({"version": "v1.0.0"})
+    captured = {}
+
+    def fake_submit(func, *args, **kwargs):
+        captured.update(func=func, args=args, kwargs=kwargs)
+        return completed
+
+    monkeypatch.setattr(settings, "MODEL_TASK_PROCESS_ISOLATION", True)
+    monkeypatch.setattr(training_api, "submit_model_task", fake_submit)
+
+    result = await training_api._run_export_model(
+        7,
+        version="v1.0.0",
+        description="isolated",
+        set_default=True,
+    )
+
+    assert result == {"version": "v1.0.0"}
+    assert captured == {
+        "func": training_api._export_model_in_worker,
+        "args": (7,),
+        "kwargs": {
+            "version": "v1.0.0",
+            "description": "isolated",
+            "set_default": True,
+        },
+    }
 
 
 def test_cancelled_task_can_predict_with_saved_weights(
@@ -556,6 +591,7 @@ def test_start_validation_runs_in_background_and_reports_status(
     monkeypatch.setitem(
         sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
     )
+    monkeypatch.setattr(settings, "MODEL_TASK_PROCESS_ISOLATION", False)
     # 后台线程使用独立会话；测试中让它复用当前测试会话
     monkeypatch.setattr(
         "app.training.training_service.SessionLocal", lambda: db_session

@@ -302,4 +302,44 @@ describe('TrainingPage 异步模型评估', () => {
       },
     )
   })
+
+  it('导出进行中暂停训练轮询，完成后恢复轮询', async () => {
+    evalStatusResponses = [{ task_id: 1, status: 'idle' }]
+    let resolveExport
+    postMock.mockImplementation((url) => {
+      if (url === '/training/export/1') {
+        return new Promise((resolve) => {
+          resolveExport = resolve
+        })
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mountPage()
+    await flushAll()
+    await selectFirstTask(wrapper)
+    await findButton(wrapper, '导出模型').trigger('click')
+    await flushAll()
+    await findButton(wrapper, '确认导出').trigger('click')
+    await flushAll()
+
+    const metricsBefore = getMock.mock.calls.filter(
+      ([url]) => url === '/training/metrics/1',
+    ).length
+    await flushAll(10000)
+    expect(getMock.mock.calls.filter(
+      ([url]) => url === '/training/metrics/1',
+    )).toHaveLength(metricsBefore)
+
+    resolveExport({
+      message: '模型已导出，备份将在后台完成',
+      evaluation: { map50: 0.83, per_class: {} },
+    })
+    await flushAll()
+    await flushAll(5000)
+
+    expect(getMock.mock.calls.filter(
+      ([url]) => url === '/training/metrics/1',
+    ).length).toBeGreaterThan(metricsBefore)
+  })
 })

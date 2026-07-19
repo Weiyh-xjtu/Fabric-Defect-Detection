@@ -6,6 +6,8 @@ import io
 import os
 import uuid
 
+import certifi
+import urllib3
 from minio import Minio
 from minio.error import S3Error
 
@@ -16,11 +18,26 @@ class MinIOClient:
     """MinIO 客户端封装"""
 
     def __init__(self, ensure_bucket: bool = True):
+        http_client = urllib3.PoolManager(
+            timeout=urllib3.Timeout(
+                connect=settings.MINIO_CONNECT_TIMEOUT_SECONDS,
+                read=settings.MINIO_READ_TIMEOUT_SECONDS,
+            ),
+            maxsize=10,
+            cert_reqs="CERT_REQUIRED" if settings.MINIO_SECURE else "CERT_NONE",
+            ca_certs=(os.environ.get("SSL_CERT_FILE") or certifi.where()),
+            retries=urllib3.Retry(
+                total=settings.MINIO_RETRY_TOTAL,
+                backoff_factor=0.2,
+                status_forcelist=[500, 502, 503, 504],
+            ),
+        )
         self.client = Minio(
             settings.MINIO_ENDPOINT,
             access_key=settings.MINIO_ACCESS_KEY,
             secret_key=settings.MINIO_SECRET_KEY,
             secure=settings.MINIO_SECURE,
+            http_client=http_client,
         )
         self.bucket_name = settings.MINIO_BUCKET
         if ensure_bucket:

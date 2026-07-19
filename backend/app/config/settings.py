@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # ── 训练配置 ──────────────────────────────────────
     TRAIN_OUTPUT_DIR: str = "runs/train"  # 训练输出目录（模型权重、日志等）
     DATASET_BASE_DIR: str = "datasets"    # 数据集根目录
+    MODEL_TASK_PROCESS_ISOLATION: bool = True
 
     # ── 应用基础配置 ───────────────────────────────
     APP_NAME: str = "RSOD Agent Platform"
@@ -57,6 +58,9 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET: str = "rsod-agent-images"
     MINIO_SECURE: bool = False
+    MINIO_CONNECT_TIMEOUT_SECONDS: float = 5.0
+    MINIO_READ_TIMEOUT_SECONDS: float = 600.0
+    MINIO_RETRY_TOTAL: int = 2
 
     # ── JWT 认证配置 ───────────────────────────────
     JWT_SECRET_KEY: str = "your-super-secret-key-change-in-production"
