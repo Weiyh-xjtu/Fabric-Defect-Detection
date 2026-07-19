@@ -64,6 +64,22 @@ class DetectionService:
     """目标检测服务 — 封装 YOLOv11 推理全流程"""
 
     @staticmethod
+    def _browser_file_url(
+        value: str | None,
+        *,
+        filename: str,
+        content_type: str,
+    ) -> str | None:
+        """Convert a stored MinIO URL/object name to the same-origin file proxy."""
+        if not value:
+            return None
+        return MinIOClient(ensure_bucket=False).browser_url_from_url_or_name(
+            value,
+            filename=filename,
+            content_type=content_type,
+        )
+
+    @staticmethod
     def _get_default_model_path() -> str:
         """获取全局启用模型的权重路径。"""
         db = SessionLocal()
@@ -393,7 +409,11 @@ class DetectionService:
                 "class_counts": class_counts,
                 "detections": detections,
                 "annotated_image_base64": annotated_base64,
-                "annotated_image_url": annotated_image_url,
+                "annotated_image_url": self._browser_file_url(
+                    annotated_image_url,
+                    filename=original_filename or os.path.basename(image_path),
+                    content_type="image/jpeg",
+                ),
                 "inference_time": round(float(result.speed.get("inference", 0)), 2),
                 "task_id": task_id,
                 "model_version_id": model_version_id,
@@ -560,7 +580,11 @@ class DetectionService:
                 item.pop("_annotated_bytes", None)
                 url = url_by_image.get(item.get("image_path"))
                 if url:
-                    item["annotated_image_url"] = url
+                    item["annotated_image_url"] = self._browser_file_url(
+                        url,
+                        filename=item.get("image_path") or "annotated.jpg",
+                        content_type="image/jpeg",
+                    )
 
             logger.info(
                 "批量检测完成: %d 张图, 共 %d 个目标, 总耗时 %.2fms",
@@ -1036,7 +1060,11 @@ class DetectionService:
                 "total_objects": total_objects,
                 "class_counts": class_counts,
                 "key_frames": key_frames,
-                "annotated_video_url": annotated_video_url,
+                "annotated_video_url": self._browser_file_url(
+                    annotated_video_url,
+                    filename="annotated_video.mp4",
+                    content_type="video/mp4",
+                ),
                 "total_inference_time": round(total_inference_time, 2),
                 "model_version_id": model_version_id,
                 "model_version": model_version,

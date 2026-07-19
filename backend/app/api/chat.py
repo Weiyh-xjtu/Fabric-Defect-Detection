@@ -156,7 +156,7 @@ def _extract_attachment_refs(tool_results: list[dict]) -> list[dict]:
         [{"tool":..., "type":"image|images|video", ...}]，无可持久化附件时为空列表。
     """
     try:
-        minio = MinIOClient()
+        minio = MinIOClient(ensure_bucket=False)
     except Exception as e:
         logger.warning("MinIO 不可用，跳过附件引用提取: %s", str(e))
         return []
@@ -366,17 +366,13 @@ def _delete_session_objects(messages) -> None:
 
 def _resign_attachments(attachments: list[dict] | None) -> list[dict]:
     """
-    读取历史时把存储的 object_name 实时换签为短期访问 URL。
+    读取历史时把存储的 object_name 转为同源的短期文件代理 URL。
 
-    对象已被删除或 MinIO 不可用时，对应项的 url 为 None，前端据此回退提示。
+    浏览器只访问 /api/files，不再直接访问 MinIO 的内部主机名或端口。
     """
     if not attachments:
         return []
-    try:
-        minio = MinIOClient()
-    except Exception as e:
-        logger.warning("MinIO 不可用，历史附件无法换签: %s", str(e))
-        return []
+    minio = MinIOClient(ensure_bucket=False)
 
     resolved = []
     for ref in attachments:
@@ -393,15 +389,27 @@ def _resign_attachments(attachments: list[dict] | None) -> list[dict]:
                 image_metadata = {
                     key: value for key, value in img.items() if key != "object_name"
                 }
-                image_metadata["url"] = minio.presign_from_url_or_name(
-                    img.get("object_name", "")
+                image_metadata["url"] = minio.browser_url_from_url_or_name(
+                    img.get("object_name", ""),
+                    filename=img.get("image_path") or "annotated.jpg",
+                    content_type="image/jpeg",
                 )
                 images.append(image_metadata)
             resolved.append({**metadata, "images": images})
         else:
             resolved.append({
                 **metadata,
-                "url": minio.presign_from_url_or_name(ref.get("object_name", "")),
+                "url": minio.browser_url_from_url_or_name(
+                    ref.get("object_name", ""),
+                    filename=ref.get("filename") or (
+                        "annotated_video.mp4"
+                        if ref_type == "video"
+                        else "annotated.jpg"
+                    ),
+                    content_type=ref.get("content_type") or (
+                        "video/mp4" if ref_type == "video" else "image/jpeg"
+                    ),
+                ),
             })
     return resolved
 

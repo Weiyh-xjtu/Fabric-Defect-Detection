@@ -30,6 +30,16 @@ class FakeMinIOClient:
     def presign_from_url_or_name(self, value: str) -> str:
         return self.get_presigned_url(value)
 
+    def browser_url_from_url_or_name(
+        self,
+        value: str,
+        *,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> str:
+        del filename, content_type
+        return f"/api/files/{value}"
+
     def object_name_from_url(self, url: str) -> str | None:
         prefix = "/fabric/"
         path = urlparse(url).path
@@ -74,9 +84,7 @@ def test_upload_replace_and_remove_avatar(client, db_session, monkeypatch):
         headers=headers,
     )
     assert first.status_code == 200
-    assert first.json()["user"]["avatar"].startswith(
-        "https://minio.test/fabric/avatars/"
-    )
+    assert first.json()["user"]["avatar"].startswith("/api/files/avatars/")
 
     db_session.expire_all()
     user = db_session.query(User).filter_by(username="avatar_flow_user").one()

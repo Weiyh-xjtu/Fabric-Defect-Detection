@@ -6,6 +6,7 @@ from sqlalchemy import String, cast, desc, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask, User
+from app.storage.minio_client import MinIOClient
 
 
 class HistoryService:
@@ -149,6 +150,8 @@ class HistoryService:
             )
             class_counts[display_name] = class_counts.get(display_name, 0) + 1
 
+        minio = MinIOClient(ensure_bucket=False)
+
         return {
             "task": HistoryService._serialize_task(task),
             "class_counts": class_counts,
@@ -162,7 +165,11 @@ class HistoryService:
                     "confidence": round(float(result.confidence), 4),
                     "bbox": result.bbox,
                     "image_path": result.image_path,
-                    "annotated_image_url": result.annotated_image_url,
+                    "annotated_image_url": minio.browser_url_from_url_or_name(
+                        result.annotated_image_url,
+                        filename=result.image_path or "annotated.jpg",
+                        content_type="image/jpeg",
+                    ),
                     "inference_time": (
                         round(float(result.inference_time), 2)
                         if result.inference_time is not None
