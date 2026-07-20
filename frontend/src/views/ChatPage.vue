@@ -6,6 +6,7 @@
       <div class="message-list" ref="messageListRef">
         <!-- 空会话：居中欢迎屏 -->
         <div v-if="agentStore.messages.length === 0" class="welcome-screen">
+          <img class="welcome-avatar" :src="avatarUrl" alt="FIRESIGHT AI" />
           <span class="welcome-mark"><span class="welcome-mark-text">FIRESIGHT · AI</span></span>
           <h1 class="welcome-title">你好！我是布面质检助手</h1>
           <p class="welcome-subtitle">发图检测缺陷，或直接提问</p>
@@ -316,6 +317,7 @@ import DetectionResultCard from "@/components/DetectionResultCard.vue";
 import { useAgentStore } from "@/stores/agent";
 import { useUserStore } from "@/stores/user";
 import { renderMarkdown, splitAgentSections } from "@/utils/markdown";
+import avatarUrl from "@/assets/avatar.png";
 import request, { getApiErrorMessage } from "@/utils/request";
 import { streamChat } from "@/utils/stream";
 import {
@@ -1002,6 +1004,13 @@ onMounted(async () => {
   min-height: 320px;
   text-align: center;
   color: #303133;
+}
+
+.welcome-avatar {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 14px;
+  object-fit: contain;
 }
 
 .welcome-mark {
