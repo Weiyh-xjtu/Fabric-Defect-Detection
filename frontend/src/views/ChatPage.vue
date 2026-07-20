@@ -108,6 +108,11 @@
                 </div>
                 <div v-html="renderMarkdown(sec.content)"></div>
               </template>
+              <!-- 流未结束时保留加载动画：并行/依赖多专家场景下，
+                   上一个专家输出完毕后提示用户后续专家仍在工作 -->
+              <div v-if="msg.streaming" class="typing-indicator typing-indicator-inline">
+                <span></span><span></span><span></span>
+              </div>
             </div>
 
             <!-- 工具调用链 -->
@@ -424,6 +429,7 @@ async function sendMessage() {
     role: "assistant",
     content: "",
     loading: true,
+    streaming: true,
   });
   const assistantMessage = agentStore.messages[assistantMessageIndex];
   agentStore.setLoading(true);
@@ -455,6 +461,7 @@ async function sendMessage() {
         "未知错误";
       assistantMessage.content = `附件上传失败：${errorMessage}，请重试`;
       assistantMessage.loading = false;
+      assistantMessage.streaming = false;
       assistantMessage.error = true;
       agentStore.setLoading(false);
       return;
@@ -504,6 +511,7 @@ async function sendMessage() {
       } else if (data.type === "error") {
         assistantMessage.content = data.content;
         assistantMessage.loading = false;
+        assistantMessage.streaming = false;
         assistantMessage.error = true;
       }
     },
@@ -511,6 +519,7 @@ async function sendMessage() {
       if (assistantMessage.loading) {
         assistantMessage.loading = false;
       }
+      assistantMessage.streaming = false;
       // 工具报错且 LLM 未输出任何文字时给出兜底提示，避免空气泡
       if (
         !assistantMessage.content &&
@@ -526,6 +535,7 @@ async function sendMessage() {
     onError: (err) => {
       assistantMessage.content = `抱歉，处理出错了：${err.message}`;
       assistantMessage.loading = false;
+      assistantMessage.streaming = false;
       assistantMessage.error = true;
       assistantMessage.retryData = {
         message: effectiveMessage,
@@ -544,6 +554,7 @@ async function sendMessage() {
 function handleStop() {
   agentStore.abort();
   const lastMsg = agentStore.messages[agentStore.messages.length - 1];
+  lastMsg.streaming = false;
   if (lastMsg.loading) {
     lastMsg.loading = false;
     lastMsg.content += "\n[已停止生成]";
@@ -1316,6 +1327,11 @@ onMounted(async () => {
   span:nth-child(3) {
     animation-delay: 0.4s;
   }
+}
+
+/* 正文已有内容、流未结束时接在内容下方的加载动画 */
+.typing-indicator-inline {
+  margin-top: 8px;
 }
 
 /* ── 输入区域 ── */
