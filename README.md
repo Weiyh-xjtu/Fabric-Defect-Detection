@@ -477,7 +477,7 @@ backend/runs/train/{task_uuid}/
 | 角色 | 默认权限 |
 | --- | --- |
 | 普通质检人员 `quality_inspector` | 智能对话、知识检索、执行检测、查看本人历史 |
-| 生产管理人员 `production_manager` | 智能对话、知识检索、查看全部历史、查看数据看板 |
+| 生产管理人员 `production_manager` | 智能对话、知识检索、执行检测、查看全部历史、查看数据看板 |
 | 系统管理员 `system_admin` | 用户、数据集、训练、模型、知识库和系统管理等全部权限 |
 
 新注册且没有角色的用户会在 RBAC 初始化时补充为普通质检人员。管理员可以在“用户管理”页面调整角色和启用状态。
@@ -685,4 +685,3 @@ docker compose down
 - 不要把 `frontend/node_modules`、`frontend/dist`、Python 缓存和训练输出当作源代码修改。
 
 ## License
-

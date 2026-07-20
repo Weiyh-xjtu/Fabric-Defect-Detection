@@ -127,6 +127,8 @@ export const useUserStore = defineStore('user', {
           this.token,
           () => this.refreshSession(),
         )
+        // 本地用户信息可能仍是角色调整前的缓存，启动时主动同步最新权限。
+        void this.fetchUserInfo().catch(() => null)
       }
     },
 
