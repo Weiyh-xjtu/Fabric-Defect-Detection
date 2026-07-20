@@ -89,17 +89,38 @@ def init_bootstrap_admin():
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """应用生命周期管理"""
+    import asyncio
+
+    from app.agent.upload_cache_cleaner import (
+        cleanup_upload_cache,
+        upload_cache_cleanup_loop,
+    )
+
     # 启动时执行
     print("正在初始化服务...")
     init_rbac()
     init_bootstrap_admin()
     init_minio()
     recover_training_history()
+
+    # 启动时立即清理一次过期附件缓存，并拉起周期后台任务。
+    try:
+        cleanup_upload_cache()
+    except Exception as e:
+        print(f"启动清理上传缓存失败: {e}")
+    cache_cleanup_task = asyncio.create_task(upload_cache_cleanup_loop())
+
     try:
         yield
     finally:
         from app.api.training import shutdown_backup_executor
         from app.training.training_service import shutdown_model_task_executor
+
+        cache_cleanup_task.cancel()
+        try:
+            await cache_cleanup_task
+        except asyncio.CancelledError:
+            pass
 
         shutdown_backup_executor()
         shutdown_model_task_executor()
