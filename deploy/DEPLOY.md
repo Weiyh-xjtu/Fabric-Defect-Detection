@@ -194,6 +194,54 @@ sudo rm -rf /var/www/firesight/* && sudo cp -r dist/* /var/www/firesight/
 
 ---
 
+## 一键部署（GitHub Actions）
+
+首次按上文手动部署一次后，后续更新可以全自动：push 到 `development` 分支
+（或在 Actions 页面手动触发 Deploy workflow）即完成"前端构建 → 代码同步 →
+依赖/迁移 → 重启后端 → 更新 Caddy → 健康检查"。
+
+敏感信息全部放在仓库 **Settings → Secrets and variables → Actions**，
+仓库文件中不出现真实 IP/域名/密钥。
+
+### 所需 Secrets
+
+| Secret | 必填 | 说明 |
+|---|---|---|
+| `SSH_PRIVATE_KEY` | ✅ | 部署专用 SSH 私钥（见下文生成方法） |
+| `SERVER_HOST` | ✅ | 服务器公网 IP |
+| `DOMAIN` | ✅ | 站点域名（不带 https://） |
+| `JWT_SECRET_KEY` | ✅ | `openssl rand -hex 32` 生成 |
+| `SERVER_USER` | | SSH 用户，默认 `root` |
+| `SERVER_PORT` | | SSH 端口，默认 `22` |
+| `POSTGRES_PASSWORD` | | 默认 `rsod_admin`；⚠️ 数据卷初始化后修改此值不会改数据库真实密码 |
+| `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | | 默认 `minioadmin` |
+| `QWEN_API_KEY` / `QWEN_BASE_URL` / `QWEN_MODEL` | | 聊天 LLM（OpenAI 兼容） |
+| `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` / `EMBEDDING_DIM` | | 知识库向量化 |
+
+### 生成部署密钥
+
+本地执行：
+
+```bash
+ssh-keygen -t ed25519 -f firesight_deploy -N "" -C "github-actions-deploy"
+# 公钥追加到服务器
+ssh root@<服务器IP> "cat >> ~/.ssh/authorized_keys" < firesight_deploy.pub
+# 私钥全文（含 BEGIN/END 行）粘贴到 Secret SSH_PRIVATE_KEY
+cat firesight_deploy
+```
+
+### 行为说明
+
+- 前端在 CI 免费机器上构建，不占服务器资源；产物打包 scp 到服务器解压。
+- 服务器代码用 `git reset --hard origin/<分支>` 同步：仓库内文件的服务器
+  本地改动会被覆盖（`.env`、datasets、runs 等未跟踪文件不受影响）。
+- 检测到训练任务 `running`/`stopping` 时部署会自动中止，避免重启后端
+  杀掉训练；确要部署可手动触发并勾选 `force`。
+- Caddyfile 里的 `<你的域名>` 占位符在部署时由 `DOMAIN` Secret 替换。
+- 密钥文件在服务器上落盘于 /tmp，脚本退出时即删除。
+
+---
+
 ## 备份要点
 
 - PostgreSQL 数据卷、MinIO 数据卷、`backend/runs/train`（训练权重）要定期备份。
