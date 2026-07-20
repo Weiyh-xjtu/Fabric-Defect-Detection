@@ -347,6 +347,20 @@ def test_analysis_specialist_requires_one_of_its_data_tools():
         "query_system_roles",
     }
 
+    validator = agent.required_tool_call_validator
+    message = (
+        "统计今日图中的缺陷\n\n[DEPENDENCY_DATA]\n"
+        '{"detection":{"detected_classes":["hole"],"class_counts":{"hole":1}}}'
+    )
+    assert validator is not None
+    assert not validator(
+        message, [("query_detection_statistics", {"today": True, "defect": ""})]
+    )
+    assert validator(
+        message,
+        [("query_detection_statistics", {"today": True, "defect": "hole"})],
+    )
+
 def test_day11_tool_count_and_groups():
     names = {item.name for item in DETECTION_TOOLS}
     assert len(names) >= 9

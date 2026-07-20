@@ -302,6 +302,45 @@ async def test_parallel_stream_injects_upstream_output_into_dependent(orchestrat
 
 
 @pytest.mark.asyncio
+async def test_parallel_stream_prefers_structured_detection_dependency(
+    orchestrator, monkeypatch
+):
+    """真实检测工具结果应以最小结构化字段传递，不把检测专家正文注入分析任务。"""
+    detection = _FakeSpecialist(
+        [
+            {
+                "type": "tool_result",
+                "tool": "detect_single_image",
+                "result": '{"total_objects":1,"class_counts":{"hole":1},'
+                '"detections":[{"class_name":"hole","confidence":0.8477}]}',
+            },
+            {"type": "text_chunk", "content": "目标总数 1 个，hole 置信度 0.8477"},
+        ]
+    )
+    analysis = _FakeSpecialist([{"type": "text_chunk", "content": "今日破洞23个"}])
+    orchestrator.specialists = {"detection": detection, "analysis": analysis, "qa": None}
+    monkeypatch.setattr(
+        orchestrator,
+        "plan",
+        _dep_plan([
+            {"agent": "detection", "task": "检测图片", "depends_on": []},
+            {"agent": "analysis", "task": "统计今日图中的缺陷", "depends_on": ["detection"]},
+        ]),
+    )
+
+    await _collect(
+        orchestrator.chat_stream(message="x", user_id=1, session_id="dep-structured")
+    )
+
+    message = analysis.received["message"]
+    assert "[DEPENDENCY_DATA]" in message
+    assert '"detected_classes": ["hole"]' in message
+    assert '"class_counts": {"hole": 1}' in message
+    assert "置信度 0.8477" not in message
+    assert "目标总数 1 个" not in message
+
+
+@pytest.mark.asyncio
 async def test_parallel_stream_skips_dependent_when_upstream_fails(orchestrator, monkeypatch):
     """上游失败时下游跳过执行，标记为依赖缺失，且不启动下游专家。"""
     detection = _FakeSpecialist([{"type": "error", "content": "模型加载失败"}])

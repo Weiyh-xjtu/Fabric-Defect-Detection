@@ -61,6 +61,7 @@ _REQUIRED_TOOL_RETRY_TEMPLATE = """强制执行要求（本轮重试）：
 你上一次没有调用数据查询工具，因此上一次答案已被系统拒绝。生成任何结论前，
 必须至少调用一个与用户请求匹配的工具：{tool_names}。
 其它专家的结果只能用于确定查询参数（例如缺陷类别），不能替代平台数据查询。
+工具参数必须完整落实当前任务和依赖数据中提供的筛选条件。
 只能根据工具实际返回值回答；若工具返回 error，必须如实说明错误，禁止自行补全数据。"""
 
 _REQUIRED_TOOL_FAILURE_MESSAGE = (
@@ -972,6 +973,9 @@ class DetectionAgent:
         name: str = "detection",
         required_tool_names: set[str] | None = None,
         required_tool_resolver: Callable[[str], set[str]] | None = None,
+        required_tool_call_validator: (
+            Callable[[str, list[tuple[str, object]]], bool] | None
+        ) = None,
         max_required_tool_retries: int = 1,
     ):
         """初始化 Agent，创建 LLM 和 AgentExecutor"""
@@ -980,6 +984,7 @@ class DetectionAgent:
         self.name = name
         self.required_tool_names = set(required_tool_names or ())
         self.required_tool_resolver = required_tool_resolver
+        self.required_tool_call_validator = required_tool_call_validator
         self.max_required_tool_retries = max(0, max_required_tool_retries)
 
         # OpenAI Tools Agent 系统提示词
@@ -1059,22 +1064,37 @@ class DetectionAgent:
         return set(self.required_tool_names)
 
     @staticmethod
-    def _required_tool_called(
-        intermediate_steps: list | None, required_tool_names: set[str]
-    ) -> bool:
-        """判断 AgentExecutor 的中间步骤是否包含本 Agent 强制要求的工具。"""
-        if not required_tool_names:
-            return True
+    def _tool_calls_from_steps(
+        intermediate_steps: list | None,
+    ) -> list[tuple[str, object]]:
+        """从 AgentExecutor 中间步骤提取工具名和参数。"""
+        calls: list[tuple[str, object]] = []
         for step in intermediate_steps or []:
             action = step[0] if isinstance(step, (tuple, list)) and step else step
-            tool_name = (
-                action.get("tool")
-                if isinstance(action, dict)
-                else getattr(action, "tool", None)
-            )
-            if tool_name in required_tool_names:
-                return True
-        return False
+            if isinstance(action, dict):
+                tool_name = action.get("tool")
+                tool_input = action.get("tool_input", {})
+            else:
+                tool_name = getattr(action, "tool", None)
+                tool_input = getattr(action, "tool_input", {})
+            if tool_name:
+                calls.append((str(tool_name), tool_input))
+        return calls
+
+    def _tool_requirement_met(
+        self,
+        message: str,
+        tool_calls: list[tuple[str, object]],
+        required_tool_names: set[str],
+    ) -> bool:
+        """校验必需工具是否被调用，以及调用参数是否满足任务约束。"""
+        if not required_tool_names:
+            return True
+        if not any(tool_name in required_tool_names for tool_name, _ in tool_calls):
+            return False
+        if self.required_tool_call_validator is not None:
+            return self.required_tool_call_validator(message, tool_calls)
+        return True
 
     @staticmethod
     def _required_tool_retry_instruction(required_tool_names: set[str]) -> str:
@@ -1138,12 +1158,14 @@ class DetectionAgent:
                         ),
                     }
                 )
-                if self._required_tool_called(
-                    result.get("intermediate_steps"), required_tool_names
+                if self._tool_requirement_met(
+                    message,
+                    self._tool_calls_from_steps(result.get("intermediate_steps")),
+                    required_tool_names,
                 ):
                     break
                 logger.warning(
-                    "%s Agent 第 %d 次执行未调用必需工具，拒绝答案%s",
+                    "%s Agent 第 %d 次执行未满足必需工具调用约束，拒绝答案%s",
                     self.name,
                     attempt + 1,
                     "并重试" if attempt < self.max_required_tool_retries else "",
@@ -1151,8 +1173,10 @@ class DetectionAgent:
             else:  # pragma: no cover - range 永远至少执行一次
                 result = None
 
-            if result is None or not self._required_tool_called(
-                result.get("intermediate_steps"), required_tool_names
+            if result is None or not self._tool_requirement_met(
+                message,
+                self._tool_calls_from_steps(result.get("intermediate_steps")),
+                required_tool_names,
             ):
                 return {"output": _REQUIRED_TOOL_FAILURE_MESSAGE, "intermediate_steps": []}
             if record_memory:
@@ -1225,7 +1249,7 @@ class DetectionAgent:
             for attempt in range(self.max_required_tool_retries + 1):
                 response_chunks: list[str] = []
                 buffered_events: list[dict] = []
-                required_tool_called = not required_tool_names
+                attempt_tool_calls: list[tuple[str, object]] = []
 
                 async for event in self.executor.astream_events(
                     {
@@ -1257,8 +1281,7 @@ class DetectionAgent:
                         tool_name = event["name"]
                         tool_input = event["data"].get("input", {})
                         logger.info("工具调用: %s, 输入: %s", tool_name, str(tool_input)[:200])
-                        if tool_name in required_tool_names:
-                            required_tool_called = True
+                        attempt_tool_calls.append((tool_name, tool_input))
                         frontend_event = {
                             "type": "tool_call",
                             "tool": tool_name,
@@ -1300,15 +1323,14 @@ class DetectionAgent:
                         }
 
                     if frontend_event is not None:
-                        if required_tool_called:
-                            for buffered in buffered_events:
-                                yield buffered
-                            buffered_events.clear()
-                            yield frontend_event
-                        else:
+                        if required_tool_names:
                             buffered_events.append(frontend_event)
+                        else:
+                            yield frontend_event
 
-                if required_tool_called:
+                if self._tool_requirement_met(
+                    message, attempt_tool_calls, required_tool_names
+                ):
                     for buffered in buffered_events:
                         yield buffered
                     accepted_chunks = response_chunks
@@ -1316,7 +1338,7 @@ class DetectionAgent:
                     break
 
                 logger.warning(
-                    "%s Agent 第 %d 次流式执行未调用必需工具，丢弃答案%s",
+                    "%s Agent 第 %d 次流式执行未满足必需工具调用约束，丢弃答案%s",
                     self.name,
                     attempt + 1,
                     "并重试" if attempt < self.max_required_tool_retries else "",
