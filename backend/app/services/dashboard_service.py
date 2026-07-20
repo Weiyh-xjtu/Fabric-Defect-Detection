@@ -5,7 +5,7 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Query, Session
 
-from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask
+from app.entity.db_models import DetectionResult, DetectionScene, DetectionTask, User
 
 
 class DashboardService:
@@ -760,6 +760,30 @@ class DashboardService:
                     "display_name": scene.display_name,
                 }
                 for scene in scenes
+            ]
+        }
+
+    def get_employee_options(self, db: Session) -> dict:
+        """返回产生过检测记录的员工，用于看板员工筛选。"""
+        rows = (
+            db.query(
+                User.id,
+                User.username,
+                func.count(DetectionTask.id).label("task_count"),
+            )
+            .join(DetectionTask, DetectionTask.user_id == User.id)
+            .group_by(User.id, User.username)
+            .order_by(User.username.asc(), User.id.asc())
+            .all()
+        )
+        return {
+            "options": [
+                {
+                    "id": row.id,
+                    "username": row.username,
+                    "task_count": int(row.task_count or 0),
+                }
+                for row in rows
             ]
         }
 
