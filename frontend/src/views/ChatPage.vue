@@ -7,7 +7,9 @@
         <!-- 空会话：居中欢迎屏 -->
         <div v-if="agentStore.messages.length === 0" class="welcome-screen">
           <img class="welcome-avatar" :src="avatarUrl" alt="FIRESIGHT AI" />
-          <span class="welcome-mark"><span class="welcome-mark-text">FIRESIGHT · AI</span></span>
+          <span class="welcome-mark"
+            ><span class="welcome-mark-text">FIRESIGHT · AI</span></span
+          >
           <h1 class="welcome-title">你好！我是布面质检助手</h1>
           <p class="welcome-subtitle">发图检测缺陷，或直接提问</p>
           <div class="welcome-hints">
@@ -313,11 +315,11 @@ import {
   detectZip,
   getVideoStatus,
 } from "@/api/detection";
+import avatarUrl from "@/assets/avatar.png";
 import DetectionResultCard from "@/components/DetectionResultCard.vue";
 import { useAgentStore } from "@/stores/agent";
 import { useUserStore } from "@/stores/user";
 import { renderMarkdown, splitAgentSections } from "@/utils/markdown";
-import avatarUrl from "@/assets/avatar.png";
 import request, { getApiErrorMessage } from "@/utils/request";
 import { streamChat } from "@/utils/stream";
 import {
@@ -326,7 +328,6 @@ import {
   completeToolStep,
   toolDisplayName,
 } from "@/utils/toolChain";
-import { ElMessage } from "element-plus";
 import {
   Aim,
   Camera,
@@ -337,6 +338,7 @@ import {
   Picture,
   VideoCamera,
 } from "@element-plus/icons-vue";
+import { ElMessage } from "element-plus";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
@@ -371,7 +373,9 @@ const MAX_FILE_SIZES = {
 };
 
 // ── 计算属性 ──
-const canExecuteDetection = computed(() => userStore.hasPermission("detection:execute"));
+const canExecuteDetection = computed(() =>
+  userStore.hasPermission("detection:execute"),
+);
 const canSend = computed(() => {
   return inputText.value.trim() || selectedFiles.value.length;
 });
@@ -478,7 +482,8 @@ async function sendMessage() {
         agentStore.setCurrentSessionId(data.session_id);
       } else if (data.type === "agent_route") {
         assistantMessage.agent = data.agent;
-        assistantMessage.agents = data.agents || (data.agent ? [data.agent] : []);
+        assistantMessage.agents =
+          data.agents || (data.agent ? [data.agent] : []);
       } else if (data.type === "tool_call") {
         // 工具调用开始：追加到该消息的调用链
         if (!assistantMessage.toolChain) assistantMessage.toolChain = [];
@@ -490,7 +495,8 @@ async function sendMessage() {
         const info = completeToolStep(assistantMessage.toolChain, data);
         if (info.detection) {
           // 并行多专家一轮可能产生多张检测卡片，逐一追加避免互相覆盖
-          if (!assistantMessage.detectionResults) assistantMessage.detectionResults = [];
+          if (!assistantMessage.detectionResults)
+            assistantMessage.detectionResults = [];
           assistantMessage.detectionResults.push(info.detection);
           assistantMessage.loading = false;
         }
@@ -1007,9 +1013,9 @@ onMounted(async () => {
 }
 
 .welcome-avatar {
-  width: 72px;
-  height: 72px;
-  margin-bottom: 14px;
+  width: 168px;
+  height: 168px;
+  margin-bottom: 10px;
   object-fit: contain;
 }
 
@@ -1065,16 +1071,25 @@ onMounted(async () => {
   border: 1px solid #e8ecf3;
   border-left: 3px solid transparent;
   border-radius: $border-radius-md;
-  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+  transition:
+    border-color 0.18s,
+    box-shadow 0.18s,
+    transform 0.18s;
 
   &:hover {
     box-shadow: $shadow-md;
     transform: translateY(-1px);
   }
 
-  &.hint-detect:hover { border-left-color: $signal-orange; }
-  &.hint-stats:hover { border-left-color: $loom-green; }
-  &.hint-knowledge:hover { border-left-color: $thread-gold; }
+  &.hint-detect:hover {
+    border-left-color: $signal-orange;
+  }
+  &.hint-stats:hover {
+    border-left-color: $loom-green;
+  }
+  &.hint-knowledge:hover {
+    border-left-color: $thread-gold;
+  }
 }
 
 .hint-kicker {
@@ -1087,9 +1102,16 @@ onMounted(async () => {
   color: #fff;
 }
 
-.hint-detect .hint-kicker { background: $signal-orange; }
-.hint-stats .hint-kicker { background: $loom-green; }
-.hint-knowledge .hint-kicker { background: $thread-gold; color: #2a2000; }
+.hint-detect .hint-kicker {
+  background: $signal-orange;
+}
+.hint-stats .hint-kicker {
+  background: $loom-green;
+}
+.hint-knowledge .hint-kicker {
+  background: $thread-gold;
+  color: #2a2000;
+}
 
 .hint-text {
   font-size: 14px;
@@ -1316,7 +1338,9 @@ onMounted(async () => {
   border: 1px solid #dfe3ec;
   border-radius: 28px;
   box-shadow: $shadow-sm;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
 
   &:focus-within {
     border-color: $signal-orange;
