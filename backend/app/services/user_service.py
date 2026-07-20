@@ -18,9 +18,21 @@ from app.core.security import (
     verify_password,
 )
 from app.core.logger import get_logger
-from app.core.rbac import QUALITY_INSPECTOR, SYSTEM_ADMIN, get_user_permission_codes
+from app.core.rbac import (
+    QUALITY_INSPECTOR,
+    SYSTEM_ADMIN,
+    USER_MANAGE,
+    get_user_permission_codes,
+)
 from app.config.settings import settings
-from app.entity.db_models import AuthSession, Role, RolePermission, User, UserRole
+from app.entity.db_models import (
+    AuthSession,
+    Permission,
+    Role,
+    RolePermission,
+    User,
+    UserRole,
+)
 from app.storage.minio_client import MinIOClient
 
 logger = get_logger(__name__)
@@ -322,18 +334,248 @@ class UserService:
             .all()
         )
         return [
-            {
-                "id": role.id,
-                "name": role.name,
-                "display_name": role.display_name,
-                "description": role.description,
-                "is_system": bool(role.is_system),
-                "permissions": [
-                    item.permission.code for item in role.role_permissions
-                ],
-            }
+            UserService._serialize_role(role)
             for role in roles
         ]
+
+    @staticmethod
+    def _serialize_role(role: Role) -> dict:
+        return {
+            "id": role.id,
+            "name": role.name,
+            "display_name": role.display_name,
+            "description": role.description,
+            "is_system": bool(role.is_system),
+            "permissions": [item.permission.code for item in role.role_permissions],
+        }
+
+    @staticmethod
+    def list_permissions(db: Session) -> list[dict]:
+        """查询全部权限定义，按模块与 id 排序。"""
+        permissions = (
+            db.query(Permission).order_by(Permission.module, Permission.id).all()
+        )
+        return [
+            {
+                "id": item.id,
+                "code": item.code,
+                "name": item.name,
+                "module": item.module,
+            }
+            for item in permissions
+        ]
+
+    @staticmethod
+    def _user_manage_still_reachable(
+        db: Session, role_id: int, operator: User
+    ) -> bool:
+        """判断把 user:manage 从指定角色移除后，是否仍有活跃账号可管理用户。"""
+        if operator.is_superuser:
+            return True
+        if db.query(User.id).filter(
+            User.is_active.is_(True), User.is_superuser.is_(True)
+        ).first():
+            return True
+        row = (
+            db.query(User.id)
+            .join(UserRole, UserRole.user_id == User.id)
+            .join(RolePermission, RolePermission.role_id == UserRole.role_id)
+            .join(Permission, Permission.id == RolePermission.permission_id)
+            .filter(
+                User.is_active.is_(True),
+                Permission.code == USER_MANAGE,
+                UserRole.role_id != role_id,
+            )
+            .first()
+        )
+        return row is not None
+
+    @staticmethod
+    def replace_role_permissions(
+        db: Session,
+        role_id: int,
+        permission_codes: list[str],
+        operator: User,
+    ) -> dict:
+        """整体替换角色的权限集合，并防止系统失去用户管理入口。"""
+        role = (
+            db.query(Role)
+            .options(
+                selectinload(Role.role_permissions).joinedload(
+                    RolePermission.permission
+                )
+            )
+            .filter(Role.id == role_id)
+            .first()
+        )
+        if not role:
+            raise HTTPException(status_code=404, detail="角色不存在")
+
+        normalized = list(
+            dict.fromkeys(code.strip() for code in permission_codes if code.strip())
+        )
+        permissions = (
+            db.query(Permission).filter(Permission.code.in_(normalized)).all()
+            if normalized
+            else []
+        )
+        found_codes = {item.code for item in permissions}
+        missing = sorted(set(normalized) - found_codes)
+        if missing:
+            raise HTTPException(
+                status_code=400, detail=f"权限不存在: {', '.join(missing)}"
+            )
+
+        current_codes = {item.permission.code for item in role.role_permissions}
+        if (
+            USER_MANAGE in current_codes
+            and USER_MANAGE not in found_codes
+            and not UserService._user_manage_still_reachable(db, role.id, operator)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="不能移除该角色的用户管理权限：系统将没有任何账号能够管理用户",
+            )
+
+        # 与 replace_user_roles 相同：通过 ORM 关系删除，避免 SQLite 主键复用
+        # 导致 identity map 冲突。
+        role.role_permissions.clear()
+        db.flush()
+        for permission in permissions:
+            role.role_permissions.append(RolePermission(permission_id=permission.id))
+        db.commit()
+        db.refresh(role)
+        logger.info(
+            "角色权限已更新: role=%s permissions=%s operator=%s",
+            role.name,
+            sorted(found_codes),
+            operator.id,
+        )
+        return UserService._serialize_role(role)
+
+    @staticmethod
+    def create_role(
+        db: Session,
+        name: str,
+        display_name: str,
+        description: str | None,
+        permission_codes: list[str],
+        operator: User,
+    ) -> dict:
+        """创建自定义角色，可同时指定初始权限。"""
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise HTTPException(status_code=400, detail="角色标识不能为空")
+        if db.query(Role).filter(Role.name == normalized_name).first():
+            raise HTTPException(status_code=400, detail="角色标识已存在")
+
+        codes = list(
+            dict.fromkeys(code.strip() for code in permission_codes if code.strip())
+        )
+        permissions = (
+            db.query(Permission).filter(Permission.code.in_(codes)).all()
+            if codes
+            else []
+        )
+        missing = sorted(set(codes) - {item.code for item in permissions})
+        if missing:
+            raise HTTPException(
+                status_code=400, detail=f"权限不存在: {', '.join(missing)}"
+            )
+
+        role = Role(
+            name=normalized_name,
+            display_name=display_name.strip() or normalized_name,
+            description=(description or "").strip() or None,
+            is_system=False,
+        )
+        db.add(role)
+        db.flush()
+        for permission in permissions:
+            db.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        db.commit()
+        db.refresh(role)
+        logger.info("角色已创建: %s operator=%s", role.name, operator.id)
+        return UserService._serialize_role(role)
+
+    @staticmethod
+    def update_role(
+        db: Session,
+        role_id: int,
+        name: str | None,
+        display_name: str | None,
+        description: str | None,
+        operator: User,
+    ) -> dict:
+        """修改角色标识/显示名/描述；系统内置角色的标识不可修改。"""
+        role = db.query(Role).filter(Role.id == role_id).first()
+        if not role:
+            raise HTTPException(status_code=404, detail="角色不存在")
+
+        if name is not None and name.strip() != role.name:
+            if role.is_system:
+                raise HTTPException(
+                    status_code=400, detail="系统内置角色的标识不可修改"
+                )
+            new_name = name.strip()
+            if db.query(Role).filter(Role.name == new_name, Role.id != role.id).first():
+                raise HTTPException(status_code=400, detail="角色标识已存在")
+            role.name = new_name
+        if display_name is not None and display_name.strip():
+            role.display_name = display_name.strip()
+        if description is not None:
+            role.description = description.strip() or None
+        db.commit()
+        db.refresh(role)
+        logger.info("角色已更新: %s operator=%s", role.name, operator.id)
+        return UserService._serialize_role(role)
+
+    @staticmethod
+    def delete_role(db: Session, role_id: int, operator: User) -> dict:
+        """删除自定义角色并解除其用户关联；系统内置角色不可删除。"""
+        role = db.query(Role).filter(Role.id == role_id).first()
+        if not role:
+            raise HTTPException(status_code=404, detail="角色不存在")
+        if role.is_system:
+            raise HTTPException(status_code=400, detail="系统内置角色不可删除")
+
+        grants_user_manage = (
+            db.query(RolePermission.id)
+            .join(Permission, Permission.id == RolePermission.permission_id)
+            .filter(
+                RolePermission.role_id == role.id,
+                Permission.code == USER_MANAGE,
+            )
+            .first()
+            is not None
+        )
+        if grants_user_manage and not UserService._user_manage_still_reachable(
+            db, role.id, operator
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="不能删除该角色：系统将没有任何账号能够管理用户",
+            )
+
+        affected_users = (
+            db.query(UserRole).filter(UserRole.role_id == role.id).count()
+        )
+        role_name = role.name
+        db.query(UserRole).filter(UserRole.role_id == role.id).delete(
+            synchronize_session=False
+        )
+        db.query(RolePermission).filter(RolePermission.role_id == role.id).delete(
+            synchronize_session=False
+        )
+        db.delete(role)
+        db.commit()
+        logger.info(
+            "角色已删除: %s affected_users=%s operator=%s",
+            role_name,
+            affected_users,
+            operator.id,
+        )
+        return {"deleted": True, "affected_users": affected_users}
 
     @staticmethod
     def _active_admin_count(db: Session, exclude_user_id: int | None = None) -> int:

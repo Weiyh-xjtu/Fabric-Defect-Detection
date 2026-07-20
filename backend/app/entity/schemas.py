@@ -98,6 +98,18 @@ class UserStatusUpdate(SchemaModel):
     is_active: bool
 
 
+class RolePermissionsUpdate(SchemaModel):
+    """管理员整体替换角色的权限集合。"""
+    permission_codes: list[str] = Field(..., description="权限编码列表，可为空表示清空")
+
+
+class RoleUpdate(SchemaModel):
+    """管理员修改角色信息。"""
+    name: Optional[str] = Field(None, min_length=2, max_length=50, description="角色标识（系统内置角色不可修改）")
+    display_name: Optional[str] = Field(None, min_length=1, max_length=100, description="角色显示名")
+    description: Optional[str] = Field(None, max_length=255, description="角色描述")
+
+
 # --- 角色权限 ---
 class RoleResponse(SchemaModel):
     """角色响应"""

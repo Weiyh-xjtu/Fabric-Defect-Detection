@@ -82,33 +82,32 @@ def initialize_rbac(db: Session, migrate_existing_users: bool = True) -> None:
     db.flush()
 
     roles = {item.name: item for item in db.query(Role).all()}
+    created_role_names: set[str] = set()
     for role_name, definition in ROLE_DEFINITIONS.items():
         role = roles.get(role_name)
         if role is None:
-            role = Role(name=role_name)
+            role = Role(
+                name=role_name,
+                display_name=definition["display_name"],
+                description=definition["description"],
+            )
             db.add(role)
             roles[role_name] = role
-        role.display_name = definition["display_name"]
-        role.description = definition["description"]
+            created_role_names.add(role_name)
+        # Existing roles keep the display name/description/permissions an
+        # administrator configured through the UI; only the system flag is
+        # (re-)enforced for the built-in role names.
         role.is_system = True
     db.flush()
 
-    # Standard roles are authoritative: remove stale grants left by older data.
-    for role_name, definition in ROLE_DEFINITIONS.items():
-        desired_permission_ids = {
-            permissions[code].id for code in definition["permissions"]
-        }
-        db.query(RolePermission).filter(
-            RolePermission.role_id == roles[role_name].id,
-            ~RolePermission.permission_id.in_(desired_permission_ids),
-        ).delete(synchronize_session=False)
-
+    # Seed default permissions only for roles created just now; existing roles
+    # keep whatever grants an administrator configured through the UI.
     role_permission_pairs = {
         (item.role_id, item.permission_id) for item in db.query(RolePermission).all()
     }
-    for role_name, definition in ROLE_DEFINITIONS.items():
+    for role_name in created_role_names:
         role = roles[role_name]
-        for code in definition["permissions"]:
+        for code in ROLE_DEFINITIONS[role_name]["permissions"]:
             pair = (role.id, permissions[code].id)
             if pair not in role_permission_pairs:
                 db.add(RolePermission(role_id=pair[0], permission_id=pair[1]))

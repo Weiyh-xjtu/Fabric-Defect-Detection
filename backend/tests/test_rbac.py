@@ -58,19 +58,19 @@ def test_rbac_seed_is_idempotent_and_complete(db_session):
         HISTORY_READ_ANY,
     }.issubset(ROLE_DEFINITIONS[PRODUCTION_MANAGER]["permissions"])
     quality_role = db_session.query(Role).filter_by(name=QUALITY_INSPECTOR).one()
-    stale_permission = db_session.query(Permission).filter_by(
+    extra_permission = db_session.query(Permission).filter_by(
         code="dashboard:read:any"
     ).one()
-    if not db_session.query(RolePermission).filter_by(
+    extra_pair = db_session.query(RolePermission).filter_by(
         role_id=quality_role.id,
-        permission_id=stale_permission.id,
-    ).first():
-        db_session.add(
-            RolePermission(
-                role_id=quality_role.id,
-                permission_id=stale_permission.id,
-            )
+        permission_id=extra_permission.id,
+    ).first()
+    if not extra_pair:
+        extra_pair = RolePermission(
+            role_id=quality_role.id,
+            permission_id=extra_permission.id,
         )
+        db_session.add(extra_pair)
         db_session.commit()
 
     initialize_rbac(db_session)
@@ -79,13 +79,22 @@ def test_rbac_seed_is_idempotent_and_complete(db_session):
     assert {
         item.code for item in db_session.query(Permission).all()
     }.issuperset(ALL_PERMISSION_CODES)
+    # 管理员通过界面自定义的授权（此处模拟的额外权限）在重启 seed 后保留
     for role_name, definition in ROLE_DEFINITIONS.items():
         role = db_session.query(Role).filter_by(name=role_name).one()
         granted = {item.permission.code for item in role.role_permissions}
-        assert granted == definition["permissions"]
+        assert granted.issuperset(
+            definition["permissions"]
+            if role_name != QUALITY_INSPECTOR
+            else definition["permissions"] | {"dashboard:read:any"}
+        )
 
     pairs = db_session.query(RolePermission.role_id, RolePermission.permission_id).all()
     assert len(pairs) == len(set(pairs))
+
+    # 清理模拟的额外授权，避免影响其他测试
+    db_session.delete(extra_pair)
+    db_session.commit()
 
 
 def test_rbac_seed_maps_legacy_and_unassigned_users(db_session):
