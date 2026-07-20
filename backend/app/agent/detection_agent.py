@@ -20,6 +20,7 @@ import contextvars
 import copy
 import json
 import os
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from typing import AsyncGenerator
 
@@ -54,6 +55,17 @@ from app.entity.db_models import (
 )
 
 logger = get_logger(__name__)
+
+
+_REQUIRED_TOOL_RETRY_TEMPLATE = """强制执行要求（本轮重试）：
+你上一次没有调用数据查询工具，因此上一次答案已被系统拒绝。生成任何结论前，
+必须至少调用一个与用户请求匹配的工具：{tool_names}。
+其它专家的结果只能用于确定查询参数（例如缺陷类别），不能替代平台数据查询。
+只能根据工具实际返回值回答；若工具返回 error，必须如实说明错误，禁止自行补全数据。"""
+
+_REQUIRED_TOOL_FAILURE_MESSAGE = (
+    "数据分析未按要求调用查询工具，系统已拒绝未经过数据验证的答案。请稍后重试。"
+)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -953,11 +965,22 @@ def create_llm():
 class DetectionAgent:
     """检测智能体 — 封装 ReAct Agent 创建和对话逻辑"""
 
-    def __init__(self, tools: list | None = None, system_prompt: str | None = None, name: str = "detection"):
+    def __init__(
+        self,
+        tools: list | None = None,
+        system_prompt: str | None = None,
+        name: str = "detection",
+        required_tool_names: set[str] | None = None,
+        required_tool_resolver: Callable[[str], set[str]] | None = None,
+        max_required_tool_retries: int = 1,
+    ):
         """初始化 Agent，创建 LLM 和 AgentExecutor"""
         self.llm = create_llm()
         self.tools = tools or DETECTION_TOOLS
         self.name = name
+        self.required_tool_names = set(required_tool_names or ())
+        self.required_tool_resolver = required_tool_resolver
+        self.max_required_tool_retries = max(0, max_required_tool_retries)
 
         # OpenAI Tools Agent 系统提示词
         default_system_prompt = """你是一个专业的目标检测平台助手。你可以执行图片、ZIP 压缩包和视频检测，也可以查询系统用户、角色和权限。
@@ -1000,6 +1023,7 @@ class DetectionAgent:
             "用户提到“今天/昨天/前天/本周/上周/最近N天”等相对日期时，"
             "必须以该系统日期为基准换算成具体日期（例如“昨天”＝系统日期减一天），"
             "并在回答中使用换算后的日期，绝不能凭记忆或猜测使用其他日期。"
+            "\n\n{runtime_instruction}"
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -1027,6 +1051,37 @@ class DetectionAgent:
         )
 
         logger.info("%s Agent 初始化完成，绑定 %d 个工具", self.name, len(self.tools))
+
+    def _required_tools_for(self, message: str) -> set[str]:
+        """返回当前消息必须调用的候选工具集合。"""
+        if self.required_tool_resolver is not None:
+            return set(self.required_tool_resolver(message))
+        return set(self.required_tool_names)
+
+    @staticmethod
+    def _required_tool_called(
+        intermediate_steps: list | None, required_tool_names: set[str]
+    ) -> bool:
+        """判断 AgentExecutor 的中间步骤是否包含本 Agent 强制要求的工具。"""
+        if not required_tool_names:
+            return True
+        for step in intermediate_steps or []:
+            action = step[0] if isinstance(step, (tuple, list)) and step else step
+            tool_name = (
+                action.get("tool")
+                if isinstance(action, dict)
+                else getattr(action, "tool", None)
+            )
+            if tool_name in required_tool_names:
+                return True
+        return False
+
+    @staticmethod
+    def _required_tool_retry_instruction(required_tool_names: set[str]) -> str:
+        """生成仅在无工具调用重试时注入的系统级纠正指令。"""
+        return _REQUIRED_TOOL_RETRY_TEMPLATE.format(
+            tool_names="、".join(sorted(required_tool_names))
+        )
 
     async def chat(
         self,
@@ -1068,13 +1123,38 @@ class DetectionAgent:
         )
         try:
             history = conversation_memory.load(session_id, user_id)
-            result = await self.executor.ainvoke(
-                {
-                    "input": message,
-                    "chat_history": history,
-                    "current_date": _current_date_text(),
-                }
-            )
+            required_tool_names = self._required_tools_for(message)
+            result = None
+            for attempt in range(self.max_required_tool_retries + 1):
+                result = await self.executor.ainvoke(
+                    {
+                        "input": message,
+                        "chat_history": history,
+                        "current_date": _current_date_text(),
+                        "runtime_instruction": (
+                            self._required_tool_retry_instruction(required_tool_names)
+                            if attempt
+                            else ""
+                        ),
+                    }
+                )
+                if self._required_tool_called(
+                    result.get("intermediate_steps"), required_tool_names
+                ):
+                    break
+                logger.warning(
+                    "%s Agent 第 %d 次执行未调用必需工具，拒绝答案%s",
+                    self.name,
+                    attempt + 1,
+                    "并重试" if attempt < self.max_required_tool_retries else "",
+                )
+            else:  # pragma: no cover - range 永远至少执行一次
+                result = None
+
+            if result is None or not self._required_tool_called(
+                result.get("intermediate_steps"), required_tool_names
+            ):
+                return {"output": _REQUIRED_TOOL_FAILURE_MESSAGE, "intermediate_steps": []}
             if record_memory:
                 conversation_memory.append(session_id, "user", message, user_id)
                 conversation_memory.append(session_id, "assistant", result["output"], user_id)
@@ -1137,81 +1217,119 @@ class DetectionAgent:
         )
         result_holder = {"result": None}
         token_full = _last_full_tool_result.set(result_holder)
-        response_chunks = []
         try:
             history = conversation_memory.load(session_id, user_id)
-            async for event in self.executor.astream_events(
-                {
-                    "input": message,
-                    "chat_history": history,
-                    "current_date": _current_date_text(),
-                },
-                version="v2",
-            ):
-                event_kind = event["event"]
+            required_tool_names = self._required_tools_for(message)
+            accepted_chunks: list[str] = []
+            accepted = False
+            for attempt in range(self.max_required_tool_retries + 1):
+                response_chunks: list[str] = []
+                buffered_events: list[dict] = []
+                required_tool_called = not required_tool_names
 
-                if event_kind == "on_chat_model_stream":
-                    # LLM 正在生成回复的文本片段
-                    chunk = event["data"]["chunk"]
-                    if hasattr(chunk, "content") and chunk.content:
-                        response_chunks.append(chunk.content)
-                        yield {
-                            "type": "text_chunk",
-                            "content": chunk.content,
+                async for event in self.executor.astream_events(
+                    {
+                        "input": message,
+                        "chat_history": history,
+                        "current_date": _current_date_text(),
+                        "runtime_instruction": (
+                            self._required_tool_retry_instruction(required_tool_names)
+                            if attempt
+                            else ""
+                        ),
+                    },
+                    version="v2",
+                ):
+                    event_kind = event["event"]
+                    frontend_event = None
+
+                    if event_kind == "on_chat_model_stream":
+                        # 对强制工具 Agent 先缓冲文本；整轮无工具时丢弃，避免错误答案闪现。
+                        chunk = event["data"]["chunk"]
+                        if hasattr(chunk, "content") and chunk.content:
+                            response_chunks.append(chunk.content)
+                            frontend_event = {
+                                "type": "text_chunk",
+                                "content": chunk.content,
+                            }
+
+                    elif event_kind == "on_tool_start":
+                        tool_name = event["name"]
+                        tool_input = event["data"].get("input", {})
+                        logger.info("工具调用: %s, 输入: %s", tool_name, str(tool_input)[:200])
+                        if tool_name in required_tool_names:
+                            required_tool_called = True
+                        frontend_event = {
+                            "type": "tool_call",
+                            "tool": tool_name,
+                            "input": tool_input,
                         }
 
-                elif event_kind == "on_tool_start":
-                    # Agent 开始调用工具
-                    tool_name = event["name"]
-                    tool_input = event["data"].get("input", {})
-                    logger.info("工具调用: %s, 输入: %s", tool_name, str(tool_input)[:200])
-                    yield {
-                        "type": "tool_call",
-                        "tool": tool_name,
-                        "input": tool_input,
-                    }
+                    elif event_kind == "on_tool_end":
+                        # 兼容不同 LangChain 版本的 output 路径
+                        tool_data = event.get("data", {})
+                        tool_output = tool_data.get("output", "")
+                        tool_name = event.get("name", "")
+                        logger.info(
+                            "工具完成: %s, output类型=%s, output长度=%d",
+                            tool_name,
+                            type(tool_output).__name__,
+                            len(str(tool_output)) if tool_output else 0,
+                        )
+                        logger.debug("on_tool_end data keys: %s", list(tool_data.keys()))
+                        # 完整检测结果给前端，精简结果仍只回喂 LLM。
+                        current_holder = _last_full_tool_result.get()
+                        full_result = (
+                            current_holder.get("result")
+                            if isinstance(current_holder, dict)
+                            else current_holder
+                        )
+                        frontend_result = (
+                            full_result
+                            if full_result is not None
+                            else (str(tool_output) if tool_output else "")
+                        )
+                        if isinstance(current_holder, dict):
+                            current_holder["result"] = None
+                        else:
+                            _last_full_tool_result.set(None)
+                        frontend_event = {
+                            "type": "tool_result",
+                            "tool": tool_name,
+                            "result": frontend_result,
+                        }
 
-                elif event_kind == "on_tool_end":
-                    # 工具调用完成
-                    # 兼容不同 LangChain 版本的 output 路径
-                    tool_data = event.get("data", {})
-                    tool_output = tool_data.get("output", "")
-                    tool_name = event.get("name", "")
-                    logger.info(
-                        "工具完成: %s, output类型=%s, output长度=%d",
-                        tool_name,
-                        type(tool_output).__name__,
-                        len(str(tool_output)) if tool_output else 0,
-                    )
-                    # 记录 event data 的所有键，便于调试
-                    logger.debug("on_tool_end data keys: %s", list(tool_data.keys()))
-                    # 发给前端的用「完整版」结果（含 base64 标注图），供结果卡片渲染；
-                    # LLM 收到的仍是工具返回的精简版（不含 base64）。两条通道分离。
-                    current_holder = _last_full_tool_result.get()
-                    full_result = (
-                        current_holder.get("result")
-                        if isinstance(current_holder, dict)
-                        else current_holder
-                    )
-                    frontend_result = (
-                        full_result
-                        if full_result is not None
-                        else (str(tool_output) if tool_output else "")
-                    )
-                    if isinstance(current_holder, dict):
-                        current_holder["result"] = None
-                    else:
-                        _last_full_tool_result.set(None)
-                    yield {
-                        "type": "tool_result",
-                        "tool": tool_name,
-                        "result": frontend_result,
-                    }
+                    if frontend_event is not None:
+                        if required_tool_called:
+                            for buffered in buffered_events:
+                                yield buffered
+                            buffered_events.clear()
+                            yield frontend_event
+                        else:
+                            buffered_events.append(frontend_event)
+
+                if required_tool_called:
+                    for buffered in buffered_events:
+                        yield buffered
+                    accepted_chunks = response_chunks
+                    accepted = True
+                    break
+
+                logger.warning(
+                    "%s Agent 第 %d 次流式执行未调用必需工具，丢弃答案%s",
+                    self.name,
+                    attempt + 1,
+                    "并重试" if attempt < self.max_required_tool_retries else "",
+                )
+
+            if not accepted:
+                yield {"type": "error", "content": _REQUIRED_TOOL_FAILURE_MESSAGE}
+                return
 
             if record_memory:
                 conversation_memory.append(session_id, "user", message, user_id)
-                if response_chunks:
-                    conversation_memory.append(session_id, "assistant", "".join(response_chunks), user_id)
+                if accepted_chunks:
+                    conversation_memory.append(session_id, "assistant", "".join(accepted_chunks), user_id)
 
         except Exception as e:
             logger.error("Agent 流式执行异常: %s", str(e), exc_info=True)

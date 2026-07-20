@@ -41,6 +41,43 @@ AGENT_EMOJIS = {"detection": "🔍", "analysis": "📊", "qa": "📖"}
 # 队列内部哨兵事件类型：标记某个专家流结束，仅编排器内部消费，绝不对外 yield。
 _SPECIALIST_DONE = "_specialist_done"
 
+_ANALYSIS_STAT_TOOLS = {"query_detection_statistics", "query_detection_trends"}
+_ANALYSIS_SYSTEM_TOOLS = {"query_system_users", "query_system_roles"}
+
+
+def _analysis_required_tools(message: str) -> set[str]:
+    """按分析子任务选择运行时必须出现的查询工具组。"""
+    text = (message or "").lower()
+    role_terms = ("角色", "权限", "管理员", "role", "permission", "admin")
+    user_terms = ("用户", "账号", "邮箱", "user", "account", "email")
+    detection_data_terms = (
+        "检测",
+        "缺陷",
+        "目标",
+        "任务",
+        "图片",
+        "视频",
+        "批量",
+        "单图",
+        "趋势",
+        "分布",
+        "统计",
+        "今天",
+        "今日",
+        "昨天",
+        "本周",
+        "上周",
+    )
+    # 角色/权限属于系统元数据；单纯查询用户资料也走系统工具。
+    if any(term in text for term in role_terms):
+        return set(_ANALYSIS_SYSTEM_TOOLS)
+    if any(term in text for term in user_terms) and not any(
+        term in text for term in detection_data_terms
+    ):
+        return set(_ANALYSIS_SYSTEM_TOOLS)
+    # 其余分析任务均为检测数据分析，只认可真正的统计/趋势工具。
+    return set(_ANALYSIS_STAT_TOOLS)
+
 
 def _section_header(agent: str, first: bool) -> str:
     """并行模式下各专家回答的分节标题；首节不带分割线。"""
@@ -65,7 +102,8 @@ def _format_upstream_context(upstream_outputs: dict | None) -> str:
         return ""
     body = "\n\n".join(parts)
     return (
-        "[以下是你所依赖的其它专家已完成的结果，请据此完成上面的任务，不要重复它们已给出的内容]\n"
+        "[以下是你所依赖的其它专家已完成的结果，请据此完成上面的任务，不要重复它们已给出的内容；"
+        "这些结果不能替代你自身任务要求的数据查询或知识检索工具调用]\n"
         + body
     )
 
@@ -100,7 +138,10 @@ class MultiAgentOrchestrator:
                 [query_detection_statistics, query_detection_trends, query_system_users, query_system_roles],
                 system_prompt=(
                     ANALYSIS_PROMPT
-                    + " 必须调用工具获取真实数据，禁止编造统计数字。"
+                    + " 每次处理任务都必须先调用至少一个与请求匹配的数据查询工具获取真实数据，"
+                    "禁止跳过工具直接回答，禁止编造统计数字。"
+                    "其它专家的检测结果只能用于提取查询条件（例如缺陷类别），不能作为历史或今日统计结果；"
+                    "即使上游已经给出数量、置信度或坐标，也仍须调用统计查询工具后才能给出统计结论。"
                     "询问今日/今天时调用 query_detection_statistics 并设置 today=true。"
                     "询问昨天/前天等某一天时，按系统提示中的当前日期换算出那一天，"
                     "把 start_date 和 end_date 都设为该日期（如昨天＝当前日期减一天）。"
@@ -116,6 +157,14 @@ class MultiAgentOrchestrator:
                     "没有数据时明确回答对应筛选条件下暂无检测记录，不要要求上传附件。"
                 ),
                 name="analysis",
+                required_tool_names={
+                    "query_detection_statistics",
+                    "query_detection_trends",
+                    "query_system_users",
+                    "query_system_roles",
+                },
+                required_tool_resolver=_analysis_required_tools,
+                max_required_tool_retries=1,
             ),
             "qa": DetectionAgent(
                 [search_knowledge],
