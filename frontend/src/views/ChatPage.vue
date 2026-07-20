@@ -150,6 +150,18 @@
                   }}</span>
                 </div>
 
+                <!-- 统计/趋势等查询工具的结果面板 -->
+                <div v-if="step.query" class="query-result-panel">
+                  <div
+                    v-for="(field, fi) in step.query.fields"
+                    :key="fi"
+                    class="query-field"
+                  >
+                    <span class="query-field-label">{{ field.label }}</span>
+                    <span class="query-field-value">{{ field.value }}</span>
+                  </div>
+                </div>
+
                 <!-- 知识库检索来源 -->
                 <div v-if="step.knowledge" class="knowledge-sources">
                   <div
@@ -1554,6 +1566,37 @@ onMounted(async () => {
 .knowledge-sources {
   margin-left: 26px;
   font-size: 12px;
+}
+
+/* 查询工具（统计/趋势/用户/角色）的结果面板；字体与调用链摘要行一致 */
+.query-result-panel {
+  margin: 6px 0 4px 26px;
+  padding: 8px 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 4px 16px;
+  background: #f5f7fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.query-field {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.query-field-label {
+  color: $text-secondary;
+  flex-shrink: 0;
+}
+
+.query-field-value {
+  color: $text-regular;
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .knowledge-fallback {

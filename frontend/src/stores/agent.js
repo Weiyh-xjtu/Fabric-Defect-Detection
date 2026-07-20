@@ -14,7 +14,7 @@ import {
   getChatSessions,
   updateChatSessionTitle,
 } from '@/api/chat'
-import { parseToolResult } from '@/utils/toolChain'
+import { parseToolResult, QUERY_TOOLS } from '@/utils/toolChain'
 
 const CURRENT_SESSION_KEY = 'rsod_chat_current_session'
 
@@ -115,6 +115,7 @@ function buildToolChainFromHistory(item) {
       step.status = info.error ? 'error' : 'done'
       step.summary = info.summary
       if (info.knowledge) step.knowledge = info.knowledge
+      if (info.query) step.query = info.query
     }
     return step
   })
@@ -124,6 +125,8 @@ function buildToolChainFromHistory(item) {
 function parseHistoryDetections(item) {
   const found = []
   for (const entry of parseHistoryToolResults(item)) {
+    // 分析类查询工具的统计结果也带 total_objects，但不是检测结果卡片
+    if (QUERY_TOOLS.has(entry.tool)) continue
     let result
     try {
       result = typeof entry.result === 'string' ? JSON.parse(entry.result) : entry.result
