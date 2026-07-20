@@ -148,10 +148,30 @@
                   <span v-if="step.summary" class="tool-chain-summary">{{
                     step.summary
                   }}</span>
+                  <!-- 查询详情开关内联进标题行，默认收起，节省一行空间 -->
+                  <button
+                    v-if="step.query"
+                    type="button"
+                    class="query-toggle"
+                    @click="step.queryExpanded = !step.queryExpanded"
+                  >
+                    <el-icon class="query-toggle-icon">
+                      <ArrowRight v-if="!step.queryExpanded" />
+                      <ArrowDown v-else />
+                    </el-icon>
+                    <span>
+                      {{ step.queryExpanded ? "收起详情" : "查看详情" }}
+                      ({{ step.query.fields.length }} 项)
+                    </span>
+                  </button>
                 </div>
 
-                <!-- 统计/趋势等查询工具的结果面板 -->
-                <div v-if="step.query" class="query-result-panel">
+                <!-- 统计/趋势等查询工具的结果面板：默认收起，展开后显示字段详情 -->
+                <div
+                  v-if="step.query"
+                  v-show="step.queryExpanded"
+                  class="query-result-panel"
+                >
                   <div
                     v-for="(field, fi) in step.query.fields"
                     :key="fi"
@@ -1578,6 +1598,9 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 摘要过长时优先压缩自身，保证后面的详情开关始终可见 */
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 /* ── 知识库检索来源 ── */
@@ -1586,12 +1609,34 @@ onMounted(async () => {
   font-size: 12px;
 }
 
-/* 查询工具（统计/趋势/用户/角色）的结果面板；字体与调用链摘要行一致 */
+/* 收起/展开开关，内联在调用链标题行，样式与知识库引用开关保持一致 */
+.query-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: $text-secondary;
+  flex-shrink: 0;
+  white-space: nowrap;
+
+  &:hover {
+    color: $signal-orange;
+  }
+}
+
+.query-toggle-icon {
+  font-size: 12px;
+}
+
 .query-result-panel {
   margin: 6px 0 4px 26px;
   padding: 8px 12px;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px 16px;
   background: #f5f7fa;
   border: 1px solid #e0e0e0;
@@ -1603,7 +1648,6 @@ onMounted(async () => {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  min-width: 0;
 }
 
 .query-field-label {
@@ -1614,7 +1658,8 @@ onMounted(async () => {
 .query-field-value {
   color: $text-regular;
   font-weight: 600;
-  overflow-wrap: anywhere;
+  /* 整段值不在字符间断行，避免 "单图 4 · 批量 0 · 视频 0" 被拆成两行 */
+  white-space: nowrap;
 }
 
 .knowledge-fallback {
