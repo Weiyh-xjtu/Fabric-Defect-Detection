@@ -29,6 +29,9 @@
 # ═══════════════════════════════════════════════════════
 set -Eeuo pipefail
 
+# set -e 静默退出会让人误以为部署完成，出错时明确报出位置
+trap 'printf "\n\033[1;31m[error]\033[0m 脚本在第 %s 行失败（命令: %s）\n部署未完成！排查后可直接重跑本脚本（已完成步骤会跳过）。\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
+
 log()  { printf '\n\033[1;32m[deploy]\033[0m %s\n' "$*"; }
 warn() { printf '\n\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -119,7 +122,7 @@ ask_secret EMBEDDING_API_KEY "Embedding API Key（回车复用聊天 Key）" "$Q
 ask        EMBEDDING_BASE_URL "Embedding Base URL" "$QWEN_BASE_URL"
 ask        EMBEDDING_MODEL   "Embedding 模型名" "text-embedding-v3"
 ask        EMBEDDING_DIM     "Embedding 维度" "1024"
-ask        AUTO_UPDATE       "启用自动更新？检测到新提交时自动部署 (y/n)" "y"
+ask        AUTO_UPDATE       "启用自动更新 timer？（若用 GitHub Actions 部署请选 n，两者会冲突）(y/n)" "n"
 ask        DEPLOY_BRANCH     "自动更新跟踪的分支" "$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo development)"
 
 # DNS 校验（仅提示，不中断）
@@ -314,10 +317,26 @@ if [[ "$PROXY_MODE" == "caddy" ]]; then
   systemctl restart caddy
 else
   log "生成 nginx 站点配置（不影响既有站点）"
+
+  # nginx 自带的 default 站点只显示 "Welcome to nginx" 欢迎页，
+  # 会抢走 Host 不匹配的请求，禁用之（只动发行版自带的那个软链）
+  if [[ -L /etc/nginx/sites-enabled/default ]] \
+     && [[ "$(readlink -f /etc/nginx/sites-enabled/default)" == "/etc/nginx/sites-available/default" ]]; then
+    log "禁用 nginx 自带的 default 欢迎页站点"
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+
+  # 若其他站点均未声明 default_server，则由 firesight 兜底
+  # （这样用 IP 直接访问也能到达本站，而不是 404/欢迎页）
+  DEFAULT_SERVER=""
+  if ! grep -rqs 'default_server' /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null; then
+    DEFAULT_SERVER=" default_server"
+  fi
+
   cat > /etc/nginx/sites-available/firesight <<EOF
 # FIRESIGHT — 由 local-deploy.sh 生成
 server {
-    listen 80;
+    listen 80$DEFAULT_SERVER;
     server_name $DOMAIN;
 
     # 上传大文件（数据集 ZIP、视频）
@@ -408,6 +427,17 @@ for _ in $(seq 1 24); do
   sleep 5
 done
 [[ "$ok" == "1" ]] || die "后端健康检查失败，请查看: journalctl -u firesight-backend -e"
+
+# 本机直连反代校验前端首页是否真的由 FIRESIGHT 提供（而非 nginx 欢迎页）
+log "校验反代是否正确指向 FIRESIGHT 前端"
+home_html="$(curl -fsS --max-time 10 -H "Host: $DOMAIN" http://127.0.0.1/ 2>/dev/null || true)"
+if grep -qi 'Welcome to nginx' <<<"$home_html"; then
+  warn "访问站点返回的是 nginx 默认欢迎页，FIRESIGHT 配置未生效！"
+  warn "排查: nginx -T | grep -A5 'server_name $DOMAIN'"
+  warn "确认 /etc/nginx/sites-enabled/firesight 存在且 default 站点已禁用"
+elif [[ -z "$home_html" ]]; then
+  warn "无法从本机 127.0.0.1 取到前端首页，请检查 nginx 配置与 $WEB_ROOT 权限"
+fi
 
 if curl -fsS --max-time 15 "https://$DOMAIN/api/health" >/dev/null 2>&1; then
   log "HTTPS 站点验证通过"
