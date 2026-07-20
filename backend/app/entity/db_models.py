@@ -1,7 +1,7 @@
 """
 数据库模型定义
 表结构总览：
-  用户权限：users, roles, permissions, user_roles, role_permissions
+  用户权限：users, auth_sessions, roles, permissions, user_roles, role_permissions
   检测业务：detection_scenes, detection_tasks, detection_results
   模型管理：training_tasks, training_metrics, model_versions
   智能体：  chat_sessions, chat_messages
@@ -41,6 +41,31 @@ class User(Base):
     training_tasks = relationship("TrainingTask", back_populates="user")
     chat_sessions = relationship("ChatSession", back_populates="user")
     operation_logs = relationship("OperationLog", back_populates="user")
+    auth_sessions = relationship(
+        "AuthSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class AuthSession(Base):
+    """登录认证会话，用于服务端撤销 Access/Refresh Token。"""
+
+    __tablename__ = "auth_sessions"
+    id = Column(String(36), primary_key=True, comment="JWT sid，会话唯一标识")
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="所属用户",
+    )
+    created_at = Column(DateTime, default=datetime.now, nullable=False, comment="创建时间")
+    expires_at = Column(DateTime, nullable=False, index=True, comment="Refresh 会话过期时间")
+    last_refreshed_at = Column(DateTime, default=datetime.now, nullable=False, comment="最后续期时间")
+    revoked_at = Column(DateTime, nullable=True, index=True, comment="撤销时间")
+
+    user = relationship("User", back_populates="auth_sessions")
 
 
 class Role(Base):

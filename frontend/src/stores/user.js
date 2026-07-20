@@ -143,7 +143,8 @@ export const useUserStore = defineStore('user', {
      * 退出登录
      */
     logout() {
-      void logoutApi().catch(() => null)
+      const accessToken = this.token
+      void logoutApi(accessToken).catch(() => null)
       this.clearSession()
     },
   },
