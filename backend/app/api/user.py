@@ -8,7 +8,13 @@ from app.core.permissions import require_permission
 from app.core.rbac import USER_MANAGE
 from app.database.session import get_db
 from app.entity.db_models import User
-from app.entity.schemas import UserRolesUpdate, UserStatusUpdate
+from app.entity.schemas import (
+    RoleCreate,
+    RolePermissionsUpdate,
+    RoleUpdate,
+    UserRolesUpdate,
+    UserStatusUpdate,
+)
 from app.services.user_service import AVATAR_MAX_FILE_SIZE, user_service
 
 router = APIRouter(prefix="/api/user", tags=["用户管理"])
@@ -33,6 +39,73 @@ async def list_roles(
 ) -> dict:
     """返回角色及其权限编码。"""
     return {"roles": user_service.list_roles(db)}
+
+
+@router.get("/permissions", summary="获取所有权限定义")
+async def list_permissions(
+    _current_user: User = Depends(require_permission(USER_MANAGE)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """返回全部权限编码及其名称、所属模块，供角色权限编辑使用。"""
+    return {"permissions": user_service.list_permissions(db)}
+
+
+@router.put("/roles/{role_id}/permissions", summary="修改角色权限")
+async def update_role_permissions(
+    role_id: int,
+    request: RolePermissionsUpdate,
+    current_user: User = Depends(require_permission(USER_MANAGE)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """整体替换指定角色的权限集合，变更对该角色下所有用户立即生效。"""
+    return user_service.replace_role_permissions(
+        db, role_id, request.permission_codes, current_user
+    )
+
+
+@router.post("/roles", summary="创建角色", status_code=201)
+async def create_role(
+    request: RoleCreate,
+    current_user: User = Depends(require_permission(USER_MANAGE)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """创建自定义角色，可同时指定初始权限。"""
+    return user_service.create_role(
+        db,
+        request.name,
+        request.display_name,
+        request.description,
+        request.permission_codes,
+        current_user,
+    )
+
+
+@router.put("/roles/{role_id}", summary="修改角色信息")
+async def update_role(
+    role_id: int,
+    request: RoleUpdate,
+    current_user: User = Depends(require_permission(USER_MANAGE)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """修改角色标识、显示名或描述；系统内置角色的标识不可修改。"""
+    return user_service.update_role(
+        db,
+        role_id,
+        request.name,
+        request.display_name,
+        request.description,
+        current_user,
+    )
+
+
+@router.delete("/roles/{role_id}", summary="删除角色")
+async def delete_role(
+    role_id: int,
+    current_user: User = Depends(require_permission(USER_MANAGE)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """删除自定义角色并解除其用户关联；系统内置角色不可删除。"""
+    return user_service.delete_role(db, role_id, current_user)
 
 
 @router.put("/profile", summary="更新个人信息")

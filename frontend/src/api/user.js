@@ -9,6 +9,28 @@ export function getRoleList() {
   return request.get('/user/roles')
 }
 
+export function getPermissionList() {
+  return request.get('/user/permissions')
+}
+
+export function updateRolePermissions(roleId, permissionCodes) {
+  return request.put(`/user/roles/${roleId}/permissions`, {
+    permission_codes: permissionCodes,
+  })
+}
+
+export function createRole(payload) {
+  return request.post('/user/roles', payload)
+}
+
+export function updateRole(roleId, payload) {
+  return request.put(`/user/roles/${roleId}`, payload)
+}
+
+export function deleteRole(roleId) {
+  return request.delete(`/user/roles/${roleId}`)
+}
+
 export function updateUserRoles(userId, roleNames) {
   return request.put(`/user/${userId}/roles`, { role_names: roleNames })
 }
