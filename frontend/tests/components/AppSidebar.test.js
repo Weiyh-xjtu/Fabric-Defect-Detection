@@ -68,13 +68,14 @@ describe('AppSidebar 独立滚动布局', () => {
     routerPush.mockReset()
   })
 
-  it('聊天页面同时渲染菜单滚动区和历史滚动区', () => {
+  it('聊天页面同时渲染独立的菜单滚动区和历史滚动区', () => {
     const wrapper = mountSidebar()
 
     expect(wrapper.find('.app-sidebar').classes()).toContain('has-chat-history')
     expect(wrapper.find('.menu-scroll-area').exists()).toBe(true)
     expect(wrapper.find('.chat-history-section').exists()).toBe(true)
     expect(wrapper.find('.session-list').exists()).toBe(true)
+    expect(wrapper.find('.menu-scroll-area').text()).toContain('用户管理')
   })
 
   it('非聊天页面仅保留全高菜单滚动区', async () => {
@@ -101,10 +102,12 @@ describe('AppSidebar 独立滚动布局', () => {
     const wrapper = mountSidebar()
 
     await wrapper.find('.history-toggle-button').trigger('click')
+    expect(wrapper.find('.app-sidebar').classes()).not.toContain('has-chat-history')
     expect(wrapper.find('.chat-history-section').classes()).toContain('is-history-collapsed')
     expect(wrapper.find('.session-list').exists()).toBe(false)
 
     await wrapper.find('.history-toggle-button').trigger('click')
+    expect(wrapper.find('.app-sidebar').classes()).toContain('has-chat-history')
     expect(wrapper.find('.session-list').exists()).toBe(true)
   })
 

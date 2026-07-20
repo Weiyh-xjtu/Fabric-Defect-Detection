@@ -31,6 +31,24 @@
           />
         </div>
         <div class="filter-item">
+          <span class="filter-label">员工</span>
+          <el-select
+            v-model="selectedEmployee"
+            clearable
+            filterable
+            placeholder="全部员工"
+            class="employee-select"
+            @change="handleEmployeeChange"
+          >
+            <el-option
+              v-for="option in employeeOptions"
+              :key="option.id"
+              :label="`${option.username}（${option.task_count}）`"
+              :value="option.id"
+            />
+          </el-select>
+        </div>
+        <div class="filter-item">
           <span class="filter-label">场景</span>
           <el-select
             v-model="selectedScene"
@@ -293,6 +311,7 @@ import {
   getClassDistribution,
   getDefectOptions,
   getDefectTrend,
+  getEmployeeOptions,
   getSceneDistribution,
   getSceneOptions,
   getStatistics,
@@ -307,6 +326,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'v
 
 const preset = ref(30)
 const dateRange = ref(null)
+const selectedEmployee = ref(null)
+const employeeOptions = ref([])
 const selectedScene = ref(null)
 const sceneOptions = ref([])
 const selectedDefects = ref([])
@@ -352,6 +373,9 @@ const defectFilterActive = computed(() => selectedDefects.value.length > 0)
 /** 把当前筛选状态转成 API 参数：自定义区间优先，否则用天数预设。 */
 function currentQuery() {
   const query = { classNames: selectedDefects.value }
+  if (selectedEmployee.value) {
+    query.employeeId = selectedEmployee.value
+  }
   if (selectedScene.value) {
     query.sceneId = selectedScene.value
   }
@@ -481,15 +505,19 @@ const tableConfigs = computed(() => {
 
 /** 当前时间窗口的文件名后缀。 */
 function rangeLabel() {
+  const employeeName = employeeOptions.value.find(
+    (item) => item.id === selectedEmployee.value,
+  )?.username
   const sceneName = sceneOptions.value.find(
     (item) => item.id === selectedScene.value,
   )?.display_name
-  const scenePrefix = sceneName ? `${sceneName}-` : ''
+  const filterPrefix = [employeeName, sceneName].filter(Boolean).join('-')
+  const prefix = filterPrefix ? `${filterPrefix}-` : ''
   if (preset.value === 'custom' && dateRange.value?.length === 2) {
-    return `${scenePrefix}${dateRange.value[0]}_${dateRange.value[1]}`
+    return `${prefix}${dateRange.value[0]}_${dateRange.value[1]}`
   }
   const days = preset.value === 'custom' ? 30 : preset.value
-  return `${scenePrefix}近${days}天`
+  return `${prefix}近${days}天`
 }
 
 /** 导出指定卡片的表格数据为 CSV。 */
@@ -587,6 +615,22 @@ function handleDateRangeChange() {
 async function handleSceneChange() {
   await loadDefectOptions(currentQuery())
   await loadAllData()
+}
+
+/** 员工切换后缺陷选项与全部聚合数据都要按该员工重新计算。 */
+async function handleEmployeeChange() {
+  await loadDefectOptions(currentQuery())
+  await loadAllData()
+}
+
+/** 拉取有检测记录的员工选项。 */
+async function loadEmployeeOptions() {
+  try {
+    const result = await getEmployeeOptions()
+    employeeOptions.value = result.options || []
+  } catch (error) {
+    console.error('[员工选项加载失败]', error)
+  }
 }
 
 /** 拉取场景下拉选项（启用场景，全量一次性加载）。 */
@@ -788,7 +832,7 @@ function handleResize() {
 }
 
 onMounted(async () => {
-  await loadSceneOptions()
+  await Promise.all([loadEmployeeOptions(), loadSceneOptions()])
   await loadDefectOptions(currentQuery())
   await loadAllData()
   window.addEventListener('resize', handleResize)
@@ -835,6 +879,7 @@ onBeforeUnmount(() => {
 }
 .filter-label { color: $text-secondary; font-size: 14px; white-space: nowrap; }
 .scene-select { min-width: 180px; }
+.employee-select { min-width: 180px; }
 .defect-select { min-width: 260px; }
 .card-header {
   display: flex;
@@ -910,6 +955,7 @@ onBeforeUnmount(() => {
   .filter-row { gap: 16px; }
   .filter-item { width: 100%; }
   .scene-select { flex: 1; min-width: 0; }
+  .employee-select { flex: 1; min-width: 0; }
   .defect-select { flex: 1; min-width: 0; }
 }
 </style>

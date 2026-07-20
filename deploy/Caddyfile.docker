@@ -1,0 +1,32 @@
+# Caddy 配置 — 全容器化部署（deploy/web.Dockerfile 使用）
+# 域名通过环境变量 DOMAIN 注入（compose 的 .env），无需修改本文件。
+# DOMAIN 留空或设为 :80 时以纯 HTTP 服务（内网/无域名场景）。
+#
+# 用 handle 块隔离 API 与静态资源：try_files 属于重写阶段、
+# 先于 reverse_proxy 执行，不隔离会把 /api/* 重写到 index.html。
+
+{$DOMAIN::80} {
+	encode zstd gzip
+
+	# 上传大文件（数据集 ZIP、视频）时放宽请求体限制
+	request_body {
+		max_size 2GB
+	}
+
+	# 后端 API、鉴权、文件代理、WebSocket、OpenAPI 文档
+	@backend path /api/* /docs /redoc /openapi.json
+	handle @backend {
+		reverse_proxy backend:8000
+	}
+
+	# 其余请求走前端静态资源（Vite 构建产物，SPA 回退到 index.html）
+	handle {
+		root * /srv/firesight
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+	}
+}

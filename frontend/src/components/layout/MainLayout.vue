@@ -9,7 +9,11 @@
 
       <!-- 页面内容区 -->
       <main :class="['layout-content', { 'layout-content-chat': isChatRoute }]">
-        <router-view />
+        <router-view v-slot="{ Component, route: current }">
+          <transition name="page-fade" mode="out-in">
+            <component :is="Component" :key="current.path" />
+          </transition>
+        </router-view>
       </main>
     </div>
   </div>
@@ -49,5 +53,36 @@ const isChatRoute = computed(() => route.path.startsWith('/chat'))
 .layout-content-chat {
   background: #fff;
   padding: 0;
+}
+
+// ── 路由切换过渡：淡入 + 轻微上移 ──────────────────
+// 每次进入新页面时内容淡入并向上浮动一点，收尾干脆不拖沓
+.page-fade-enter-active {
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+.page-fade-leave-active {
+  transition: opacity 0.16s ease;
+}
+
+.page-fade-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+.page-fade-leave-to {
+  opacity: 0;
+}
+
+// 尊重系统「减弱动态效果」偏好，关闭位移与淡入
+@media (prefers-reduced-motion: reduce) {
+  .page-fade-enter-active,
+  .page-fade-leave-active {
+    transition: none;
+  }
+
+  .page-fade-enter-from {
+    transform: none;
+  }
 }
 </style>

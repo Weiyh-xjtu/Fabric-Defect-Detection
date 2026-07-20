@@ -78,6 +78,16 @@ describe('数据看板 API 参数组装', () => {
     expect(config.params.scene_id).toBeUndefined()
   })
 
+  it('employeeId 透传为 user_id，未选时不携带', async () => {
+    await api.getStatistics({ days: 30, employeeId: 8 })
+    let [, config] = get.mock.calls[0]
+    expect(config.params.user_id).toBe(8)
+
+    await api.getStatistics({ days: 30 })
+    ;[, config] = get.mock.calls[1]
+    expect(config.params.user_id).toBeUndefined()
+  })
+
   it('缺陷下拉保留场景隔离参数', async () => {
     await api.getDefectOptions({ days: 30, classNames: ['hole'], sceneId: 5 })
     const [, config] = get.mock.calls[0]
@@ -89,6 +99,13 @@ describe('数据看板 API 参数组装', () => {
     await api.getSceneOptions()
     const [url, config] = get.mock.calls[0]
     expect(url).toBe('/dashboard/scene-options')
+    expect(config).toBeUndefined()
+  })
+
+  it('员工下拉请求固定端点且不带筛选参数', async () => {
+    await api.getEmployeeOptions()
+    const [url, config] = get.mock.calls[0]
+    expect(url).toBe('/dashboard/employee-options')
     expect(config).toBeUndefined()
   })
 })

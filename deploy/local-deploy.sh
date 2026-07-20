@@ -6,19 +6,31 @@
 #   - remote-deploy.sh 由 GitHub Actions 调用，只做增量更新，
 #     且要求系统依赖已装好；
 #   - 本脚本在服务器上手动运行，从零完成：系统依赖 → 防火墙 →
-#     基础设施容器 → 后端 venv/迁移/systemd → 前端构建 → Caddy 上线。
+#     基础设施容器 → 后端 venv/迁移/systemd → 前端构建 → 反代上线。
+#
+# 反向代理自动适配：
+#   - 80/443 空闲            → 安装 Caddy（自动 HTTPS）
+#   - 检测到 nginx 占用 80/443 → 复用 nginx，生成独立 server 块，
+#                               certbot 签发证书，不影响既有站点
+#   - 被其他程序占用          → 报错退出
+#
+# 自动更新（可选）：安装 systemd timer，每 5 分钟检查跟踪分支，
+# 有新提交时自动增量部署（deploy/auto-update.sh）。
 #
 # 用法（先把仓库 clone 到服务器，在仓库根目录执行）：
 #   sudo bash deploy/local-deploy.sh
 #
 # 敏感信息（域名、密码、API Key 等）不写死在脚本里：
-#   运行时交互式输入，自动填充到 .env / backend/.env / Caddyfile。
+#   运行时交互式输入，自动填充到 .env / backend/.env / 反代配置。
 #   也可通过环境变量预设跳过对应提问，例如：
 #   sudo DOMAIN=example.com QWEN_API_KEY=sk-xxx bash deploy/local-deploy.sh
 #
 # 幂等，可重复执行；已完成的步骤会自动跳过或安全覆盖。
 # ═══════════════════════════════════════════════════════
 set -Eeuo pipefail
+
+# set -e 静默退出会让人误以为部署完成，出错时明确报出位置
+trap 'printf "\n\033[1;31m[error]\033[0m 脚本在第 %s 行失败（命令: %s）\n部署未完成！排查后可直接重跑本脚本（已完成步骤会跳过）。\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 log()  { printf '\n\033[1;32m[deploy]\033[0m %s\n' "$*"; }
 warn() { printf '\n\033[1;33m[warn]\033[0m %s\n' "$*"; }
@@ -35,13 +47,31 @@ WEB_ROOT="${WEB_ROOT:-/var/www/firesight}"
 RUN_USER="${RUN_USER:-firesight}"
 
 [[ -f "$APP_DIR/docker-compose.yml" && -d "$APP_DIR/backend" ]] \
-  || die "未在仓库根目录找到项目文件，请确认已完整 clone 仓库（当前推断根目录: $APP_DIR）"
+  || die "未在仓库根目录找到项目文件，请确认已完整 clone 仓库（当前推断根目录: $APP_DIR)"
 
 log "部署目录: $APP_DIR"
 
+# ── 0.5 探测反向代理模式 ─────────────────────────────
+# PROXY_MODE: caddy | nginx（可用环境变量强制指定）
+detect_proxy_mode() {
+  local holder
+  holder="$(ss -tlnp 2>/dev/null | awk '$4 ~ /:(80|443)$/ {print $NF}' | grep -oP 'users:\(\("\K[^"]+' | sort -u | head -1 || true)"
+  if [[ -z "$holder" || "$holder" == "caddy" ]]; then
+    echo "caddy"
+  elif [[ "$holder" == "nginx" ]]; then
+    echo "nginx"
+  else
+    die "80/443 端口被 '$holder' 占用（既不是 nginx 也不是 caddy），请先处理端口冲突"
+  fi
+}
+PROXY_MODE="${PROXY_MODE:-$(detect_proxy_mode)}"
+if [[ "$PROXY_MODE" == "nginx" ]]; then
+  log "检测到 nginx 正在服务 80/443，将复用 nginx + certbot（不影响既有站点）"
+else
+  log "80/443 空闲，使用 Caddy（自动 HTTPS）"
+fi
+
 # ── 1. 交互式收集配置（占位符在这里填充） ─────────────
-# ask VAR "提示" "默认值"        —— 普通输入
-# ask_secret VAR "提示" [默认值] —— 隐藏输入（密码/Key）
 ask() {
   local var="$1" prompt="$2" default="${3:-}" value
   if [[ -n "${!var:-}" ]]; then return 0; fi   # 环境变量已预设则跳过
@@ -92,6 +122,8 @@ ask_secret EMBEDDING_API_KEY "Embedding API Key（回车复用聊天 Key）" "$Q
 ask        EMBEDDING_BASE_URL "Embedding Base URL" "$QWEN_BASE_URL"
 ask        EMBEDDING_MODEL   "Embedding 模型名" "text-embedding-v3"
 ask        EMBEDDING_DIM     "Embedding 维度" "1024"
+ask        AUTO_UPDATE       "启用自动更新 timer？（若用 GitHub Actions 部署请选 n，两者会冲突）(y/n)" "n"
+ask        DEPLOY_BRANCH     "自动更新跟踪的分支" "$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo development)"
 
 # DNS 校验（仅提示，不中断）
 if [[ "$SERVER_IP" != "skip" ]]; then
@@ -100,7 +132,7 @@ if [[ "$SERVER_IP" != "skip" ]]; then
     log "DNS 校验通过：$DOMAIN → $SERVER_IP"
   else
     warn "DNS 校验未通过：$DOMAIN 当前解析为 '${resolved:-无}'，期望 $SERVER_IP"
-    warn "Caddy 签发 HTTPS 证书要求 DNS 已生效，请确认 A 记录后再继续"
+    warn "HTTPS 证书签发要求 DNS 已生效，请确认 A 记录后再继续"
     read -r -p "仍然继续部署？(y/N): " go
     [[ "$go" == "y" || "$go" == "Y" ]] || die "已中止，请先配置 DNS"
   fi
@@ -133,15 +165,20 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 docker compose version >/dev/null 2>&1 || die "docker compose 插件不可用，请检查 Docker 安装"
 
-# Caddy（官方源）
-if ! command -v caddy >/dev/null 2>&1; then
-  log "安装 Caddy"
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-    | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-    > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -qq
-  apt-get install -y -qq caddy
+# 反向代理组件
+if [[ "$PROXY_MODE" == "caddy" ]]; then
+  if ! command -v caddy >/dev/null 2>&1; then
+    log "安装 Caddy"
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+      | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+      > /etc/apt/sources.list.d/caddy-stable.list
+    apt-get update -qq
+    apt-get install -y -qq caddy
+  fi
+else
+  log "安装 certbot（nginx 插件）"
+  apt-get install -y -qq certbot python3-certbot-nginx
 fi
 
 # Node 20+（前端构建）
@@ -266,16 +303,121 @@ log "发布前端静态资源到 $WEB_ROOT"
 mkdir -p "$WEB_ROOT"
 rm -rf "${WEB_ROOT:?}"/*
 cp -r dist/* "$WEB_ROOT/"
+# nginx 以 www-data 运行，需可读
+chmod -R a+rX "$WEB_ROOT"
 
-# ── 8. Caddy：填充域名占位符并上线 ────────────────────
-log "渲染 Caddyfile（域名: $DOMAIN）并重载 Caddy"
-mkdir -p /var/log/caddy
-sed "s|<你的域名>|$DOMAIN|g" "$APP_DIR/deploy/Caddyfile" > /etc/caddy/Caddyfile
-caddy validate --config /etc/caddy/Caddyfile >/dev/null
-systemctl enable caddy >/dev/null 2>&1
-systemctl restart caddy
+# ── 8. 反向代理上线 ─────────────────────────────────
+if [[ "$PROXY_MODE" == "caddy" ]]; then
+  log "渲染 Caddyfile（域名: $DOMAIN）并重载 Caddy"
+  mkdir -p /var/log/caddy
+  chown caddy:caddy /var/log/caddy 2>/dev/null || true
+  sed "s|<你的域名>|$DOMAIN|g" "$APP_DIR/deploy/Caddyfile" > /etc/caddy/Caddyfile
+  caddy validate --config /etc/caddy/Caddyfile >/dev/null
+  systemctl enable caddy >/dev/null 2>&1
+  systemctl restart caddy
+else
+  log "生成 nginx 站点配置（不影响既有站点）"
 
-# ── 9. 健康检查 ─────────────────────────────────────
+  # nginx 自带的 default 站点只显示 "Welcome to nginx" 欢迎页，
+  # 会抢走 Host 不匹配的请求，禁用之（只动发行版自带的那个软链）
+  if [[ -L /etc/nginx/sites-enabled/default ]] \
+     && [[ "$(readlink -f /etc/nginx/sites-enabled/default)" == "/etc/nginx/sites-available/default" ]]; then
+    log "禁用 nginx 自带的 default 欢迎页站点"
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+
+  # 若其他站点均未声明 default_server，则由 firesight 兜底
+  # （这样用 IP 直接访问也能到达本站，而不是 404/欢迎页）
+  DEFAULT_SERVER=""
+  if ! grep -rqs 'default_server' /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null; then
+    DEFAULT_SERVER=" default_server"
+  fi
+
+  cat > /etc/nginx/sites-available/firesight <<EOF
+# FIRESIGHT — 由 local-deploy.sh 生成
+server {
+    listen 80$DEFAULT_SERVER;
+    server_name $DOMAIN;
+
+    # 上传大文件（数据集 ZIP、视频）
+    client_max_body_size 2G;
+
+    # 后端 API、鉴权、文件代理、WebSocket、OpenAPI 文档
+    location ~ ^/(api|docs|redoc|openapi.json) {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        # WebSocket（摄像头实时检测）
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        # SSE 流式对话不能缓冲
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+
+    # 前端静态资源（SPA 回退到 index.html）
+    location / {
+        root $WEB_ROOT;
+        try_files \$uri /index.html;
+    }
+}
+EOF
+  ln -sf /etc/nginx/sites-available/firesight /etc/nginx/sites-enabled/firesight
+  nginx -t
+  systemctl reload nginx
+
+  log "certbot 签发 HTTPS 证书（要求 DNS 已生效）"
+  if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect; then
+    log "证书签发成功，已自动配置 HTTPS 跳转与续期"
+  else
+    warn "certbot 签发失败（DNS 未生效或 80 端口不可达），站点暂以 HTTP 提供"
+    warn "修复后手动执行: sudo certbot --nginx -d $DOMAIN --redirect"
+  fi
+fi
+
+# ── 9. 自动更新（systemd timer） ─────────────────────
+# 部署配置持久化，供 auto-update.sh 读取
+cat > /etc/firesight-deploy.conf <<EOF
+APP_DIR=$APP_DIR
+WEB_ROOT=$WEB_ROOT
+RUN_USER=$RUN_USER
+DEPLOY_BRANCH=$DEPLOY_BRANCH
+PROXY_MODE=$PROXY_MODE
+EOF
+
+if [[ "$AUTO_UPDATE" == "y" || "$AUTO_UPDATE" == "Y" ]]; then
+  log "安装自动更新 timer（每 5 分钟检查分支 $DEPLOY_BRANCH）"
+  cat > /etc/systemd/system/firesight-autoupdate.service <<EOF
+[Unit]
+Description=FIRESIGHT auto update (pull & redeploy on new commits)
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash $APP_DIR/deploy/auto-update.sh
+EOF
+  cat > /etc/systemd/system/firesight-autoupdate.timer <<EOF
+[Unit]
+Description=Run FIRESIGHT auto update every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now firesight-autoupdate.timer
+else
+  log "未启用自动更新（可稍后手动: systemctl enable --now firesight-autoupdate.timer）"
+fi
+
+# ── 10. 健康检查 ────────────────────────────────────
 log "等待后端就绪"
 ok=0
 for _ in $(seq 1 24); do
@@ -286,19 +428,34 @@ for _ in $(seq 1 24); do
 done
 [[ "$ok" == "1" ]] || die "后端健康检查失败，请查看: journalctl -u firesight-backend -e"
 
+# 本机直连反代校验前端首页是否真的由 FIRESIGHT 提供（而非 nginx 欢迎页）
+log "校验反代是否正确指向 FIRESIGHT 前端"
+home_html="$(curl -fsS --max-time 10 -H "Host: $DOMAIN" http://127.0.0.1/ 2>/dev/null || true)"
+if grep -qi 'Welcome to nginx' <<<"$home_html"; then
+  warn "访问站点返回的是 nginx 默认欢迎页，FIRESIGHT 配置未生效！"
+  warn "排查: nginx -T | grep -A5 'server_name $DOMAIN'"
+  warn "确认 /etc/nginx/sites-enabled/firesight 存在且 default 站点已禁用"
+elif [[ -z "$home_html" ]]; then
+  warn "无法从本机 127.0.0.1 取到前端首页，请检查 nginx 配置与 $WEB_ROOT 权限"
+fi
+
 if curl -fsS --max-time 15 "https://$DOMAIN/api/health" >/dev/null 2>&1; then
   log "HTTPS 站点验证通过"
 else
   warn "后端正常，但 https://$DOMAIN 暂不可达（DNS 未生效 / 证书签发中 / 防火墙）"
-  warn "证书签发日志: journalctl -u caddy -f"
+  if [[ "$PROXY_MODE" == "caddy" ]]; then
+    warn "证书签发日志: journalctl -u caddy -f"
+  else
+    warn "nginx 日志: tail -50 /var/log/nginx/error.log；证书: certbot certificates"
+  fi
 fi
 
-# ── 10. 输出首次管理员凭据提示 ───────────────────────
+# ── 11. 输出首次管理员凭据提示 ───────────────────────
 log "部署完成！站点: https://$DOMAIN"
 echo
 echo "══════════════════ 后续操作 ══════════════════"
 echo "1. 首次启动会创建一次性管理员账号，凭据打印在后端日志中："
-echo "     journalctl -u firesight-backend | grep -iA3 -m1 '管理员\|admin'"
+echo "     journalctl -u firesight-backend --no-pager | head -80"
 echo "   请立即登录并修改密码。忘记密码可执行："
 echo "     cd $APP_DIR/backend && sudo -u $RUN_USER ./.venv/bin/python -m app.cli recover-admin"
 echo "2. 敏感配置已写入（权限 600，勿提交到 git）："
@@ -308,6 +465,14 @@ echo "3. 常用运维命令："
 echo "     systemctl status firesight-backend   # 后端状态"
 echo "     journalctl -u firesight-backend -f   # 后端日志"
 echo "     docker compose --project-directory $APP_DIR ps   # 基础设施"
-echo "     journalctl -u caddy -f               # Caddy/证书日志"
-echo "4. 日常更新可继续使用 GitHub Actions 的 Deploy workflow。"
+if [[ "$PROXY_MODE" == "caddy" ]]; then
+  echo "     journalctl -u caddy -f               # Caddy/证书日志"
+else
+  echo "     tail -f /var/log/nginx/error.log     # nginx 日志"
+fi
+if [[ "$AUTO_UPDATE" == "y" || "$AUTO_UPDATE" == "Y" ]]; then
+  echo "4. 自动更新已启用：push 到 $DEPLOY_BRANCH 分支后 5 分钟内自动部署。"
+  echo "     journalctl -u firesight-autoupdate -f    # 自动更新日志"
+  echo "     systemctl disable --now firesight-autoupdate.timer   # 停用"
+fi
 echo "══════════════════════════════════════════════"

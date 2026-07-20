@@ -148,6 +148,8 @@ if [[ -f "$DIST_TARBALL" ]]; then
   $SUDO mkdir -p "$WEB_ROOT"
   $SUDO rm -rf "${WEB_ROOT:?}"/*
   $SUDO tar -xzf "$DIST_TARBALL" -C "$WEB_ROOT"
+  # umask 077 会让解包出的文件仅 root 可读，反代（www-data）读不了会 500
+  $SUDO chmod -R a+rX "$WEB_ROOT"
   rm -f "$DIST_TARBALL"
 else
   log "未发现前端构建包（$DIST_TARBALL），跳过前端更新"

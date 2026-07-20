@@ -1,0 +1,14 @@
+# 后端镜像构建上下文排除项：
+# 运行时数据（datasets/runs/logs）通过 volume 挂载，不打进镜像
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+.env
+datasets
+runs
+logs
+tests
+.pytest_cache
+*.pt

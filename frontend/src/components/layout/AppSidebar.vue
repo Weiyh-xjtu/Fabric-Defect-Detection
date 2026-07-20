@@ -3,7 +3,7 @@
     :class="[
       'app-sidebar',
       {
-        'has-chat-history': isChatRoute && !isSidebarCollapsed,
+        'has-chat-history': isChatRoute && !isSidebarCollapsed && !isHistoryCollapsed,
         'is-collapsed': isSidebarCollapsed,
       },
     ]"
@@ -439,8 +439,8 @@ onMounted(() => {
 }
 
 .app-sidebar.has-chat-history .menu-scroll-area {
-  flex: 0 0 auto;
-  max-height: none;
+  flex: 0 1 auto;
+  max-height: 45%;
 }
 
 .chat-history-section {

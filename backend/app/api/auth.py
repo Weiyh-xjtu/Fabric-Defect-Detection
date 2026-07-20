@@ -3,7 +3,7 @@
 - POST /api/auth/register  用户注册
 - POST /api/auth/login     用户登录
 - POST /api/auth/refresh   刷新登录会话
-- POST /api/auth/logout    清除刷新 Cookie
+- POST /api/auth/logout    撤销当前会话并清除刷新 Cookie
 - GET  /api/auth/me        获取当前用户信息
 """
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
@@ -26,9 +26,9 @@ router = APIRouter(prefix="/api/auth", tags=["认证"])
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def _build_token_response(user: User, db: Session) -> dict:
+def _build_token_response(user: User, db: Session, session_id: str) -> dict:
     """构造登录或续期成功后的统一响应。"""
-    access_token = user_service.create_access_token_for_user(user)
+    access_token = user_service.create_access_token_for_user(user, session_id)
     roles = user_service.get_user_roles(db, user)
     permissions = user_service.get_user_permissions(db, user)
     return {
@@ -46,9 +46,9 @@ def _build_token_response(user: User, db: Session) -> dict:
     }
 
 
-def _set_refresh_cookie(response: Response, user: User) -> None:
+def _set_refresh_cookie(response: Response, user: User, session_id: str) -> None:
     """签发短期 HttpOnly Refresh Cookie，用于滑动续期。"""
-    refresh_token = user_service.create_refresh_token_for_user(user)
+    refresh_token = user_service.create_refresh_token_for_user(user, session_id)
     response.set_cookie(
         key=settings.REFRESH_COOKIE_NAME,
         value=refresh_token,
@@ -80,13 +80,16 @@ def get_current_user(
         token = credentials.credentials
         payload = decode_access_token(token)
         user_id_str: str = payload.get("sub")
-        if user_id_str is None:
+        session_id: str = payload.get("sid")
+        if user_id_str is None or not session_id:
             raise credentials_exception
         user_id = int(user_id_str)
     except (JWTError, ValueError):
         raise credentials_exception
 
     user = user_service.get_user_by_id(db, user_id)
+    if user_service.get_active_auth_session(db, user_id, session_id) is None:
+        raise credentials_exception
     if not user.is_active:
         raise HTTPException(status_code=403, detail="账号已被禁用")
     return user
@@ -128,8 +131,9 @@ def login(
         password=request.password,
     )
 
-    _set_refresh_cookie(response, user)
-    return _build_token_response(user, db)
+    auth_session = user_service.create_auth_session(db, user)
+    _set_refresh_cookie(response, user, auth_session.id)
+    return _build_token_response(user, db, auth_session.id)
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -152,22 +156,58 @@ def refresh_login_session(
     try:
         payload = decode_refresh_token(refresh_token)
         user_id_str = payload.get("sub")
-        if user_id_str is None:
+        session_id = payload.get("sid")
+        if user_id_str is None or not session_id:
             raise credentials_exception
-        user = user_service.get_user_by_id(db, int(user_id_str))
+        user_id = int(user_id_str)
+        user = user_service.get_user_by_id(db, user_id)
+        auth_session = user_service.get_active_auth_session(
+            db,
+            user_id,
+            session_id,
+        )
+        if auth_session is None:
+            raise credentials_exception
     except (JWTError, ValueError, HTTPException):
         raise credentials_exception
 
     if not user.is_active:
         raise credentials_exception
 
-    _set_refresh_cookie(response, user)
-    return _build_token_response(user, db)
+    user_service.refresh_auth_session(db, auth_session)
+    _set_refresh_cookie(response, user, auth_session.id)
+    return _build_token_response(user, db, auth_session.id)
 
 
 @router.post("/logout", status_code=204)
-def logout(response: Response) -> None:
-    """清除浏览器中的 Refresh Cookie。"""
+def logout(
+    response: Response,
+    refresh_token: str | None = Cookie(
+        default=None,
+        alias=settings.REFRESH_COOKIE_NAME,
+    ),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> None:
+    """撤销当前认证会话，并清除浏览器中的 Refresh Cookie。"""
+    token_candidates = []
+    if refresh_token:
+        token_candidates.append((refresh_token, decode_refresh_token))
+    if credentials is not None:
+        token_candidates.append((credentials.credentials, decode_access_token))
+
+    for token, decoder in token_candidates:
+        try:
+            payload = decoder(token)
+            user_id_str = payload.get("sub")
+            session_id = payload.get("sid")
+            if user_id_str is None or not session_id:
+                continue
+            user_service.revoke_auth_session(db, int(user_id_str), session_id)
+            break
+        except (JWTError, ValueError):
+            continue
+
     response.delete_cookie(
         key=settings.REFRESH_COOKIE_NAME,
         path="/api/auth",

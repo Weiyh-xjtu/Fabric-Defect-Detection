@@ -30,13 +30,14 @@ async def get_statistics(
     end_date: date | None = Query(None, description="自定义结束日期（含），优先于 days"),
     class_name: list[str] | None = Query(None, description="按缺陷类别过滤，可多值"),
     scene_id: int | None = Query(None, ge=1, description="按检测场景隔离统计"),
+    user_id: int | None = Query(None, ge=1, description="按检测员工过滤"),
     _current_user: User = Depends(require_permission(DASHBOARD_READ_ANY)),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取任务、图片、目标、耗时及环比统计，支持时间段、缺陷类别与场景过滤。"""
     _validate_range(start_date, end_date)
     return dashboard_service.get_statistics(
-        db, None, days, start_date, end_date, class_name, scene_id
+        db, user_id, days, start_date, end_date, class_name, scene_id
     )
 
 
@@ -47,13 +48,14 @@ async def get_trend(
     end_date: date | None = Query(None),
     class_name: list[str] | None = Query(None, description="按缺陷类别过滤，可多值"),
     scene_id: int | None = Query(None, ge=1, description="按检测场景隔离统计"),
+    user_id: int | None = Query(None, ge=1, description="按检测员工过滤"),
     _current_user: User = Depends(require_permission(DASHBOARD_READ_ANY)),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取时间段内的每日任务、图片和目标数量，支持缺陷类别与场景过滤。"""
     _validate_range(start_date, end_date)
     return dashboard_service.get_trend(
-        db, None, days, start_date, end_date, class_name, scene_id
+        db, user_id, days, start_date, end_date, class_name, scene_id
     )
 
 
@@ -65,13 +67,14 @@ async def get_defect_trend(
     class_name: list[str] | None = Query(None, description="指定缺陷类别，可多值；留空取 Top N"),
     top_n: int = Query(8, ge=1, le=30, description="未指定类别时展示目标数最多的前 N 类"),
     scene_id: int | None = Query(None, ge=1, description="按检测场景隔离统计"),
+    user_id: int | None = Query(None, ge=1, description="按检测员工过滤"),
     _current_user: User = Depends(require_permission(DASHBOARD_READ_ANY)),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取按缺陷类别拆分的每日趋势，用于多折线对比。"""
     _validate_range(start_date, end_date)
     return dashboard_service.get_defect_trend(
-        db, None, days, start_date, end_date, class_name, top_n, scene_id
+        db, user_id, days, start_date, end_date, class_name, top_n, scene_id
     )
 
 
@@ -81,13 +84,14 @@ async def get_defect_options(
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
     scene_id: int | None = Query(None, ge=1, description="按检测场景隔离统计"),
+    user_id: int | None = Query(None, ge=1, description="按检测员工过滤"),
     _current_user: User = Depends(require_permission(DASHBOARD_READ_ANY)),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取时间段内实际出现过的缺陷类别，用于前端筛选下拉。"""
     _validate_range(start_date, end_date)
     return dashboard_service.get_defect_options(
-        db, None, days, start_date, end_date, scene_id
+        db, user_id, days, start_date, end_date, scene_id
     )
 
 
@@ -100,6 +104,15 @@ async def get_scene_options(
     return dashboard_service.get_scene_options(db)
 
 
+@router.get("/employee-options", summary="可选检测员工")
+async def get_employee_options(
+    _current_user: User = Depends(require_permission(DASHBOARD_READ_ANY)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """获取产生过检测记录的员工，用于看板员工筛选下拉。"""
+    return dashboard_service.get_employee_options(db)
+
+
 @router.get("/class-dist", summary="类别分布统计")
 async def get_class_distribution(
     days: int = Query(30, ge=1, le=365),
@@ -107,13 +120,14 @@ async def get_class_distribution(
     end_date: date | None = Query(None),
     class_name: list[str] | None = Query(None, description="按缺陷类别过滤，可多值"),
     scene_id: int | None = Query(None, ge=1, description="按检测场景隔离统计"),
+    user_id: int | None = Query(None, ge=1, description="按检测员工过滤"),
     _current_user: User = Depends(require_permission(DASHBOARD_READ_ANY)),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取检测目标类别分布。"""
     _validate_range(start_date, end_date)
     return dashboard_service.get_class_distribution(
-        db, None, days, start_date, end_date, class_name, scene_id
+        db, user_id, days, start_date, end_date, class_name, scene_id
     )
 
 
@@ -123,13 +137,14 @@ async def get_scene_distribution(
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
     scene_id: int | None = Query(None, ge=1, description="按检测场景隔离统计"),
+    user_id: int | None = Query(None, ge=1, description="按检测员工过滤"),
     _current_user: User = Depends(require_permission(DASHBOARD_READ_ANY)),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取检测任务的场景分布。"""
     _validate_range(start_date, end_date)
     return dashboard_service.get_scene_distribution(
-        db, None, days, start_date, end_date, scene_id
+        db, user_id, days, start_date, end_date, scene_id
     )
 
 
@@ -139,11 +154,12 @@ async def get_type_distribution(
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
     scene_id: int | None = Query(None, ge=1, description="按检测场景隔离统计"),
+    user_id: int | None = Query(None, ge=1, description="按检测员工过滤"),
     _current_user: User = Depends(require_permission(DASHBOARD_READ_ANY)),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取单图、批量、ZIP、视频、摄像头等类型分布。"""
     _validate_range(start_date, end_date)
     return dashboard_service.get_type_distribution(
-        db, None, days, start_date, end_date, scene_id
+        db, user_id, days, start_date, end_date, scene_id
     )

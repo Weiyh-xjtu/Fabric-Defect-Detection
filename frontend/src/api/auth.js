@@ -25,9 +25,14 @@ export function refreshSessionApi() {
   return request.post('/auth/refresh', null, { skipGlobalError: true })
 }
 
-/** 清除服务端 Refresh Cookie。 */
-export function logoutApi() {
-  return request.post('/auth/logout', null, { skipGlobalError: true })
+/** 撤销当前服务端会话并清除 Refresh Cookie。 */
+export function logoutApi(accessToken = '') {
+  return request.post('/auth/logout', null, {
+    skipGlobalError: true,
+    headers: accessToken
+      ? { Authorization: `Bearer ${accessToken}` }
+      : {},
+  })
 }
 
 /**
