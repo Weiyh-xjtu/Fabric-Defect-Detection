@@ -16,7 +16,7 @@
       @click="isSidebarCollapsed = !isSidebarCollapsed"
     />
 
-    <div class="menu-scroll-area">
+    <div class="menu-scroll-area" ref="menuAreaRef" :style="menuAreaStyle">
       <el-menu
         :default-active="activeMenu"
         :router="true"
@@ -38,6 +38,20 @@
           <span v-if="!isSidebarCollapsed">{{ item.title }}</span>
         </el-menu-item>
       </el-menu>
+    </div>
+
+    <div
+      v-if="isChatRoute && !isSidebarCollapsed && !isHistoryCollapsed"
+      class="history-resizer"
+      :class="{ 'is-dragging': isResizing }"
+      title="拖动调整历史对话区域高度（双击恢复默认）"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="拖动调整历史对话区域高度"
+      @mousedown="startResize"
+      @dblclick="resetResize"
+    >
+      <span class="history-resizer-grip"></span>
     </div>
 
     <section
@@ -132,7 +146,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -164,6 +178,67 @@ const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
 const searchVisible = ref(false)
 const searchQuery = ref('')
+
+// ── 分界线拖拽：调整菜单区 / 历史对话区的高度分配 ──
+// menuAreaHeight 为 null 时表示默认布局（菜单自然高度，分界线在系统设置之下）
+const MENU_HEIGHT_STORAGE_KEY = 'sidebar-menu-area-height'
+const menuAreaRef = ref(null)
+const menuAreaHeight = ref(loadStoredMenuHeight())
+const isResizing = ref(false)
+
+const menuAreaStyle = computed(() => {
+  if (menuAreaHeight.value == null || isSidebarCollapsed.value || !isChatRoute.value) return undefined
+  return { flex: `0 0 ${menuAreaHeight.value}px` }
+})
+
+function loadStoredMenuHeight() {
+  const raw = Number(localStorage.getItem(MENU_HEIGHT_STORAGE_KEY))
+  return Number.isFinite(raw) && raw > 0 ? raw : null
+}
+
+function startResize(event) {
+  const el = menuAreaRef.value
+  if (!el) return
+  isResizing.value = true
+  const startY = event.clientY
+  const startHeight = el.getBoundingClientRect().height
+  // 上限：不超过菜单自然高度（分界线最低就在系统设置之下）；下限保底 88px
+  const maxHeight = el.scrollHeight
+  const minHeight = 88
+
+  function onMove(e) {
+    const next = Math.min(maxHeight, Math.max(minHeight, startHeight + (e.clientY - startY)))
+    menuAreaHeight.value = next
+  }
+
+  function onUp() {
+    isResizing.value = false
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    document.body.style.removeProperty('user-select')
+    document.body.style.removeProperty('cursor')
+    if (menuAreaHeight.value != null) {
+      localStorage.setItem(MENU_HEIGHT_STORAGE_KEY, String(Math.round(menuAreaHeight.value)))
+    }
+  }
+
+  // 拖拽期间避免选中文字、保持行向光标
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'row-resize'
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+  event.preventDefault()
+}
+
+function resetResize() {
+  menuAreaHeight.value = null
+  localStorage.removeItem(MENU_HEIGHT_STORAGE_KEY)
+}
+
+onBeforeUnmount(() => {
+  document.body.style.removeProperty('user-select')
+  document.body.style.removeProperty('cursor')
+})
 
 /** 当前激活的菜单项 */
 const activeMenu = computed(() => {
@@ -452,7 +527,56 @@ onMounted(() => {
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  border-top: 1px solid #e8ecf3;
+
+  // 展开时分界线由可拖拽的 .history-resizer 提供；
+  // 收起时 resizer 隐藏，这里补一条分界线
+  &.is-history-collapsed {
+    border-top: 1px solid #e8ecf3;
+  }
+}
+
+// 可拖拽分界线：位于菜单区与历史对话区之间
+.history-resizer {
+  position: relative;
+  flex: 0 0 auto;
+  height: 9px;
+  cursor: row-resize;
+  touch-action: none;
+
+  // 视觉分界线（居中的细线），拖拽热区比线更宽便于抓取
+  &::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    right: 0;
+    left: 0;
+    height: 1px;
+    background: #e8ecf3;
+    transform: translateY(-50%);
+    transition: background 0.15s;
+  }
+
+  &:hover::before,
+  &.is-dragging::before {
+    background: $signal-orange;
+  }
+}
+
+.history-resizer-grip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 34px;
+  height: 3px;
+  background: #d3d8e0;
+  border-radius: 2px;
+  transform: translate(-50%, -50%);
+  transition: background 0.15s;
+
+  .history-resizer:hover &,
+  .history-resizer.is-dragging & {
+    background: $signal-orange;
+  }
 }
 
 .history-header {
