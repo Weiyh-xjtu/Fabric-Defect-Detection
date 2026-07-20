@@ -316,7 +316,7 @@ import DetectionResultCard from "@/components/DetectionResultCard.vue";
 import { useAgentStore } from "@/stores/agent";
 import { useUserStore } from "@/stores/user";
 import { renderMarkdown, splitAgentSections } from "@/utils/markdown";
-import request from "@/utils/request";
+import request, { getApiErrorMessage } from "@/utils/request";
 import { streamChat } from "@/utils/stream";
 import {
   AGENT_NAME_MAP,
@@ -671,15 +671,22 @@ async function handleQuickDetect(type) {
       try {
         const result = await detectSingle(formData);
         const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-        lastMsg.content = `检测完成！发现 ${result.total_objects} 个目标。`;
+        if (result.error) {
+          throw new Error(result.error);
+        }
+        lastMsg.content = `检测完成！发现 ${result.total_objects ?? 0} 个目标。`;
         lastMsg.loading = false;
         lastMsg.detectionResult = result;
         // 快捷检测已在后端落库，刷新侧栏使新会话出现在历史列表。
         refreshSessions();
       } catch (err) {
         const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-        lastMsg.content = "检测失败，请重试";
+        lastMsg.content = `检测失败：${getApiErrorMessage(
+          err.response,
+          err.message || "请重试",
+        )}`;
         lastMsg.loading = false;
+        lastMsg.error = true;
       }
     };
     input.click();
@@ -744,7 +751,10 @@ async function handleQuickDetect(type) {
       } catch (err) {
         console.error("[批量检测异常]", err);
         const lastMsg = agentStore.messages[agentStore.messages.length - 1];
-        lastMsg.content = `批量检测失败：${err.message || err}`;
+        lastMsg.content = `批量检测失败：${getApiErrorMessage(
+          err.response,
+          err.message || "请重试",
+        )}`;
         lastMsg.loading = false;
         lastMsg.error = true;
       }
@@ -908,7 +918,10 @@ async function handleVideoDetect() {
       refreshSessions();
     } catch (err) {
       console.error("[视频检测失败]", err);
-      resultMessage.content = `视频检测失败：${err.message || err}`;
+      resultMessage.content = `视频检测失败：${getApiErrorMessage(
+        err.response,
+        err.message || "请重试",
+      )}`;
       resultMessage.loading = false;
       resultMessage.error = true;
     }

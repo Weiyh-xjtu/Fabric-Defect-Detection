@@ -1,0 +1,33 @@
+# systemd 服务单元 — FIRESIGHT 后端
+# 安装：
+#   sudo cp deploy/firesight-backend.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now firesight-backend
+# 查看日志：
+#   journalctl -u firesight-backend -f
+#
+# 注意：按实际部署路径和运行用户修改 User / WorkingDirectory / ExecStart。
+
+[Unit]
+Description=FIRESIGHT FastAPI backend
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=firesight
+Group=firesight
+WorkingDirectory=/opt/firesight/backend
+# 用 venv 里的 uvicorn 直接跑，不用 --reload（生产）
+# workers=1：YOLO/训练依赖进程内状态与内存模型，多 worker 会各自加载模型且状态不共享
+ExecStart=/opt/firesight/backend/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=5
+# 训练/评估是 CPU 密集长任务，给足超时
+TimeoutStopSec=30
+# 生产日志走 journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

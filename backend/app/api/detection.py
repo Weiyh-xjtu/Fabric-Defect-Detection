@@ -42,7 +42,7 @@ from app.api.auth import get_current_user
 from app.core.permissions import require_permission
 from app.core.rbac import (
     DETECTION_EXECUTE,
-    SYSTEM_ADMIN,
+    HISTORY_READ_ANY,
     user_has_permission,
 )
 from app.core.security import decode_access_token
@@ -62,11 +62,7 @@ os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
 
 
 def _can_access_task(db, user: User, task: DetectionTask) -> bool:
-    is_system_admin = user.is_superuser or any(
-        item.role is not None and item.role.name == SYSTEM_ADMIN
-        for item in user.user_roles
-    )
-    return task.user_id == user.id or is_system_admin
+    return task.user_id == user.id or user_has_permission(db, user, HISTORY_READ_ANY)
 
 
 def _authenticate_camera_token(token: str | None) -> tuple[User | None, int]:

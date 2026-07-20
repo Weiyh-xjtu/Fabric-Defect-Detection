@@ -2,6 +2,7 @@
 
 import json
 import warnings
+from types import SimpleNamespace
 
 from sqlalchemy.exc import SAWarning
 from sqlalchemy.orm import sessionmaker
@@ -10,6 +11,9 @@ from app.config.settings import settings
 from app.core.security import create_access_token
 from app.core.rbac import (
     ALL_PERMISSION_CODES,
+    DETECTION_EXECUTE,
+    HISTORY_READ_ANY,
+    PRODUCTION_MANAGER,
     QUALITY_INSPECTOR,
     ROLE_DEFINITIONS,
     SYSTEM_ADMIN,
@@ -49,6 +53,10 @@ def _grant_role(db, username: str, role_name: str) -> None:
 
 
 def test_rbac_seed_is_idempotent_and_complete(db_session):
+    assert {
+        DETECTION_EXECUTE,
+        HISTORY_READ_ANY,
+    }.issubset(ROLE_DEFINITIONS[PRODUCTION_MANAGER]["permissions"])
     quality_role = db_session.query(Role).filter_by(name=QUALITY_INSPECTOR).one()
     stale_permission = db_session.query(Permission).filter_by(
         code="dashboard:read:any"
@@ -175,10 +183,12 @@ def test_role_changes_apply_to_existing_access_token(client, db_session):
         headers=admin_headers,
     )
     assert promoted.status_code == 200
+    assert DETECTION_EXECUTE in promoted.json()["permissions"]
     assert client.get(
         "/api/dashboard/statistics", headers=target_headers
     ).status_code == 200
-    assert client.post("/api/detection/single", headers=target_headers).status_code == 403
+    # 生产管理人员现在拥有检测权限；缺少上传文件时应进入请求校验，而不是权限拒绝。
+    assert client.post("/api/detection/single", headers=target_headers).status_code == 422
 
     demoted = client.put(
         f"/api/user/{target.id}/roles",
@@ -237,15 +247,13 @@ def test_admin_cannot_disable_self(client, db_session):
 def test_agent_detection_tool_rechecks_database_permission(db_session, monkeypatch):
     from app.agent import detection_agent as agent_module
 
-    manager = User(
-        username="rbac_agent_manager",
-        email="rbac_agent_manager@example.com",
+    unprivileged_user = User(
+        username="rbac_agent_unprivileged",
+        email="rbac_agent_unprivileged@example.com",
         hashed_password="not-used",
     )
-    manager_role = db_session.query(Role).filter_by(name="production_manager").one()
-    db_session.add(manager)
+    db_session.add(unprivileged_user)
     db_session.flush()
-    db_session.add(UserRole(user_id=manager.id, role_id=manager_role.id))
     db_session.commit()
 
     test_factory = sessionmaker(bind=db_session.get_bind())
@@ -257,7 +265,7 @@ def test_agent_detection_tool_rechecks_database_permission(db_session, monkeypat
             AssertionError("无检测权限时不应调用检测服务")
         ),
     )
-    context_token = agent_module._current_user_id.set(manager.id)
+    context_token = agent_module._current_user_id.set(unprivileged_user.id)
     try:
         result = json.loads(
             agent_module.detect_single_image.invoke({"image_path": "fabric.jpg"})
@@ -284,7 +292,7 @@ def test_camera_token_checks_active_user_and_detection_permission(
         hashed_password="not-used",
     )
     inspector_role = db_session.query(Role).filter_by(name=QUALITY_INSPECTOR).one()
-    manager_role = db_session.query(Role).filter_by(name="production_manager").one()
+    manager_role = db_session.query(Role).filter_by(name=PRODUCTION_MANAGER).one()
     db_session.add_all([inspector, manager])
     db_session.flush()
     db_session.add_all(
@@ -303,7 +311,14 @@ def test_camera_token_checks_active_user_and_detection_permission(
     authenticated, code = detection_api._authenticate_camera_token(inspector_token)
     assert authenticated.id == inspector.id
     assert code == 0
-    assert detection_api._authenticate_camera_token(manager_token) == (None, 4403)
+    authenticated, code = detection_api._authenticate_camera_token(manager_token)
+    assert authenticated.id == manager.id
+    assert code == 0
+    assert detection_api._can_access_task(
+        db_session,
+        manager,
+        SimpleNamespace(user_id=inspector.id),
+    )
     assert detection_api._authenticate_camera_token(None) == (None, 4401)
 
     inspector.is_active = False

@@ -60,6 +60,9 @@ def setup_test_database():
     scope="session"：整个测试会话只执行一次
     autouse=True：自动应用，无需在测试函数中显式引用
     """
+    # 上一次测试被中断时 teardown 不会执行，test.db 可能残留固定用户名等数据。
+    # 每个测试会话先重建测试表，保证重复运行仍从干净状态开始。
+    Base.metadata.drop_all(bind=test_engine)
     Base.metadata.create_all(bind=test_engine)
     from app.core.rbac import initialize_rbac
 

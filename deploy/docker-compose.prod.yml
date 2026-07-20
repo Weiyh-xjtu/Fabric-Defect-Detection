@@ -1,0 +1,30 @@
+# 生产环境基础设施覆盖文件
+# 用法（在项目根目录）：
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml up -d
+#
+# 与开发版的区别：
+#   1. 端口只绑定到 127.0.0.1，不对公网开放（后端原生跑在同一台机器，走 localhost 即可）
+#   2. 密码通过 .env 注入，不写死在文件里
+#
+# ports 必须加 !override：compose 合并多文件时列表默认追加，
+# 会同时绑 0.0.0.0:5432 和 127.0.0.1:5432 导致自我端口冲突。
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rsod_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-rsod_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?must set POSTGRES_PASSWORD}
+    ports: !override
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    ports: !override
+      - "127.0.0.1:6379:6379"
+
+  minio:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?must set MINIO_ROOT_PASSWORD}
+    ports: !override
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"

@@ -78,7 +78,7 @@
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" :icon="View" @click="openDetail(row.id)">详情</el-button>
+            <el-button class="detail-button" link type="success" :icon="View" @click="openDetail(row.id)">详情</el-button>
             <el-button v-if="canDeleteHistory" link type="danger" :icon="Delete" @click="removeTask(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -368,6 +368,11 @@ onMounted(async () => {
   :deep(.el-card__body) { padding-bottom: 2px; }
 }
 .pagination-wrap { display: flex; justify-content: flex-end; margin-top: 20px; }
+.detail-button {
+  --el-button-text-color: #6fb27a;
+  --el-button-hover-text-color: #5fa86b;
+  --el-button-active-text-color: #579f63;
+}
 .detail-section {
   margin-top: 24px;
   h3 { margin: 0 0 12px; font-size: 16px; }

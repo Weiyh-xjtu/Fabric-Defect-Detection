@@ -58,7 +58,7 @@
           <el-button
             class="history-icon-button history-toggle-button"
             text
-            :icon="isHistoryCollapsed ? ArrowUpBold : ArrowDownBold"
+            :icon="isHistoryCollapsed ? ArrowDownBold : ArrowUpBold"
             :title="isHistoryCollapsed ? '展开历史对话' : '收起历史对话'"
             :aria-label="isHistoryCollapsed ? '展开历史对话' : '收起历史对话'"
             @click="toggleHistory"

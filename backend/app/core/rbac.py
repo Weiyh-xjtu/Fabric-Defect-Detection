@@ -43,8 +43,14 @@ ROLE_DEFINITIONS = {
     },
     PRODUCTION_MANAGER: {
         "display_name": "生产管理人员",
-        "description": "查看全厂检测历史和数据看板",
-        "permissions": {CHAT_USE, KNOWLEDGE_READ, HISTORY_READ_ANY, DASHBOARD_READ_ANY},
+        "description": "执行检测并查看全厂检测历史和数据看板",
+        "permissions": {
+            CHAT_USE,
+            KNOWLEDGE_READ,
+            DETECTION_EXECUTE,
+            HISTORY_READ_ANY,
+            DASHBOARD_READ_ANY,
+        },
     },
     SYSTEM_ADMIN: {
         "display_name": "系统管理员",

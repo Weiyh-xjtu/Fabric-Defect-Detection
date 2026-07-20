@@ -90,39 +90,41 @@
         <el-table-column label="创建时间" min-width="170">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="300" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" :disabled="!row.file_exists || row.status !== 'active'" @click="openTest(row)">测试</el-button>
-            <el-button
-              link
-              type="primary"
-              :disabled="!row.training_task_id || row.status !== 'active'"
-              :loading="evaluatingId === row.id"
-              @click="startEvaluation(row)"
-            >评估</el-button>
-            <el-button
-              link
-              type="success"
-              :disabled="row.is_global_default || row.status !== 'active' || !row.file_exists"
-              :loading="activatingId === row.id"
-              @click="switchModel(row)"
-            >设为全局</el-button>
-            <el-dropdown
-              trigger="click"
-              :disabled="operatingKey?.endsWith(`:${row.id}`)"
-              @command="handleMoreCommand($event, row)"
-            >
-              <el-button link type="primary" :loading="operatingKey?.endsWith(`:${row.id}`)">更多</el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="backup" :disabled="row.status === 'deleted' || !row.file_exists">备份模型</el-dropdown-item>
-                  <el-dropdown-item command="restore" :disabled="row.status === 'deleted' || !row.backup_available || row.file_exists">从备份恢复</el-dropdown-item>
-                  <el-dropdown-item v-if="row.status === 'active'" command="archive" :disabled="row.is_global_default" divided>归档</el-dropdown-item>
-                  <el-dropdown-item v-if="row.status === 'archived'" command="unarchive" divided>取消归档</el-dropdown-item>
-                  <el-dropdown-item v-if="row.status !== 'deleted'" command="delete" :disabled="row.is_global_default" divided>删除</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <div class="operation-actions">
+              <el-button
+                class="set-global-button"
+                :class="{ 'is-global-default': row.is_global_default }"
+                :disabled="row.is_global_default || row.status !== 'active' || !row.file_exists"
+                :loading="activatingId === row.id"
+                @click="switchModel(row)"
+              >设为全局</el-button>
+              <el-button link type="primary" :disabled="!row.file_exists || row.status !== 'active'" @click="openTest(row)">测试</el-button>
+              <el-button
+                link
+                type="primary"
+                :disabled="!row.training_task_id || row.status !== 'active'"
+                :loading="evaluatingId === row.id"
+                @click="startEvaluation(row)"
+              >评估</el-button>
+              <el-dropdown
+                trigger="click"
+                :disabled="operatingKey?.endsWith(`:${row.id}`)"
+                @command="handleMoreCommand($event, row)"
+              >
+                <el-button class="more-button" link type="primary" :loading="operatingKey?.endsWith(`:${row.id}`)">更多</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="backup" :disabled="row.status === 'deleted' || !row.file_exists">备份模型</el-dropdown-item>
+                    <el-dropdown-item command="restore" :disabled="row.status === 'deleted' || !row.backup_available || row.file_exists">从备份恢复</el-dropdown-item>
+                    <el-dropdown-item v-if="row.status === 'active'" command="archive" :disabled="row.is_global_default" divided>归档</el-dropdown-item>
+                    <el-dropdown-item v-if="row.status === 'archived'" command="unarchive" divided>取消归档</el-dropdown-item>
+                    <el-dropdown-item v-if="row.status !== 'deleted'" command="delete" :disabled="row.is_global_default" divided>删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -463,6 +465,41 @@ onBeforeUnmount(clearEvaluationTimer)
   }
 }
 .toolbar { justify-content: flex-start; gap: 12px; margin-bottom: 16px; }
+.operation-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+
+  :deep(.el-button) {
+    margin-left: 0;
+  }
+}
+.set-global-button {
+  height: 26px;
+  padding: 0 10px;
+  color: #6fb27a;
+  font-weight: 600;
+  background: #fff;
+  border: 1px solid #bfe0c5;
+  border-radius: 8px;
+
+  &:hover,
+  &:focus {
+    color: #5fa86b;
+    background: #f5fbf6;
+    border-color: #9fd0a8;
+  }
+
+  &.is-disabled,
+  &.is-global-default {
+    color: #9aa3b2;
+    background: #f7f8fb;
+    border-color: #d9dee7;
+  }
+}
+.more-button {
+  vertical-align: middle;
+}
 .thresholds { margin: 22px 0 8px; }
 .test-result { margin-top: 18px; }
 .result-image { display: block; max-width: 100%; max-height: 520px; margin: 18px auto 0; border-radius: 6px; }
