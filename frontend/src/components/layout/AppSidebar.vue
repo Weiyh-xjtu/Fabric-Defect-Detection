@@ -365,10 +365,6 @@ onMounted(() => {
   &.is-collapsed {
     width: $sidebar-collapsed-width;
 
-    .menu-scroll-area {
-      scrollbar-gutter: auto;
-    }
-
     .menu-scroll-area .el-menu {
       width: auto;
       padding-right: 8px;
@@ -424,12 +420,23 @@ onMounted(() => {
   }
 }
 
+// 侧边栏内的滚动区域：保留滚动能力但隐藏滑块
+@mixin hidden-scrollbar {
+  scrollbar-width: none; // Firefox
+
+  &::-webkit-scrollbar {
+    display: none; // Chrome / Edge / Safari
+  }
+}
+
 .menu-scroll-area {
-  flex: 1 1 auto;
+  // 菜单按自然高度完整展示，历史对话固定排在系统设置之下；
+  // 仅在窗口过矮放不下时才允许菜单内部滚动（滑块已隐藏）
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  @include hidden-scrollbar;
 
   .el-menu {
     padding: 10px 8px;
@@ -438,21 +445,14 @@ onMounted(() => {
   }
 }
 
-.app-sidebar.has-chat-history .menu-scroll-area {
-  flex: 0 1 auto;
-  max-height: 45%;
-}
-
 .chat-history-section {
+  // 始终占据菜单下方的剩余空间，标题栏固定紧贴菜单底部；
+  // 收起时仅隐藏列表，标题栏位置不变（不再跳到侧边栏底部）
   display: flex;
   flex: 1;
   min-height: 0;
   flex-direction: column;
   border-top: 1px solid #e8ecf3;
-
-  &.is-history-collapsed {
-    flex: 0 0 auto;
-  }
 }
 
 .history-header {
@@ -527,7 +527,7 @@ onMounted(() => {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  @include hidden-scrollbar;
   padding: 0 8px 12px;
 
   :deep(.el-loading-mask) {
