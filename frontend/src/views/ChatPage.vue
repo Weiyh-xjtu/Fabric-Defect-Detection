@@ -108,6 +108,11 @@
                 </div>
                 <div v-html="renderMarkdown(sec.content)"></div>
               </template>
+              <!-- 流未结束时保留加载动画：并行/依赖多专家场景下，
+                   上一个专家输出完毕后提示用户后续专家仍在工作 -->
+              <div v-if="msg.streaming" class="typing-indicator typing-indicator-inline">
+                <span></span><span></span><span></span>
+              </div>
             </div>
 
             <!-- 工具调用链 -->
@@ -143,9 +148,41 @@
                   <span v-if="step.summary" class="tool-chain-summary">{{
                     step.summary
                   }}</span>
+                  <!-- 查询详情开关内联进标题行，默认收起，节省一行空间 -->
+                  <button
+                    v-if="step.query"
+                    type="button"
+                    class="query-toggle"
+                    @click="step.queryExpanded = !step.queryExpanded"
+                  >
+                    <el-icon class="query-toggle-icon">
+                      <ArrowRight v-if="!step.queryExpanded" />
+                      <ArrowDown v-else />
+                    </el-icon>
+                    <span>
+                      {{ step.queryExpanded ? "收起详情" : "查看详情" }}
+                      ({{ step.query.fields.length }} 项)
+                    </span>
+                  </button>
                 </div>
 
-                <!-- 知识库检索来源 -->
+                <!-- 统计/趋势等查询工具的结果面板：默认收起，展开后显示字段详情 -->
+                <div
+                  v-if="step.query"
+                  v-show="step.queryExpanded"
+                  class="query-result-panel"
+                >
+                  <div
+                    v-for="(field, fi) in step.query.fields"
+                    :key="fi"
+                    class="query-field"
+                  >
+                    <span class="query-field-label">{{ field.label }}</span>
+                    <span class="query-field-value">{{ field.value }}</span>
+                  </div>
+                </div>
+
+                <!-- 知识库检索来源：默认收起，点击展开引用详情，避免资料多时对话过长 -->
                 <div v-if="step.knowledge" class="knowledge-sources">
                   <div
                     v-if="step.knowledge.fallback_reason"
@@ -153,19 +190,35 @@
                   >
                     ⚠ 向量检索暂不可用，本次为本地词法检索
                   </div>
-                  <el-collapse class="knowledge-collapse">
-                    <el-collapse-item
-                      v-for="(item, j) in step.knowledge.results"
-                      :key="j"
-                      :title="`📄 ${item.source} · 相关度 ${formatScore(item.score, step.knowledge.retrieval_mode)}`"
+                  <template v-if="step.knowledge.results?.length">
+                    <button
+                      type="button"
+                      class="knowledge-toggle"
+                      @click="step.sourcesExpanded = !step.sourcesExpanded"
                     >
-                      <div class="knowledge-snippet">{{ item.content }}</div>
-                    </el-collapse-item>
-                  </el-collapse>
-                  <div
-                    v-if="!step.knowledge.results?.length"
-                    class="knowledge-empty"
-                  >
+                      <el-icon class="knowledge-toggle-icon">
+                        <ArrowRight v-if="!step.sourcesExpanded" />
+                        <ArrowDown v-else />
+                      </el-icon>
+                      <span>
+                        {{ step.sourcesExpanded ? "收起引用" : "查看引用" }}
+                        ({{ step.knowledge.results.length }} 条)
+                      </span>
+                    </button>
+                    <el-collapse
+                      v-show="step.sourcesExpanded"
+                      class="knowledge-collapse"
+                    >
+                      <el-collapse-item
+                        v-for="(item, j) in step.knowledge.results"
+                        :key="j"
+                        :title="`📄 ${item.source} · 相关度 ${formatScore(item.score, step.knowledge.retrieval_mode)}`"
+                      >
+                        <div class="knowledge-snippet">{{ item.content }}</div>
+                      </el-collapse-item>
+                    </el-collapse>
+                  </template>
+                  <div v-else class="knowledge-empty">
                     知识库未命中任何片段
                   </div>
                 </div>
@@ -330,6 +383,8 @@ import {
 } from "@/utils/toolChain";
 import {
   Aim,
+  ArrowDown,
+  ArrowRight,
   Camera,
   ChatLineRound,
   DataAnalysis,
@@ -424,6 +479,7 @@ async function sendMessage() {
     role: "assistant",
     content: "",
     loading: true,
+    streaming: true,
   });
   const assistantMessage = agentStore.messages[assistantMessageIndex];
   agentStore.setLoading(true);
@@ -455,6 +511,7 @@ async function sendMessage() {
         "未知错误";
       assistantMessage.content = `附件上传失败：${errorMessage}，请重试`;
       assistantMessage.loading = false;
+      assistantMessage.streaming = false;
       assistantMessage.error = true;
       agentStore.setLoading(false);
       return;
@@ -504,6 +561,7 @@ async function sendMessage() {
       } else if (data.type === "error") {
         assistantMessage.content = data.content;
         assistantMessage.loading = false;
+        assistantMessage.streaming = false;
         assistantMessage.error = true;
       }
     },
@@ -511,6 +569,7 @@ async function sendMessage() {
       if (assistantMessage.loading) {
         assistantMessage.loading = false;
       }
+      assistantMessage.streaming = false;
       // 工具报错且 LLM 未输出任何文字时给出兜底提示，避免空气泡
       if (
         !assistantMessage.content &&
@@ -526,6 +585,7 @@ async function sendMessage() {
     onError: (err) => {
       assistantMessage.content = `抱歉，处理出错了：${err.message}`;
       assistantMessage.loading = false;
+      assistantMessage.streaming = false;
       assistantMessage.error = true;
       assistantMessage.retryData = {
         message: effectiveMessage,
@@ -544,6 +604,7 @@ async function sendMessage() {
 function handleStop() {
   agentStore.abort();
   const lastMsg = agentStore.messages[agentStore.messages.length - 1];
+  lastMsg.streaming = false;
   if (lastMsg.loading) {
     lastMsg.loading = false;
     lastMsg.content += "\n[已停止生成]";
@@ -1318,6 +1379,11 @@ onMounted(async () => {
   }
 }
 
+/* 正文已有内容、流未结束时接在内容下方的加载动画 */
+.typing-indicator-inline {
+  margin-top: 8px;
+}
+
 /* ── 输入区域 ── */
 .composer-wrapper {
   flex-shrink: 0;
@@ -1532,6 +1598,9 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 摘要过长时优先压缩自身，保证后面的详情开关始终可见 */
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 /* ── 知识库检索来源 ── */
@@ -1540,9 +1609,83 @@ onMounted(async () => {
   font-size: 12px;
 }
 
+/* 收起/展开开关，内联在调用链标题行，样式与知识库引用开关保持一致 */
+.query-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: $text-secondary;
+  flex-shrink: 0;
+  white-space: nowrap;
+
+  &:hover {
+    color: $signal-orange;
+  }
+}
+
+.query-toggle-icon {
+  font-size: 12px;
+}
+
+.query-result-panel {
+  margin: 6px 0 4px 26px;
+  padding: 8px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  background: #f5f7fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.query-field {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.query-field-label {
+  color: $text-secondary;
+  flex-shrink: 0;
+}
+
+.query-field-value {
+  color: $text-regular;
+  font-weight: 600;
+  /* 整段值不在字符间断行，避免 "单图 4 · 批量 0 · 视频 0" 被拆成两行 */
+  white-space: nowrap;
+}
+
 .knowledge-fallback {
   color: #e6a23c;
   margin-bottom: 4px;
+}
+
+/* 引用列表整体收起/展开开关 */
+.knowledge-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: $text-secondary;
+
+  &:hover {
+    color: $signal-orange;
+  }
+}
+
+.knowledge-toggle-icon {
+  font-size: 12px;
 }
 
 .knowledge-collapse {

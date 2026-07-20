@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.1.0"
     APP_DEBUG: bool = True
 
+    # ── 上传缓存清理配置 ───────────────────────────────
+    # rsod_uploads 目录下的附件/还原文件是纯缓存（用户原图在 MinIO 有永久副本），
+    # 保留窗口必须 ≥ ConversationMemory.ttl(86400s)，否则会删掉记忆仍引用、
+    # 但用户尚未“再检测一次”的文件。默认取 TTL 的 2 倍（48 小时）作为安全边界。
+    UPLOAD_CACHE_RETENTION_SECONDS: int = 172800   # 48 小时
+    UPLOAD_CACHE_CLEANUP_INTERVAL_SECONDS: int = 3600  # 每小时扫描一次
+
     # ── 日志配置 ──────────────────────────────────────
     LOG_LEVEL: str = "INFO"           # 日志级别
     LOG_DIR: str = "logs"             # 日志目录（相对于 backend/）

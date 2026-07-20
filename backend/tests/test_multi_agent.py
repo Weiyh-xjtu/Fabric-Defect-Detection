@@ -331,6 +331,36 @@ def test_detection_specialist_binds_session_attachment_tool():
     names = {item.name for item in multi_agent.specialists["detection"].tools}
     assert "list_session_attachments" in names
 
+
+def test_analysis_specialist_requires_one_of_its_data_tools():
+    """分析专家不能绕过数据工具直接生成统计结论。"""
+    agent = multi_agent.specialists["analysis"]
+    bound_names = {item.name for item in agent.tools}
+    assert agent.required_tool_names == bound_names
+    assert agent.max_required_tool_retries == 1
+    assert agent._required_tools_for("统计今天的缺陷") == {
+        "query_detection_statistics",
+        "query_detection_trends",
+    }
+    assert agent._required_tools_for("系统有哪些角色和权限") == {
+        "query_system_users",
+        "query_system_roles",
+    }
+
+    validator = agent.required_tool_call_validator
+    message = (
+        "统计今日图中的缺陷\n\n[DEPENDENCY_DATA]\n"
+        '{"detection":{"detected_classes":["hole"],"class_counts":{"hole":1}}}'
+    )
+    assert validator is not None
+    assert not validator(
+        message, [("query_detection_statistics", {"today": True, "defect": ""})]
+    )
+    assert validator(
+        message,
+        [("query_detection_statistics", {"today": True, "defect": "hole"})],
+    )
+
 def test_day11_tool_count_and_groups():
     names = {item.name for item in DETECTION_TOOLS}
     assert len(names) >= 9

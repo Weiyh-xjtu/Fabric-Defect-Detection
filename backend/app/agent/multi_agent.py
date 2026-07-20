@@ -5,6 +5,7 @@
 顺序分节合并为单一有序流。单意图路径与并行能力引入前的行为完全一致。
 """
 import asyncio
+import json
 from typing import AsyncGenerator
 
 from langchain_core.messages import HumanMessage
@@ -41,6 +42,146 @@ AGENT_EMOJIS = {"detection": "🔍", "analysis": "📊", "qa": "📖"}
 # 队列内部哨兵事件类型：标记某个专家流结束，仅编排器内部消费，绝不对外 yield。
 _SPECIALIST_DONE = "_specialist_done"
 
+_ANALYSIS_STAT_TOOLS = {"query_detection_statistics", "query_detection_trends"}
+_ANALYSIS_SYSTEM_TOOLS = {"query_system_users", "query_system_roles"}
+_DETECTION_TOOLS = {
+    "detect_single_image",
+    "detect_batch_images",
+    "detect_zip_images_file",
+    "detect_video_file",
+}
+_DEPENDENCY_DATA_MARKER = "[DEPENDENCY_DATA]"
+
+
+def _json_object(value: object) -> dict | None:
+    """把工具输出规整为 JSON 对象；无法解析时返回 None。"""
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _detection_dependency_data(tool_name: str, result: object) -> dict | None:
+    """从检测工具结果提取供下游使用的最小结构化字段。"""
+    if tool_name not in _DETECTION_TOOLS:
+        return None
+    payload = _json_object(result)
+    if not payload or payload.get("error"):
+        return None
+
+    raw_counts = payload.get("class_counts")
+    class_counts: dict[str, int] = {}
+    if isinstance(raw_counts, dict):
+        for name, count in raw_counts.items():
+            try:
+                class_counts[str(name)] = int(count)
+            except (TypeError, ValueError):
+                continue
+    if not class_counts and isinstance(payload.get("detections"), list):
+        for detection in payload["detections"]:
+            if not isinstance(detection, dict) or not detection.get("class_name"):
+                continue
+            name = str(detection["class_name"])
+            class_counts[name] = class_counts.get(name, 0) + 1
+
+    return {
+        "total_objects": int(payload.get("total_objects") or sum(class_counts.values())),
+        "detected_classes": list(class_counts),
+        "class_counts": class_counts,
+    }
+
+
+def _dependency_data_from_steps(steps: list | None) -> dict | None:
+    """从非流式 Agent 中间步骤提取最后一次有效检测结果。"""
+    dependency = None
+    for step in steps or []:
+        if not isinstance(step, (tuple, list)) or len(step) < 2:
+            continue
+        action, observation = step[0], step[1]
+        tool_name = (
+            action.get("tool")
+            if isinstance(action, dict)
+            else getattr(action, "tool", "")
+        )
+        dependency = _detection_dependency_data(str(tool_name), observation) or dependency
+    return dependency
+
+
+def _dependency_payload(message: str) -> dict:
+    """读取编排器附加在任务末尾的结构化依赖数据。"""
+    marker_index = (message or "").find(_DEPENDENCY_DATA_MARKER)
+    if marker_index < 0:
+        return {}
+    raw = message[marker_index + len(_DEPENDENCY_DATA_MARKER):].lstrip()
+    try:
+        payload, _end = json.JSONDecoder().raw_decode(raw)
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _analysis_tool_calls_valid(
+    message: str, tool_calls: list[tuple[str, object]]
+) -> bool:
+    """依赖检测类别存在时，统计调用必须逐类携带 defect 筛选条件。"""
+    detection = _dependency_payload(message).get("detection")
+    if not isinstance(detection, dict):
+        return True
+    required_defects = {
+        str(name).strip().casefold()
+        for name in detection.get("detected_classes", [])
+        if str(name).strip()
+    }
+    if not required_defects:
+        return True
+
+    queried_defects: set[str] = set()
+    for tool_name, raw_input in tool_calls:
+        if tool_name not in _ANALYSIS_STAT_TOOLS:
+            continue
+        tool_input = _json_object(raw_input) or {}
+        defect = str(tool_input.get("defect", "")).strip().casefold()
+        if defect:
+            queried_defects.add(defect)
+    return required_defects <= queried_defects
+
+
+def _analysis_required_tools(message: str) -> set[str]:
+    """按分析子任务选择运行时必须出现的查询工具组。"""
+    text = (message or "").lower()
+    role_terms = ("角色", "权限", "管理员", "role", "permission", "admin")
+    user_terms = ("用户", "账号", "邮箱", "user", "account", "email")
+    detection_data_terms = (
+        "检测",
+        "缺陷",
+        "目标",
+        "任务",
+        "图片",
+        "视频",
+        "批量",
+        "单图",
+        "趋势",
+        "分布",
+        "统计",
+        "今天",
+        "今日",
+        "昨天",
+        "本周",
+        "上周",
+    )
+    # 角色/权限属于系统元数据；单纯查询用户资料也走系统工具。
+    if any(term in text for term in role_terms):
+        return set(_ANALYSIS_SYSTEM_TOOLS)
+    if any(term in text for term in user_terms) and not any(
+        term in text for term in detection_data_terms
+    ):
+        return set(_ANALYSIS_SYSTEM_TOOLS)
+    # 其余分析任务均为检测数据分析，只认可真正的统计/趋势工具。
+    return set(_ANALYSIS_STAT_TOOLS)
+
 
 def _section_header(agent: str, first: bool) -> str:
     """并行模式下各专家回答的分节标题；首节不带分割线。"""
@@ -50,12 +191,19 @@ def _section_header(agent: str, first: bool) -> str:
 
 
 def _format_upstream_context(upstream_outputs: dict | None) -> str:
-    """把上游专家的输出整理成注入下游任务 prompt 的依赖上下文。
+    """把上游产物整理成注入下游任务 prompt 的依赖上下文。
 
-    仅保留有实际文本的上游结果；全部为空时返回空串（视为无上下文）。
+    优先传递结构化工具数据；仅在没有结构化产物时回退到专家文本，兼容
+    无工具的依赖任务。检测结果不会以自然语言重复注入分析 Agent。
     """
     if not upstream_outputs:
         return ""
+    structured = {
+        agent: output for agent, output in upstream_outputs.items() if isinstance(output, dict)
+    }
+    if structured:
+        return _DEPENDENCY_DATA_MARKER + "\n" + json.dumps(structured, ensure_ascii=False)
+
     parts: list[str] = []
     for agent, output in upstream_outputs.items():
         text = (output or "").strip()
@@ -65,7 +213,8 @@ def _format_upstream_context(upstream_outputs: dict | None) -> str:
         return ""
     body = "\n\n".join(parts)
     return (
-        "[以下是你所依赖的其它专家已完成的结果，请据此完成上面的任务，不要重复它们已给出的内容]\n"
+        "[以下是你所依赖的其它专家已完成的结果，请据此完成上面的任务，不要重复它们已给出的内容；"
+        "这些结果不能替代你自身任务要求的数据查询或知识检索工具调用]\n"
         + body
     )
 
@@ -100,7 +249,10 @@ class MultiAgentOrchestrator:
                 [query_detection_statistics, query_detection_trends, query_system_users, query_system_roles],
                 system_prompt=(
                     ANALYSIS_PROMPT
-                    + " 必须调用工具获取真实数据，禁止编造统计数字。"
+                    + " 每次处理任务都必须先调用至少一个与请求匹配的数据查询工具获取真实数据，"
+                    "禁止跳过工具直接回答，禁止编造统计数字。"
+                    "依赖上下文包含 [DEPENDENCY_DATA] 时，detection.detected_classes 是本次分析的"
+                    "缺陷筛选范围；对其中每个类别分别调用统计或趋势工具，并把类别原样传入 defect 参数。"
                     "询问今日/今天时调用 query_detection_statistics 并设置 today=true。"
                     "询问昨天/前天等某一天时，按系统提示中的当前日期换算出那一天，"
                     "把 start_date 和 end_date 都设为该日期（如昨天＝当前日期减一天）。"
@@ -116,6 +268,15 @@ class MultiAgentOrchestrator:
                     "没有数据时明确回答对应筛选条件下暂无检测记录，不要要求上传附件。"
                 ),
                 name="analysis",
+                required_tool_names={
+                    "query_detection_statistics",
+                    "query_detection_trends",
+                    "query_system_users",
+                    "query_system_roles",
+                },
+                required_tool_resolver=_analysis_required_tools,
+                required_tool_call_validator=_analysis_tool_calls_valid,
+                max_required_tool_retries=1,
             ),
             "qa": DetectionAgent(
                 [search_knowledge],
@@ -159,8 +320,8 @@ class MultiAgentOrchestrator:
     ) -> dict:
         """构造并行模式下单个专家的调用参数。
 
-        upstream_outputs：{上游专家名: 其输出文本}。非空时把上游结论拼进 message，
-        使下游任务能基于上游结果继续（依赖递进）。
+        upstream_outputs：{上游专家名: 结构化产物或文本}。优先把结构化产物拼进
+        message，使下游只接收完成任务所需字段；无结构化数据时才回退到文本。
         """
         sk = dict(kwargs)
         task = entry["task"]
@@ -193,7 +354,7 @@ class MultiAgentOrchestrator:
 
         执行模型（依赖递进）：
           - 无 depends_on 的专家立即启动，天然并行；
-          - 有 depends_on 的专家先等待其全部上游完成，再把上游的输出文本注入
+          - 有 depends_on 的专家先等待其全部上游完成，再把上游结构化产物注入
             自己的任务 prompt（见 _specialist_kwargs 的 upstream_outputs），
             从而“用上游结果继续下游”，实现含依赖的递进执行；
           - 上游失败时下游不再执行，直接标记为失败（依赖缺失）。
@@ -208,14 +369,16 @@ class MultiAgentOrchestrator:
         yield {"type": "agent_route", "agent": agents[0], "agents": agents, "plan": plan}
 
         queue: asyncio.Queue = asyncio.Queue()
-        # 每个专家一个完成事件 + 其输出文本，供下游 gating 与结果注入使用。
+        # 每个专家一个完成事件 + 文本/结构化产物，供下游 gating 与依赖注入使用。
         done_events: dict[str, asyncio.Event] = {a: asyncio.Event() for a in agents}
         outputs: dict[str, str] = {}        # agent -> 已收集的输出文本
+        dependency_data: dict[str, dict] = {}  # agent -> 从工具结果提取的最小依赖数据
         failed_agents: set[str] = set()      # 自身失败或上游失败而未执行的专家
 
         async def produce(entry: dict) -> None:
             agent_name = entry["agent"]
             collected: list[str] = []
+            collected_dependency: dict | None = None
             try:
                 # 依赖递进：等待全部上游完成，再注入其输出继续本任务。
                 for dep in entry.get("depends_on") or []:
@@ -230,7 +393,10 @@ class MultiAgentOrchestrator:
                         "content": f"依赖的{labels}未成功完成，已跳过",
                     })
                     return
-                upstream = {dep: outputs.get(dep, "") for dep in (entry.get("depends_on") or [])}
+                upstream = {
+                    dep: dependency_data.get(dep) or outputs.get(dep, "")
+                    for dep in (entry.get("depends_on") or [])
+                }
                 async for event in self.specialists[agent_name].chat_stream(
                     **self._specialist_kwargs(entry, kwargs, upstream)
                 ):
@@ -238,6 +404,10 @@ class MultiAgentOrchestrator:
                     etype = event.get("type")
                     if etype == "text_chunk":
                         collected.append(str(event.get("content", "")))
+                    elif etype == "tool_result":
+                        collected_dependency = _detection_dependency_data(
+                            str(event.get("tool", "")), event.get("result")
+                        ) or collected_dependency
                     elif etype == "error":
                         # 专家以 error 事件（而非抛异常）报告失败时也要标记，
                         # 否则依赖它的下游会误判上游成功而继续执行。
@@ -248,6 +418,8 @@ class MultiAgentOrchestrator:
                 await queue.put({"type": "error", "agent": agent_name, "content": str(exc)})
             finally:
                 outputs[agent_name] = "".join(collected)
+                if collected_dependency is not None:
+                    dependency_data[agent_name] = collected_dependency
                 done_events[agent_name].set()  # 无论成功失败都释放下游，避免死等
                 await queue.put({"type": _SPECIALIST_DONE, "agent": agent_name})
 
@@ -344,6 +516,7 @@ class MultiAgentOrchestrator:
         # 下游专家把已完成上游的输出注入自己的任务 prompt。
         by_agent = {entry["agent"]: entry for entry in plan}
         outputs: dict[str, str] = {}
+        dependency_data: dict[str, dict] = {}
         wave_steps: dict[str, list] = {}
         failed: set[str] = set()
         resolved: set[str] = set()
@@ -367,7 +540,10 @@ class MultiAgentOrchestrator:
                         **self._specialist_kwargs(
                             by_agent[a],
                             kwargs,
-                            {dep: outputs.get(dep, "") for dep in (by_agent[a].get("depends_on") or [])},
+                            {
+                                dep: dependency_data.get(dep) or outputs.get(dep, "")
+                                for dep in (by_agent[a].get("depends_on") or [])
+                            },
                         )
                     )
                     for a in wave_agents
@@ -376,6 +552,9 @@ class MultiAgentOrchestrator:
             for a, result in zip(wave_agents, wave_results):
                 outputs[a] = result.get("output", "")
                 wave_steps[a] = result.get("intermediate_steps", [])
+                artifact = _dependency_data_from_steps(wave_steps[a])
+                if artifact is not None:
+                    dependency_data[a] = artifact
             resolved |= set(ready)
             remaining = [a for a in remaining if a not in ready]
 
