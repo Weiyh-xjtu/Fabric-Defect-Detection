@@ -144,9 +144,9 @@
           <el-card v-for="role in roles" :key="role.id ?? role.name" shadow="never" class="role-card">
             <template #header>
               <div class="role-card-header">
-                <div>
-                  <div class="role-title-line">
-                    <strong>{{ role.display_name }}</strong>
+                <div class="role-title-block">
+                  <strong class="role-display-name">{{ role.display_name }}</strong>
+                  <div class="role-title-tags">
                     <el-tag :type="roleTagType(role.name)" size="small" effect="light">
                       {{ role.name }}
                     </el-tag>
@@ -160,7 +160,7 @@
                   <el-button link type="primary" :icon="Edit" @click="openRoleFormDialog(role)">
                     编辑
                   </el-button>
-                  <el-button link type="primary" @click="openPermissionDialog(role)">
+                  <el-button link type="primary" :icon="Key" @click="openPermissionDialog(role)">
                     权限
                   </el-button>
                   <el-button
@@ -175,19 +175,38 @@
                 </div>
               </div>
             </template>
-            <el-space wrap>
-              <el-tag
-                v-for="code in role.permissions"
-                :key="code"
-                type="info"
-                effect="plain"
-              >
-                {{ permissionName(code) }}
-              </el-tag>
-              <span v-if="!role.permissions?.length" class="secondary-text">
-                未配置任何权限
-              </span>
-            </el-space>
+            <div class="role-card-body">
+              <div class="role-perm-count">
+                <span class="secondary-text">已配置权限</span>
+                <strong>{{ role.permissions?.length || 0 }}</strong>
+                <span class="secondary-text">项</span>
+              </div>
+              <div v-if="role.permissions?.length" class="perm-module-list">
+                <div
+                  v-for="group in groupRolePermissions(role)"
+                  :key="group.module"
+                  class="perm-module"
+                >
+                  <span class="perm-module-label">{{ moduleLabel(group.module) }}</span>
+                  <el-space wrap :size="6">
+                    <el-tag
+                      v-for="item in group.items"
+                      :key="item.code"
+                      type="info"
+                      effect="plain"
+                      size="small"
+                    >
+                      {{ item.name }}
+                    </el-tag>
+                  </el-space>
+                </div>
+              </div>
+              <el-empty
+                v-else
+                description="未配置任何权限"
+                :image-size="48"
+              />
+            </div>
           </el-card>
         </div>
       </el-tab-pane>
@@ -336,7 +355,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Delete, Edit, Key, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
@@ -401,6 +420,27 @@ const groupedPermissions = computed(() => {
   }
   return [...groups.values()]
 })
+
+// code -> permission 元信息，用于在角色卡片中按模块分组展示权限
+const permissionMetaMap = computed(() => {
+  const map = new Map()
+  for (const permission of permissions.value) {
+    map.set(permission.code, permission)
+  }
+  return map
+})
+
+// 将某个角色持有的权限码按模块归类，供卡片分组渲染
+function groupRolePermissions(role) {
+  const groups = new Map()
+  for (const code of role.permissions || []) {
+    const meta = permissionMetaMap.value.get(code)
+    const module = meta?.module || 'other'
+    if (!groups.has(module)) groups.set(module, { module, items: [] })
+    groups.get(module).items.push({ code, name: meta?.name || code })
+  }
+  return [...groups.values()]
+}
 
 const activeCount = computed(() => users.value.filter((item) => item.is_active).length)
 const adminCount = computed(() => users.value.filter((item) => (
@@ -820,9 +860,23 @@ defineExpose({
 
 .role-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 16px;
   min-height: 120px;
+}
+
+.role-card {
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+
+  &:hover {
+    box-shadow: $shadow-md;
+    transform: translateY(-2px);
+  }
+
+  :deep(.el-card__header) {
+    border-bottom: 1px solid $indigo-line;
+    background: linear-gradient(180deg, rgba(63, 77, 104, 0.03), transparent);
+  }
 }
 
 .role-card-header {
@@ -832,11 +886,84 @@ defineExpose({
   gap: 12px;
 }
 
-.role-title-line {
+.role-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+
+  .role-display-name {
+    font-family: $font-display;
+    font-size: 15px;
+    color: $text-primary;
+  }
+}
+
+.role-title-tags {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 4px;
+
+  :deep(.el-tag) {
+    font-family: $font-mono;
+  }
+}
+
+.role-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.role-perm-count {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+
+  strong {
+    font-family: $font-mono;
+    font-size: 22px;
+    color: $signal-orange;
+    line-height: 1;
+  }
+}
+
+.perm-module-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.perm-module {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.perm-module-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: $text-regular;
+  padding-top: 3px;
+  position: relative;
+  padding-left: 10px;
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 5px;
+    width: 3px;
+    height: 12px;
+    background: $signal-orange;
+    border-radius: 2px;
+  }
+}
+
+.role-card-body :deep(.el-empty) {
+  padding: 8px 0;
 }
 
 .permission-modules {
