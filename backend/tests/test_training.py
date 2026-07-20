@@ -9,6 +9,7 @@ import pytest
 
 import app.api.training as training_api
 from app.config.settings import settings
+from app.core.security import hash_password
 from app.entity.db_models import (
     DetectionScene,
     ModelEvaluation,
@@ -29,23 +30,31 @@ from app.training.training_service import (
 
 
 def _auth_headers(client, db_session, username: str = "training_scene_user"):
-    """注册并登录测试用户，返回认证请求头。"""
-    client.post(
-        "/api/auth/register",
-        json={
-            "username": username,
-            "email": f"{username}@example.com",
-            "password": "123456",
-        },
-    )
-    user = db_session.query(User).filter_by(username=username).one()
+    """准备管理员测试用户并登录，返回认证请求头。"""
+    user = db_session.query(User).filter_by(username=username).one_or_none()
+    if user is None:
+        user = User(
+            username=username,
+            email=f"{username}@example.com",
+            hashed_password=hash_password("123456"),
+        )
+        db_session.add(user)
+        db_session.flush()
+    else:
+        # 测试数据库在同一 pytest 会话中共享；重复使用固定用户名时，
+        # 重置密码和启用状态，避免依赖前一个用例的残留数据。
+        user.hashed_password = hash_password("123456")
+        user.is_active = True
+
     role = db_session.query(Role).filter_by(name="system_admin").one()
-    db_session.add(UserRole(user_id=user.id, role_id=role.id))
+    if not any(item.role_id == role.id for item in user.user_roles):
+        db_session.add(UserRole(user_id=user.id, role_id=role.id))
     db_session.commit()
     response = client.post(
         "/api/auth/login",
         json={"username": username, "password": "123456"},
     )
+    assert response.status_code == 200, response.text
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 

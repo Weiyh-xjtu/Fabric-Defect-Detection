@@ -9,9 +9,9 @@ const repeatKeySerializer = { indexes: null }
  * 组装看板通用查询参数。
  * 传入 start/end 时按自定义时间段查询，否则回退到最近 days 天；
  * classNames 为缺陷类别数组，用于按缺陷过滤；
- * sceneId 为检测场景 id，用于按场景隔离统计。
+ * sceneId 为检测场景 id，employeeId 为检测员工 id。
  */
-function buildParams({ days = 30, start, end, classNames, sceneId } = {}) {
+function buildParams({ days = 30, start, end, classNames, sceneId, employeeId } = {}) {
   const params = {}
   if (start && end) {
     params.start_date = start
@@ -24,6 +24,9 @@ function buildParams({ days = 30, start, end, classNames, sceneId } = {}) {
   }
   if (sceneId) {
     params.scene_id = sceneId
+  }
+  if (employeeId) {
+    params.user_id = employeeId
   }
   return params
 }
@@ -83,4 +86,8 @@ export function getDefectOptions(options = {}) {
 
 export function getSceneOptions() {
   return request.get('/dashboard/scene-options')
+}
+
+export function getEmployeeOptions() {
+  return request.get('/dashboard/employee-options')
 }

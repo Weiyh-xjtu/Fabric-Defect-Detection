@@ -206,6 +206,38 @@ class TestFlexibleDashboardService:
         assert by_name["hole"]["name_cn"] == "破洞"
         assert by_name["stain"]["count"] == 1
 
+    def test_employee_filter_scopes_statistics_and_lists_options(self, db_session):
+        _clear_detection(db_session)
+        scene = _make_scene(db_session, "flex_employee_scene")
+        alice = _ensure_user(db_session, "flex_employee_alice")
+        bob = _ensure_user(db_session, "flex_employee_bob")
+        _make_task_with_defects(
+            db_session, alice.id, scene.id,
+            datetime(2026, 6, 10, 9, 0), [("hole", "破洞", "a.jpg")],
+        )
+        _make_task_with_defects(
+            db_session, bob.id, scene.id,
+            datetime(2026, 6, 11, 9, 0),
+            [("stain", "污渍", "b.jpg"), ("stain", "污渍", "b.jpg")],
+        )
+        window = dict(start_date=date(2026, 6, 1), end_date=date(2026, 6, 30))
+
+        alice_stats = dashboard_service.get_statistics(
+            db_session, alice.id, **window
+        )
+        bob_stats = dashboard_service.get_statistics(
+            db_session, bob.id, **window
+        )
+        assert alice_stats["total_tasks"] == 1
+        assert alice_stats["total_objects"] == 1
+        assert bob_stats["total_tasks"] == 1
+        assert bob_stats["total_objects"] == 2
+
+        options = dashboard_service.get_employee_options(db_session)["options"]
+        by_username = {item["username"]: item for item in options}
+        assert by_username[alice.username]["task_count"] == 1
+        assert by_username[bob.username]["task_count"] == 1
+
 
 class TestDefectNameMatching:
     """缺陷类别的中英互认与大小写不敏感匹配。"""
@@ -607,6 +639,41 @@ class TestFlexibleDashboardApi:
         assert "options" in scene_options.json()
 
         bad = client.get("/api/dashboard/statistics?scene_id=0", headers=headers)
+        assert bad.status_code == 422
+
+    def test_user_id_param_and_employee_options_endpoint(self, client, db_session):
+        _clear_detection(db_session)
+        headers = self._grant_manager(client, db_session, "employee_api_manager")
+        manager = db_session.query(User).filter_by(
+            username="employee_api_manager"
+        ).one()
+        other = _ensure_user(db_session, "employee_api_other")
+        scene = _make_scene(db_session, "employee_api_scene")
+        _make_task_with_defects(
+            db_session, manager.id, scene.id,
+            datetime.now() - timedelta(days=1), [("hole", "破洞", "a.jpg")],
+        )
+        _make_task_with_defects(
+            db_session, other.id, scene.id,
+            datetime.now() - timedelta(days=1), [("stain", "污渍", "b.jpg")],
+        )
+
+        isolated = client.get(
+            f"/api/dashboard/statistics?days=7&user_id={manager.id}",
+            headers=headers,
+        )
+        assert isolated.status_code == 200
+        assert isolated.json()["total_tasks"] == 1
+
+        options = client.get("/api/dashboard/employee-options", headers=headers)
+        assert options.status_code == 200
+        by_username = {
+            item["username"]: item for item in options.json()["options"]
+        }
+        assert by_username[manager.username]["id"] == manager.id
+        assert by_username[other.username]["id"] == other.id
+
+        bad = client.get("/api/dashboard/statistics?user_id=0", headers=headers)
         assert bad.status_code == 422
 
 
