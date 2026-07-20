@@ -202,8 +202,13 @@ function startResize(event) {
   isResizing.value = true
   const startY = event.clientY
   const startHeight = el.getBoundingClientRect().height
-  // 上限：不超过菜单自然高度（分界线最低就在系统设置之下）；下限保底 88px
-  const maxHeight = el.scrollHeight
+  // 上限：允许一直拖到历史对话区只剩标题栏（标题栏 + 分界线约 60px）；
+  // 下限保底 88px（至少露出几个菜单项）
+  const aside = el.closest('.app-sidebar')
+  const HISTORY_HEADER_RESERVE = 60
+  const maxHeight = aside
+    ? aside.getBoundingClientRect().height - HISTORY_HEADER_RESERVE
+    : el.scrollHeight
   const minHeight = 88
 
   function onMove(e) {
