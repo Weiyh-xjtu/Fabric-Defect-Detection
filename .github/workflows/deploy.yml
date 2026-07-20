@@ -101,7 +101,7 @@ jobs:
           SERVER_PORT: ${{ secrets.SERVER_PORT || '22' }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          printf '%b' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           scp -i ~/.ssh/deploy_key -P "$SERVER_PORT" -o StrictHostKeyChecking=accept-new \
             "$RUNNER_TEMP/firesight-dist.tar.gz" \
