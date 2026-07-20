@@ -2,7 +2,7 @@
 import io
 import uuid
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException
@@ -19,7 +19,8 @@ from app.core.security import (
 )
 from app.core.logger import get_logger
 from app.core.rbac import QUALITY_INSPECTOR, SYSTEM_ADMIN, get_user_permission_codes
-from app.entity.db_models import Role, RolePermission, User, UserRole
+from app.config.settings import settings
+from app.entity.db_models import AuthSession, Role, RolePermission, User, UserRole
 from app.storage.minio_client import MinIOClient
 
 logger = get_logger(__name__)
@@ -108,14 +109,96 @@ class UserService:
         return user
 
     @staticmethod
-    def create_access_token_for_user(user: User) -> str:
-        """为用户生成 JWT Token"""
-        return create_access_token(data={"sub": str(user.id)})
+    def create_auth_session(db: Session, user: User) -> AuthSession:
+        """为一次登录创建可独立撤销的服务端认证会话。"""
+        now = datetime.now()
+        auth_session = AuthSession(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            created_at=now,
+            last_refreshed_at=now,
+            expires_at=now + timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES),
+        )
+        db.add(auth_session)
+        db.commit()
+        db.refresh(auth_session)
+        return auth_session
 
     @staticmethod
-    def create_refresh_token_for_user(user: User) -> str:
+    def get_active_auth_session(
+        db: Session,
+        user_id: int,
+        session_id: str,
+    ) -> AuthSession | None:
+        """返回仍有效且属于指定用户的认证会话。"""
+        auth_session = (
+            db.query(AuthSession)
+            .filter(
+                AuthSession.id == session_id,
+                AuthSession.user_id == user_id,
+            )
+            .first()
+        )
+        if (
+            auth_session is None
+            or auth_session.revoked_at is not None
+            or auth_session.expires_at <= datetime.now()
+        ):
+            return None
+        return auth_session
+
+    @staticmethod
+    def refresh_auth_session(db: Session, auth_session: AuthSession) -> None:
+        """滑动延长有效认证会话的 Refresh 期限。"""
+        now = datetime.now()
+        auth_session.last_refreshed_at = now
+        auth_session.expires_at = now + timedelta(
+            minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES
+        )
+        db.commit()
+
+    @staticmethod
+    def revoke_auth_session(db: Session, user_id: int, session_id: str) -> bool:
+        """仅撤销指定用户的一次登录会话。"""
+        auth_session = (
+            db.query(AuthSession)
+            .filter(
+                AuthSession.id == session_id,
+                AuthSession.user_id == user_id,
+                AuthSession.revoked_at.is_(None),
+            )
+            .first()
+        )
+        if auth_session is None:
+            return False
+        auth_session.revoked_at = datetime.now()
+        db.commit()
+        return True
+
+    @staticmethod
+    def revoke_all_auth_sessions(db: Session, user_id: int) -> int:
+        """撤销用户当前所有未撤销的登录会话，事务由调用方提交。"""
+        return (
+            db.query(AuthSession)
+            .filter(
+                AuthSession.user_id == user_id,
+                AuthSession.revoked_at.is_(None),
+            )
+            .update(
+                {AuthSession.revoked_at: datetime.now()},
+                synchronize_session=False,
+            )
+        )
+
+    @staticmethod
+    def create_access_token_for_user(user: User, session_id: str) -> str:
+        """为用户生成 JWT Token"""
+        return create_access_token(data={"sub": str(user.id), "sid": session_id})
+
+    @staticmethod
+    def create_refresh_token_for_user(user: User, session_id: str) -> str:
         """为用户生成用于滑动续期的 Refresh Token。"""
-        return create_refresh_token(data={"sub": str(user.id)})
+        return create_refresh_token(data={"sub": str(user.id), "sid": session_id})
 
     @staticmethod
     def get_user_roles(db: Session, user: User) -> list[str]:
@@ -545,6 +628,7 @@ class UserService:
         if verify_password(new_password, user.hashed_password):
             raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
         user.hashed_password = hash_password(new_password)
+        UserService.revoke_all_auth_sessions(db, user.id)
         db.commit()
         logger.info("用户 %s 修改了密码", user.username)
         return {"message": "密码修改成功"}

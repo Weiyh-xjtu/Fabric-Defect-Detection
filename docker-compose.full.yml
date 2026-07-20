@@ -1,0 +1,153 @@
+# ═══════════════════════════════════════════════════════
+# FIRESIGHT 全容器化部署 — 前端(Caddy) + 后端 + 基础设施一体
+#
+# 用法（在仓库根目录）：
+#   cp deploy/full.env.example .env
+#   nano .env                       # 填入域名、密码、API Key
+#   docker compose -f docker-compose.full.yml up -d --build
+#
+# 对外只暴露 80/443（Caddy 自动签发 HTTPS）；
+# PostgreSQL / Redis / MinIO / 后端仅在内部网络可达。
+# 与开发用 docker-compose.yml 相互独立，不要混用。
+# ═══════════════════════════════════════════════════════
+services:
+  # ── PostgreSQL + Pgvector ──────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: firesight-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rsod_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-rsod_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?must set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rsod_admin} -d ${POSTGRES_DB:-rsod_agent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ──────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: firesight-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO 对象存储 ─────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: firesight-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?must set MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── 后端 FastAPI（含 YOLO CPU 推理/训练）───────────
+  backend:
+    build:
+      context: ./backend
+    image: firesight-backend
+    container_name: firesight-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-rsod_agent}
+      DB_USER: ${POSTGRES_USER:-rsod_admin}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?must set POSTGRES_PASSWORD}
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?must set MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-rsod-images}
+      MINIO_SECURE: "false"
+
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?must set JWT_SECRET_KEY}
+      REFRESH_COOKIE_SECURE: "${REFRESH_COOKIE_SECURE:-true}"
+
+      APP_DEBUG: "false"
+      LOG_LEVEL: INFO
+      MODEL_TASK_PROCESS_ISOLATION: "true"
+
+      # 同源部署浏览器走 /api 相对路径，这里只需列出对外站点来源
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://${DOMAIN:-localhost}}
+
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen-plus}
+
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v3}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+    volumes:
+      # 运行时数据落在宿主机，升级/重建容器不丢失
+      - ./backend/datasets:/app/backend/datasets
+      - ./backend/runs:/app/backend/runs
+      - ./backend/logs:/app/backend/logs
+      - ./backend/knowledge_base:/app/backend/knowledge_base
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/health', timeout=5)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── Web：前端静态资源 + Caddy 反代 + 自动 HTTPS ─────
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    image: firesight-web
+    container_name: firesight-web
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      # 站点域名（不带 https://）。留空则以纯 HTTP 服务于 80 端口
+      DOMAIN: ${DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - caddy_data:/data # 证书持久化，重建容器不重复签发
+      - caddy_config:/config
+
+networks:
+  default:
+    name: firesight-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  caddy_data:
+  caddy_config:

@@ -115,7 +115,7 @@ function handleCommand(command) {
   height: $header-height;
   background:
     radial-gradient(circle at 18px 18px, rgba(47, 58, 79, 0.028) 1px, transparent 1px),
-    linear-gradient(135deg, rgba(223, 107, 78, 0.038) 0%, rgba(223, 107, 78, 0.024) 48%, transparent 82%),
+    linear-gradient(135deg, rgba(220, 72, 72, 0.085) 0%, rgba(220, 72, 72, 0.045) 58%, transparent 96%),
     #fff;
   background-size: 24px 24px, 100% 100%, auto;
   border-bottom: 1px solid #e8ecf3;

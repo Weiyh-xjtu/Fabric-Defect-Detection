@@ -4,6 +4,7 @@ from __future__ import annotations
 import secrets
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TextIO
 
 from sqlalchemy import or_, text
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Query, Session
 
 from app.core.rbac import SYSTEM_ADMIN
 from app.core.security import hash_password
-from app.entity.db_models import Role, User, UserRole
+from app.entity.db_models import AuthSession, Role, User, UserRole
 
 
 BOOTSTRAP_LOCK_KEY = 0x464142524943
@@ -181,6 +182,13 @@ def recover_admin(db: Session, username: str | None = None) -> AdminCredentials:
     else:
         target.hashed_password = hash_password(password)
         target.is_active = True
+        db.query(AuthSession).filter(
+            AuthSession.user_id == target.id,
+            AuthSession.revoked_at.is_(None),
+        ).update(
+            {AuthSession.revoked_at: datetime.now()},
+            synchronize_session=False,
+        )
 
     _grant_admin_role(db, target, role)
     db.commit()

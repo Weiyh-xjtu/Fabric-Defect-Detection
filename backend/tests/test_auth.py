@@ -296,6 +296,118 @@ class TestRefreshSession:
         assert response.status_code == 204
         assert settings.REFRESH_COOKIE_NAME not in client.cookies
 
+    def test_logout_revokes_only_current_session(self, client):
+        """退出一个设备后，该会话令牌失效，其他设备会话保持有效。"""
+        client.headers["x-forwarded-for"] = "198.51.100.10"
+        client.post(
+            "/api/auth/register",
+            json={
+                "username": "logout_scope_user",
+                "email": "logout_scope@example.com",
+                "password": "123456",
+            },
+        )
+        first_login = client.post(
+            "/api/auth/login",
+            json={"username": "logout_scope_user", "password": "123456"},
+        )
+        first_access = first_login.json()["access_token"]
+        first_refresh = client.cookies.get(settings.REFRESH_COOKIE_NAME)
+
+        second_login = client.post(
+            "/api/auth/login",
+            json={"username": "logout_scope_user", "password": "123456"},
+        )
+        second_access = second_login.json()["access_token"]
+        second_refresh = client.cookies.get(settings.REFRESH_COOKIE_NAME)
+
+        client.cookies.clear()
+        client.cookies.set(settings.REFRESH_COOKIE_NAME, first_refresh)
+        logout_response = client.post(
+            "/api/auth/logout",
+            headers={"Authorization": f"Bearer {first_access}"},
+        )
+
+        assert logout_response.status_code == 204
+        assert (
+            client.get(
+                "/api/auth/me",
+                headers={"Authorization": f"Bearer {first_access}"},
+            ).status_code
+            == 401
+        )
+        client.cookies.set(settings.REFRESH_COOKIE_NAME, first_refresh)
+        assert client.post("/api/auth/refresh").status_code == 401
+
+        assert (
+            client.get(
+                "/api/auth/me",
+                headers={"Authorization": f"Bearer {second_access}"},
+            ).status_code
+            == 200
+        )
+        client.cookies.set(settings.REFRESH_COOKIE_NAME, second_refresh)
+        assert client.post("/api/auth/refresh").status_code == 200
+
+    def test_password_change_revokes_all_sessions(self, client):
+        """修改密码后，用户所有设备的 Access/Refresh Token 都立即失效。"""
+        client.headers["x-forwarded-for"] = "198.51.100.11"
+        client.post(
+            "/api/auth/register",
+            json={
+                "username": "password_revoke_user",
+                "email": "password_revoke@example.com",
+                "password": "123456",
+            },
+        )
+        first_login = client.post(
+            "/api/auth/login",
+            json={"username": "password_revoke_user", "password": "123456"},
+        )
+        first_access = first_login.json()["access_token"]
+        first_refresh = client.cookies.get(settings.REFRESH_COOKIE_NAME)
+
+        second_login = client.post(
+            "/api/auth/login",
+            json={"username": "password_revoke_user", "password": "123456"},
+        )
+        second_access = second_login.json()["access_token"]
+        second_refresh = client.cookies.get(settings.REFRESH_COOKIE_NAME)
+
+        changed = client.put(
+            "/api/user/password",
+            params={"old_password": "123456", "new_password": "654321"},
+            headers={"Authorization": f"Bearer {first_access}"},
+        )
+
+        assert changed.status_code == 200
+        for access_token in (first_access, second_access):
+            assert (
+                client.get(
+                    "/api/auth/me",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                ).status_code
+                == 401
+            )
+        for refresh_token in (first_refresh, second_refresh):
+            client.cookies.set(settings.REFRESH_COOKIE_NAME, refresh_token)
+            assert client.post("/api/auth/refresh").status_code == 401
+
+        assert (
+            client.post(
+                "/api/auth/login",
+                json={"username": "password_revoke_user", "password": "123456"},
+            ).status_code
+            == 401
+        )
+        assert (
+            client.post(
+                "/api/auth/login",
+                json={"username": "password_revoke_user", "password": "654321"},
+            ).status_code
+            == 200
+        )
+
 
 class TestGetCurrentUser:
     """获取当前用户测试"""
