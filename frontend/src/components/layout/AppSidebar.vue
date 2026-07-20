@@ -335,8 +335,8 @@ onMounted(() => {
   font-size: 14px;
   background:
     radial-gradient(circle at 18px 18px, rgba(47, 58, 79, 0.026) 1px, transparent 1px),
-    linear-gradient(145deg, rgba(223, 107, 78, 0.044), transparent 56%),
-    #f5f6f9;
+    linear-gradient(145deg, rgba(220, 72, 72, 0.085) 0%, rgba(220, 72, 72, 0.045) 58%, transparent 96%),
+    #fff;
   background-size: 24px 24px, 100% 100%, auto;
   border-right: 1px solid #e8ecf3;
   flex-shrink: 0;
