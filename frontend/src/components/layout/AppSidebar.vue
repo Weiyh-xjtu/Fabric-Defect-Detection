@@ -41,7 +41,7 @@
     </div>
 
     <div
-      v-if="isChatRoute && !isSidebarCollapsed && !isHistoryCollapsed"
+      v-if="isChatRoute && !isSidebarCollapsed"
       class="history-resizer"
       :class="{ 'is-dragging': isResizing }"
       title="拖动调整历史对话区域高度（双击恢复默认）"
@@ -533,11 +533,7 @@ onMounted(() => {
   min-height: 0;
   flex-direction: column;
 
-  // 展开时分界线由可拖拽的 .history-resizer 提供；
-  // 收起时 resizer 隐藏，这里补一条分界线
-  &.is-history-collapsed {
-    border-top: 1px solid #e8ecf3;
-  }
+  // 分界线始终由可拖拽的 .history-resizer 提供（展开/收起都在）
 }
 
 // 可拖拽分界线：位于菜单区与历史对话区之间
