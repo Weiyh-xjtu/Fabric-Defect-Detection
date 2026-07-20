@@ -162,7 +162,7 @@
                   </div>
                 </div>
 
-                <!-- 知识库检索来源 -->
+                <!-- 知识库检索来源：默认收起，点击展开引用详情，避免资料多时对话过长 -->
                 <div v-if="step.knowledge" class="knowledge-sources">
                   <div
                     v-if="step.knowledge.fallback_reason"
@@ -170,19 +170,35 @@
                   >
                     ⚠ 向量检索暂不可用，本次为本地词法检索
                   </div>
-                  <el-collapse class="knowledge-collapse">
-                    <el-collapse-item
-                      v-for="(item, j) in step.knowledge.results"
-                      :key="j"
-                      :title="`📄 ${item.source} · 相关度 ${formatScore(item.score, step.knowledge.retrieval_mode)}`"
+                  <template v-if="step.knowledge.results?.length">
+                    <button
+                      type="button"
+                      class="knowledge-toggle"
+                      @click="step.sourcesExpanded = !step.sourcesExpanded"
                     >
-                      <div class="knowledge-snippet">{{ item.content }}</div>
-                    </el-collapse-item>
-                  </el-collapse>
-                  <div
-                    v-if="!step.knowledge.results?.length"
-                    class="knowledge-empty"
-                  >
+                      <el-icon class="knowledge-toggle-icon">
+                        <ArrowRight v-if="!step.sourcesExpanded" />
+                        <ArrowDown v-else />
+                      </el-icon>
+                      <span>
+                        {{ step.sourcesExpanded ? "收起引用" : "查看引用" }}
+                        ({{ step.knowledge.results.length }} 条)
+                      </span>
+                    </button>
+                    <el-collapse
+                      v-show="step.sourcesExpanded"
+                      class="knowledge-collapse"
+                    >
+                      <el-collapse-item
+                        v-for="(item, j) in step.knowledge.results"
+                        :key="j"
+                        :title="`📄 ${item.source} · 相关度 ${formatScore(item.score, step.knowledge.retrieval_mode)}`"
+                      >
+                        <div class="knowledge-snippet">{{ item.content }}</div>
+                      </el-collapse-item>
+                    </el-collapse>
+                  </template>
+                  <div v-else class="knowledge-empty">
                     知识库未命中任何片段
                   </div>
                 </div>
@@ -347,6 +363,8 @@ import {
 } from "@/utils/toolChain";
 import {
   Aim,
+  ArrowDown,
+  ArrowRight,
   Camera,
   ChatLineRound,
   DataAnalysis,
@@ -1602,6 +1620,27 @@ onMounted(async () => {
 .knowledge-fallback {
   color: #e6a23c;
   margin-bottom: 4px;
+}
+
+/* 引用列表整体收起/展开开关 */
+.knowledge-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: $text-secondary;
+
+  &:hover {
+    color: $signal-orange;
+  }
+}
+
+.knowledge-toggle-icon {
+  font-size: 12px;
 }
 
 .knowledge-collapse {
