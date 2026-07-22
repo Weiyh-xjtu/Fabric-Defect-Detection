@@ -26,7 +26,11 @@ from app.agent.detection_agent import (
     search_knowledge,
 )
 from app.agent.memory import conversation_memory
-from app.agent.prompts import ANALYSIS_PROMPT, QA_PROMPT
+from app.agent.prompts import (
+    ANALYSIS_AGENT_SYSTEM_PROMPT,
+    DEPENDENCY_TEXT_CONTEXT_HEADER,
+    QA_AGENT_SYSTEM_PROMPT,
+)
 from app.agent.graph import build_agent_graph
 from app.core.logger import get_logger
 
@@ -212,11 +216,7 @@ def _format_upstream_context(upstream_outputs: dict | None) -> str:
     if not parts:
         return ""
     body = "\n\n".join(parts)
-    return (
-        "[以下是你所依赖的其它专家已完成的结果，请据此完成上面的任务，不要重复它们已给出的内容；"
-        "这些结果不能替代你自身任务要求的数据查询或知识检索工具调用]\n"
-        + body
-    )
+    return DEPENDENCY_TEXT_CONTEXT_HEADER + body
 
 
 class MultiAgentOrchestrator:
@@ -247,26 +247,7 @@ class MultiAgentOrchestrator:
             ),
             "analysis": DetectionAgent(
                 [query_detection_statistics, query_detection_trends, query_system_users, query_system_roles],
-                system_prompt=(
-                    ANALYSIS_PROMPT
-                    + " 每次处理任务都必须先调用至少一个与请求匹配的数据查询工具获取真实数据，"
-                    "禁止跳过工具直接回答，禁止编造统计数字。"
-                    "依赖上下文包含 [DEPENDENCY_DATA] 时，detection.detected_classes 是本次分析的"
-                    "缺陷筛选范围；对其中每个类别分别调用统计或趋势工具，并把类别原样传入 defect 参数。"
-                    "询问今日/今天时调用 query_detection_statistics 并设置 today=true。"
-                    "询问昨天/前天等某一天时，按系统提示中的当前日期换算出那一天，"
-                    "把 start_date 和 end_date 都设为该日期（如昨天＝当前日期减一天）。"
-                    "涉及具体日期区间时，把 start_date/end_date 传给工具即可。"
-                    "关键：当用户只说了月日（如“7.15到7.17”“6月1号”）而没有明确年份时，"
-                    "必须原样按“月-日”格式传参（如 start_date=\"07-15\"、end_date=\"07-17\"），"
-                    "绝对不要自己猜测或补全年份——服务端会按当前系统时间填充正确年份。"
-                    "只有用户明确写出年份时才传完整的 YYYY-MM-DD。"
-                    "询问批量、单图或视频检测次数时，分别设置 task_type=batch、single 或 video；"
-                    "询问每日趋势、缺陷类别分布或哪类缺陷最多时调用 query_detection_trends。"
-                    "只能根据工具实际返回的字段回答；如果工具返回 error，或用户要求的统计维度"
-                    "不在工具结果中，必须明确说明当前无法查询该数据，禁止用总任务数等无关统计代替。"
-                    "没有数据时明确回答对应筛选条件下暂无检测记录，不要要求上传附件。"
-                ),
+                system_prompt=ANALYSIS_AGENT_SYSTEM_PROMPT,
                 name="analysis",
                 required_tool_names={
                     "query_detection_statistics",
@@ -280,12 +261,7 @@ class MultiAgentOrchestrator:
             ),
             "qa": DetectionAgent(
                 [search_knowledge],
-                system_prompt=(
-                    QA_PROMPT
-                    + " 领域问题必须先调用 search_knowledge，并根据来源片段回答；检索不到时明确说明。"
-                    "回答末尾用「来源：」列出引用的来源文件名；"
-                    "如果工具返回 retrieval_mode=lexical_fallback，须说明本次为本地词法检索（向量检索暂不可用）。"
-                ),
+                system_prompt=QA_AGENT_SYSTEM_PROMPT,
                 name="qa",
             ),
         }

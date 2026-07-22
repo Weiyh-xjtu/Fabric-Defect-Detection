@@ -46,6 +46,11 @@ from app.services.detection_service import detection_service
 from app.services.user_service import user_service
 from app.agent.memory import conversation_memory
 from app.agent.attachment_store import ensure_session_attachment_history
+from app.agent.prompts import (
+    DETECTION_AGENT_SYSTEM_PROMPT,
+    REQUIRED_TOOL_RETRY_TEMPLATE,
+    SYSTEM_PROMPT_RUNTIME_SUFFIX,
+)
 from app.rag.retriever import knowledge_retriever
 from app.entity.db_models import (
     DetectionResult,
@@ -57,13 +62,6 @@ from app.entity.db_models import (
 
 logger = get_logger(__name__)
 
-
-_REQUIRED_TOOL_RETRY_TEMPLATE = """强制执行要求（本轮重试）：
-你上一次没有调用数据查询工具，因此上一次答案已被系统拒绝。生成任何结论前，
-必须至少调用一个与用户请求匹配的工具：{tool_names}。
-其它专家的结果只能用于确定查询参数（例如缺陷类别），不能替代平台数据查询。
-工具参数必须完整落实当前任务和依赖数据中提供的筛选条件。
-只能根据工具实际返回值回答；若工具返回 error，必须如实说明错误，禁止自行补全数据。"""
 
 _REQUIRED_TOOL_FAILURE_MESSAGE = (
     "数据分析未按要求调用查询工具，系统已拒绝未经过数据验证的答案。请稍后重试。"
@@ -1022,49 +1020,12 @@ class DetectionAgent:
         self.required_tool_call_validator = required_tool_call_validator
         self.max_required_tool_retries = max(0, max_required_tool_retries)
 
-        # OpenAI Tools Agent 系统提示词
-        default_system_prompt = """你是一个专业的目标检测平台助手。你可以执行图片、ZIP 压缩包和视频检测，也可以查询系统用户、角色和权限。
-
-重要规则：
-- 当用户消息中包含 [附件图片路径: xxx] 时，xxx 就是图片的服务器路径，你应直接使用它调用检测工具
-- 当用户消息中包含 [附件图片路径列表: [...]] 时，必须把列表原样作为 image_paths 调用批量检测工具
-- 当用户消息中包含 [附件ZIP路径: xxx] 时，必须使用 xxx 调用 ZIP 检测工具
-- 当用户消息中包含 [附件视频路径: xxx] 时，xxx 就是视频的服务器路径，你应直接使用它调用视频检测工具
-- 不要要求用户再次提供路径，直接使用附件中给出的路径
-- 当用户要求重新检测、复检，或提到“上面/之前发的图片”“所有图片”“第N张图”“那个视频”等历史附件，而本轮消息没有附件路径提示时，必须先调用 list_session_attachments 查询会话附件记录，再根据用户描述挑选对应 path 调用检测工具
-- 挑选历史附件时按 round 从新到旧、路径去重。例如“重新检测上面5张图片”就是收集最近发送的 5 张不同图片；“重新检测所有图片”就是收集全部图片
-- 只能使用附件提示或 list_session_attachments 返回的 path，禁止编造或修改路径；file_exists 为 false 的文件已失效，不要用它检测，并在回复中说明
-- 会话附件记录为空或全部失效时，明确请用户重新上传，不要执行检测
-- 对于单张图片，调用 detect_single_image 工具
-- 对于多张图片或 ZIP 文件，调用 detect_batch_images 或 detect_zip_images_file 工具
-- 对于视频文件，调用 detect_video_file 工具
-- 用户询问“有哪些用户”、用户数量或某个用户时，调用 query_system_users 工具
-- 用户询问系统管理员时，调用 query_system_users，并将 role 设置为 system_admin
-- 用户询问系统角色或权限时，调用 query_system_roles 工具
-- 用户与角色工具只返回非敏感资料；绝不能索取、推测或输出密码、Token 等凭据
-
-工作流程：
-1. 理解用户意图
-2. 如果本轮有附件路径，直接调用对应检测工具；如果用户指的是历史附件，先调用 list_session_attachments 再检测
-3. 如果是用户、角色或权限问题，调用对应查询工具
-4. 调用工具获取结果
-5. 用自然语言总结结果
-
-回复格式要求：
-- 先报告检测到的目标总数
-- 列出各类别的数量统计
-- 对于视频检测，还要报告视频时长和处理的帧数
-- 如果有标注图，告知用户可以在结果卡片中查看
-- 简洁专业，不要过度解释"""
-        # 追加当前日期占位符：Agent 为长驻单例，日期在每次调用时通过
-        # {current_date} 变量注入，确保“今天/昨天/本周”等相对日期换算正确。
-        system_prompt = (system_prompt or default_system_prompt) + (
-            "\n\n当前系统日期：{current_date}。"
-            "用户提到“今天/昨天/前天/本周/上周/最近N天”等相对日期时，"
-            "必须以该系统日期为基准换算成具体日期（例如“昨天”＝系统日期减一天），"
-            "并在回答中使用换算后的日期，绝不能凭记忆或猜测使用其他日期。"
-            "\n\n{runtime_instruction}"
-        )
+        # OpenAI Tools Agent 系统提示词：完整文本集中在 app/agent/prompts.py。
+        # 追加运行时后缀占位符：Agent 为长驻单例，{current_date} 与
+        # {runtime_instruction} 在每次调用时注入，确保相对日期换算正确。
+        system_prompt = (
+            system_prompt or DETECTION_AGENT_SYSTEM_PROMPT
+        ) + SYSTEM_PROMPT_RUNTIME_SUFFIX
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -1134,7 +1095,7 @@ class DetectionAgent:
     @staticmethod
     def _required_tool_retry_instruction(required_tool_names: set[str]) -> str:
         """生成仅在无工具调用重试时注入的系统级纠正指令。"""
-        return _REQUIRED_TOOL_RETRY_TEMPLATE.format(
+        return REQUIRED_TOOL_RETRY_TEMPLATE.format(
             tool_names="、".join(sorted(required_tool_names))
         )
 
