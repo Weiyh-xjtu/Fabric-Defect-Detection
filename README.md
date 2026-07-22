@@ -104,7 +104,7 @@ Fabric-Defect-Detection/
 │  ├─ main.py                    # FastAPI 入口
 │  ├─ app/api/                   # API 路由
 │  ├─ app/services/              # 检测和业务服务
-│  ├─ app/agent/                 # Agent、工具和会话记忆
+│  ├─ app/agent/                 # Agent、工具、会话记忆和上传缓存清理
 │  ├─ app/training/              # 训练、验证、导出和历史恢复
 │  ├─ app/entity/                # SQLAlchemy 模型与 Pydantic Schema
 │  ├─ app/storage/               # Redis、MinIO 客户端
@@ -122,8 +122,10 @@ Fabric-Defect-Detection/
 │  ├─ src/utils/request.js       # Axios 客户端，baseURL 为 /api
 │  ├─ tests/                     # 前端测试
 │  └─ .env.example               # 前端配置模板
-├─ docs/                         # 实现记录和背景文档
-├─ docker-compose.yml            # PostgreSQL、Redis、MinIO
+├─ deploy/                       # 生产部署：DEPLOY.md、Caddy、systemd、部署脚本
+├─ docs/                         # 项目相关文档
+├─ docker-compose.yml            # 开发用 PostgreSQL、Redis、MinIO
+├─ docker-compose.full.yml       # 全容器化部署（Caddy + 后端 + 基础设施）
 └─ README.md
 ```
 
@@ -290,6 +292,7 @@ python main.py
 2. 在系统没有管理员时创建一次性管理员账号。
 3. 初始化 MinIO Bucket。
 4. 扫描 `runs/train` 恢复可识别的训练历史。
+5. 清理过期上传缓存，并启动周期清理后台任务（默认每小时一次，保留 48 小时内的文件）。
 
 首次创建的管理员用户名和密码只会显示在交互式终端中，请立即保存并登录后修改密码。
 
@@ -647,6 +650,7 @@ docker compose down
 - 必须从 `backend/` 目录启动后端。
 - 检查文件是否位于 `backend/datasets/{scene_name}/yolo_dataset/data.yaml`。
 - 确认数据集已经完成上传确认，而不是仍停留在暂存阶段。
+- 注意data.yaml文件中path指向的数据集路径要正确
 
 ### 知识库向量索引构建失败
 
@@ -665,6 +669,8 @@ docker compose down
 - `APP_DEBUG=true` 时 SQL 输出较多，并可能因为 engine echo 和应用日志看起来重复。
 
 ## 生产部署建议
+
+完整的生产部署步骤（Caddy + systemd + Docker 基础设施，含自动 HTTPS 和自动更新脚本）见 `deploy/DEPLOY.md`；全容器化方案可使用仓库根目录的 `docker-compose.full.yml`。以下为通用原则：
 
 - 不要使用 Vite 开发服务器和 Uvicorn `reload` 作为正式生产服务。
 - 使用 Nginx/Caddy 提供 `frontend/dist`，并反向代理 `/api` 和 WebSocket。
