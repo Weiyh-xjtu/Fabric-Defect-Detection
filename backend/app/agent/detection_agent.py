@@ -35,6 +35,7 @@ from app.core.logger import get_logger
 from app.core.rbac import (
     DASHBOARD_READ_ANY,
     DETECTION_EXECUTE,
+    HISTORY_READ_OWN,
     KNOWLEDGE_READ,
     USER_MANAGE,
     user_has_permission,
@@ -187,6 +188,30 @@ def _tool_permission_error(permission: str) -> str | None:
         return None
     finally:
         db.close()
+
+
+def _resolve_statistics_scope() -> tuple[str | None, int | None, str]:
+    """统计工具的数据范围裁决：(error, user_id 过滤值, 范围说明)。
+
+    有 dashboard:read:any 时按全厂统计（user_id=None）；没有全厂权限但有
+    history:read:own 时降级为只统计当前用户本人的检测数据，与历史记录
+    接口的权限口径保持一致；两者都没有才返回无权错误。
+    """
+    if _tool_permission_error(DASHBOARD_READ_ANY) is None:
+        return None, None, "全厂"
+    if _tool_permission_error(HISTORY_READ_OWN) is None:
+        return None, _current_user_id.get(), "仅本人"
+    return (
+        json.dumps(
+            {
+                "error": "无权使用该工具",
+                "required_permission": f"{DASHBOARD_READ_ANY} 或 {HISTORY_READ_OWN}",
+            },
+            ensure_ascii=False,
+        ),
+        None,
+        "",
+    )
 
 
 def _append_attachment_context(
@@ -612,7 +637,8 @@ def query_detection_statistics(
 
     统计范围自动限定在当前检测场景（全局默认模型的归属场景）内，
     与检测执行的写入口径一致；返回的 scene 字段为该场景名，
-    回答时应向用户说明统计所属场景。
+    回答时应向用户说明统计所属场景。返回的 scope 字段表示数据范围
+    （全厂或仅本人），仅本人时回答中必须说明统计的是用户本人的数据。
 
     Args:
         days: 最近天数，1-365；当 today=true 或提供 start_date/end_date 时忽略。
@@ -632,7 +658,8 @@ def query_detection_statistics(
         类别列表），此时应结合它判断是否用词有误，必要时改用列表中的名称重查，
         不要直接断言“没有该缺陷”。摄像头等无法统计的类型会返回 error。
     """
-    if error := _tool_permission_error(DASHBOARD_READ_ANY):
+    error, scope_user_id, scope_label = _resolve_statistics_scope()
+    if error:
         return error
 
     parsed_start = _parse_tool_date(start_date)
@@ -658,12 +685,13 @@ def query_detection_statistics(
             # 统计口径与检测执行一致：限定在全局默认模型的归属场景内。
             scene_id, scene_name = _current_scene_context(db)
             result = dashboard_service.get_statistics(
-                db, None, days, win_start, win_end, defect_filter, scene_id
+                db, scope_user_id, days, win_start, win_end, defect_filter, scene_id
             )
             defect_count = result.get("total_objects", 0)
             payload = {
                 "defect": defect.strip(),
                 "scene": scene_name or "全部场景",
+                "scope": scope_label,
                 "from": result.get("start_at"),
                 "to": result.get("end_at"),
                 "matched_tasks": result.get("total_tasks", 0),
@@ -675,7 +703,7 @@ def query_detection_statistics(
             # 0 命中时附上该时间段实际存在的缺陷类别，便于纠正用词歧义。
             if defect_count == 0:
                 options = dashboard_service.get_defect_options(
-                    db, None, days, win_start, win_end, scene_id
+                    db, scope_user_id, days, win_start, win_end, scene_id
                 )
                 payload["available_defects"] = [
                     {"name": item["name"], "name_cn": item["name_cn"]}
@@ -738,6 +766,8 @@ def query_detection_statistics(
         )
         if scene_id:
             time_base = time_base.filter(DetectionTask.scene_id == scene_id)
+        if scope_user_id is not None:
+            time_base = time_base.filter(DetectionTask.user_id == scope_user_id)
         type_rows = time_base.with_entities(
             DetectionTask.task_type,
             func.count(DetectionTask.id),
@@ -780,6 +810,7 @@ def query_detection_statistics(
                 "from": since.isoformat(timespec="seconds"),
                 "to": until.isoformat(timespec="seconds"),
                 "scene": scene_name or "全部场景",
+                "scope": scope_label,
                 "task_type": normalized_type,
                 "total_tasks": total_tasks,
                 "completed_tasks": completed,
@@ -807,6 +838,8 @@ def query_detection_trends(
 
     统计范围自动限定在当前检测场景（全局默认模型的归属场景）内，
     返回的 scene 字段为该场景名，回答时应向用户说明统计所属场景。
+    返回的 scope 字段表示数据范围（全厂或仅本人），仅本人时回答中
+    必须说明统计的是用户本人的数据。
 
     Args:
         days: 最近天数，1-365；提供 start_date/end_date 时忽略。
@@ -821,7 +854,8 @@ def query_detection_trends(
         若指定缺陷在时间段内 0 命中，会附带 available_defects（实际存在的缺陷
         类别列表），应据此判断是否用词有误，必要时改用列表中的名称重查。
     """
-    if error := _tool_permission_error(DASHBOARD_READ_ANY):
+    error, scope_user_id, scope_label = _resolve_statistics_scope()
+    if error:
         return error
 
     parsed_start = _parse_tool_date(start_date)
@@ -838,10 +872,10 @@ def query_detection_trends(
         # 统计口径与检测执行一致：限定在全局默认模型的归属场景内。
         scene_id, scene_name = _current_scene_context(db)
         trend = dashboard_service.get_trend(
-            db, None, days, parsed_start, parsed_end, defect_filter, scene_id
+            db, scope_user_id, days, parsed_start, parsed_end, defect_filter, scene_id
         )
         class_dist = dashboard_service.get_class_distribution(
-            db, None, days, parsed_start, parsed_end, defect_filter, scene_id
+            db, scope_user_id, days, parsed_start, parsed_end, defect_filter, scene_id
         )
         daily = [
             {
@@ -856,6 +890,7 @@ def query_detection_trends(
             "from": trend.get("start_at"),
             "to": trend.get("end_at"),
             "scene": scene_name or "全部场景",
+            "scope": scope_label,
             "daily": daily,
             "class_distribution": [
                 {"class_name": item["name"], "count": item["value"]}
@@ -868,7 +903,7 @@ def query_detection_trends(
             # 0 命中时附上可选缺陷类别，帮助纠正用词歧义。
             if sum(item["objects"] for item in daily) == 0:
                 options = dashboard_service.get_defect_options(
-                    db, None, days, parsed_start, parsed_end, scene_id
+                    db, scope_user_id, days, parsed_start, parsed_end, scene_id
                 )
                 payload["available_defects"] = [
                     {"name": item["name"], "name_cn": item["name_cn"]}
