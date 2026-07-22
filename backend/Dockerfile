@@ -10,11 +10,14 @@ RUN apt-get update \
 WORKDIR /app/backend
 
 # 必须先装 CPU 版 torch，否则 requirements 里的 ultralytics 会拉超大的 CUDA 包
+# 国内网络：阿里云 torch CPU 轮子 + 清华 PyPI 兜底
 RUN pip install --no-cache-dir torch torchvision \
-    --index-url https://download.pytorch.org/whl/cpu
+    --index-url https://download.pytorch.org/whl/cpu \
+    --trusted-host download.pytorch.org
 
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 COPY . .
 
